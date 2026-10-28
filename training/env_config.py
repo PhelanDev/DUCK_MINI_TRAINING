@@ -69,6 +69,8 @@ class MicroDuck8DoFConfig:
             "foot_contact": 0.1,
             "obstacle_avoidance": 0.2,
             "sigma_obs": 0.3,
+            "foot_clearance": 2.0,
+            "stumble": 0.5,
         }
     )
 
@@ -212,6 +214,51 @@ def avoid_vel_penalty(
     return penalty.astype(np.float32)
 
 
+def compute_foot_clearance_and_stumble(
+    foot_z: np.ndarray,
+    foot_vel_xy: np.ndarray,
+    foot_contact_forces: np.ndarray,
+    target_height: float = 0.06,
+) -> Tuple[Union[float, np.ndarray], Union[float, np.ndarray]]:
+    """Compute foot clearance reward (ETH style) and stumble penalty.
+
+    Args:
+        foot_z: Height of feet [left, right], shape (..., 2)
+        foot_vel_xy: Horizontal velocity of feet, shape (..., 2, 2)
+        foot_contact_forces: 3D contact forces [Fx, Fy, Fz], shape (..., 2, 3)
+        target_height: Desired swing apex height (m), default 0.06
+
+    Returns:
+        rew_clearance: Clearance reward (<= 0, penalizes low swing foot height), shape (...)
+        pen_stumble: Stumble penalty (<= 0, penalizes excessive lateral impact force), shape (...)
+    """
+    z = np.asarray(foot_z, dtype=np.float32)
+    vel = np.asarray(foot_vel_xy, dtype=np.float32)
+    forces = np.asarray(foot_contact_forces, dtype=np.float32)
+
+    is_batch = z.ndim > 1
+
+    # Normal contact force magnitude along Z
+    fz = np.abs(forces[..., 2])
+    is_swing = (fz < 1.0).astype(np.float32)
+
+    # Foot horizontal speed clipped at 1.0 m/s
+    vel_xy_norm = np.clip(np.linalg.norm(vel, axis=-1), 0.0, 1.0)
+
+    # ETH clearance penalty: - sum_feet (z - target_height)^2 * sqrt(||v_xy||) * is_swing
+    height_err_sq = np.square(z - target_height)
+    rew_clearance = -np.sum(height_err_sq * np.sqrt(vel_xy_norm) * is_swing, axis=-1)
+
+    # Stumble detection: lateral impact force f_xy > 2 * |f_z| AND f_xy > 2.0 N
+    f_xy = np.linalg.norm(forces[..., :2], axis=-1)
+    stumble_mask = (f_xy > 2.0 * fz) & (f_xy > 2.0)
+    pen_stumble = -np.sum(stumble_mask.astype(np.float32), axis=-1)
+
+    if not is_batch:
+        return float(rew_clearance), float(pen_stumble)
+    return rew_clearance.astype(np.float32), pen_stumble.astype(np.float32)
+
+
 def compute_rewards(
     base_lin_vel: np.ndarray,
     cmd_lin_vel: np.ndarray,
@@ -227,6 +274,9 @@ def compute_rewards(
     weights: Optional[Dict[str, float]] = None,
     d_min: Optional[Union[float, np.ndarray]] = None,
     d_min_dot: Optional[Union[float, np.ndarray]] = None,
+    foot_z: Optional[np.ndarray] = None,
+    foot_vel_xy: Optional[np.ndarray] = None,
+    foot_contact_forces: Optional[np.ndarray] = None,
 ) -> Dict[str, Union[float, np.ndarray]]:
     """Compute balanced reward terms and total reward for RL training.
 
@@ -320,6 +370,19 @@ def compute_rewards(
     else:
         r_obstacle = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
+    # 9. Foot clearance reward & stumble penalty
+    if foot_z is not None and foot_vel_xy is not None and foot_contact_forces is not None:
+        target_h = weights.get("target_foot_height", 0.06)
+        r_clearance, r_stumble = compute_foot_clearance_and_stumble(
+            foot_z=foot_z,
+            foot_vel_xy=foot_vel_xy,
+            foot_contact_forces=foot_contact_forces,
+            target_height=target_h,
+        )
+    else:
+        r_clearance = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+        r_stumble = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
     total = (
         weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
         + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
@@ -329,6 +392,8 @@ def compute_rewards(
         + weights.get("action_rate_penalty", -0.01) * r_action_rate_penalty
         + weights.get("foot_contact", 0.1) * r_foot_contact
         + weights.get("obstacle_avoidance", 0.2) * r_obstacle
+        + weights.get("foot_clearance", 2.0) * r_clearance
+        + weights.get("stumble", 0.5) * r_stumble
     )
 
     if not is_batch:
@@ -342,6 +407,10 @@ def compute_rewards(
             "action_rate_penalty": float(r_action_rate_penalty),
             "foot_contact": float(r_foot_contact),
             "obstacle_avoidance": float(r_obstacle),
+            "foot_clearance": float(r_clearance),
+            "rew_foot_clearance": float(r_clearance),
+            "stumble": float(r_stumble),
+            "pen_stumble": float(r_stumble),
         }
 
     return {
@@ -354,4 +423,8 @@ def compute_rewards(
         "action_rate_penalty": r_action_rate_penalty.astype(np.float32),
         "foot_contact": r_foot_contact.astype(np.float32),
         "obstacle_avoidance": r_obstacle.astype(np.float32),
+        "foot_clearance": r_clearance.astype(np.float32),
+        "rew_foot_clearance": r_clearance.astype(np.float32),
+        "stumble": r_stumble.astype(np.float32),
+        "pen_stumble": r_stumble.astype(np.float32),
     }

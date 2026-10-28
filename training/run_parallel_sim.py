@@ -106,8 +106,72 @@ class ParallelSimRunner:
         self.d_min = np.zeros(self.num_envs, dtype=np.float32)
         self.d_min_dot = np.zeros(self.num_envs, dtype=np.float32)
 
+        # Foot bodies and geoms for clearance reward and stumble detection
+        self.left_foot_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "left_foot_geom")
+        self.right_foot_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "right_foot_geom")
+        self.left_foot_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_foot_link")
+        self.right_foot_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_foot_link")
+
         # Initialize environments
         self.reset()
+
+    def _extract_foot_dynamics(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Extract foot heights, horizontal velocities, and 3D contact forces in world frame.
+
+        Returns:
+            foot_z: (num_envs, 2)
+            foot_vel_xy: (num_envs, 2, 2)
+            foot_contact_forces: (num_envs, 2, 3)
+        """
+        foot_z = np.zeros((self.num_envs, 2), dtype=np.float32)
+        foot_vel_xy = np.zeros((self.num_envs, 2, 2), dtype=np.float32)
+        foot_contact_forces = np.zeros((self.num_envs, 2, 3), dtype=np.float32)
+
+        has_feet = (
+            self.left_foot_bid != -1
+            and self.right_foot_bid != -1
+            and self.left_foot_gid != -1
+            and self.right_foot_gid != -1
+        )
+        if not has_feet:
+            return foot_z, foot_vel_xy, foot_contact_forces
+
+        v_buf = np.zeros(6, dtype=np.float64)
+        c_force = np.zeros(6, dtype=np.float64)
+
+        for env_idx, d in enumerate(self.datas):
+            # 1. Foot Heights
+            foot_z[env_idx, 0] = d.xpos[self.left_foot_bid][2]
+            foot_z[env_idx, 1] = d.xpos[self.right_foot_bid][2]
+
+            # 2. Foot Velocities in World Frame (flg_local=0)
+            mujoco.mj_objectVelocity(self.model, d, mujoco.mjtObj.mjOBJ_BODY, self.left_foot_bid, v_buf, 0)
+            foot_vel_xy[env_idx, 0] = v_buf[3:5]
+
+            mujoco.mj_objectVelocity(self.model, d, mujoco.mjtObj.mjOBJ_BODY, self.right_foot_bid, v_buf, 0)
+            foot_vel_xy[env_idx, 1] = v_buf[3:5]
+
+            # 3. 3D Contact Forces on feet transformed to world frame
+            for c_idx in range(d.ncon):
+                contact = d.contact[c_idx]
+                g1 = contact.geom1
+                g2 = contact.geom2
+
+                is_left = (g1 == self.left_foot_gid) or (g2 == self.left_foot_gid)
+                is_right = (g1 == self.right_foot_gid) or (g2 == self.right_foot_gid)
+                if not (is_left or is_right):
+                    continue
+
+                mujoco.mj_contactForce(self.model, d, c_idx, c_force)
+                r_c2w = contact.frame.reshape(3, 3).T
+                f_world = r_c2w @ c_force[0:3]
+
+                if is_left:
+                    foot_contact_forces[env_idx, 0] += f_world
+                if is_right:
+                    foot_contact_forces[env_idx, 1] += f_world
+
+        return foot_z, foot_vel_xy, foot_contact_forces
 
     def _compute_d_min(self, env_idx: Optional[int] = None) -> Optional[Union[float, np.ndarray]]:
         """Compute minimum distance to obstacle cylinders (minus cylinder radius 0.08m)."""
@@ -320,6 +384,9 @@ class ParallelSimRunner:
             reward_d_min = None
             reward_d_min_dot = None
 
+        # Extract foot kinematics and 3D contact forces for clearance and stumble rewards
+        foot_z, foot_vel_xy, foot_contact_forces = self._extract_foot_dynamics()
+
         # Vectorized reward computation across all environments
         reward_dict = compute_rewards(
             base_lin_vel=base_lin_vel_body,
@@ -336,6 +403,9 @@ class ParallelSimRunner:
             weights=self.cfg.REWARD_WEIGHTS,
             d_min=reward_d_min,
             d_min_dot=reward_d_min_dot,
+            foot_z=foot_z,
+            foot_vel_xy=foot_vel_xy,
+            foot_contact_forces=foot_contact_forces,
         )
         rewards = reward_dict["total_reward"]
 
