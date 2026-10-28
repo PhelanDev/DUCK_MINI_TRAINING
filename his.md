@@ -183,3 +183,102 @@ Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to
 - **Lệnh chạy:** `pytest -v`
 - **Kết quả:** **83 / 83 tests PASSED (100%)**
 - **Độ ổn định:** Toàn bộ các bài kiểm tra mô hình vật lý, môi trường mô phỏng song song, huấn luyện PPO, xuất mô hình ONNX/INT8, firmware Arduino C++, và công cụ trực quan 3D đều vượt qua tuyệt đối.
+
+---
+
+## 📌 Phiên Làm Việc: 2026-10-29 00:59:00+07:00 (Nâng Cấp Hệ Thống Huấn Luyện AI - Duck Training Upgrade)
+
+**Kế hoạch thực hiện:** `plans/261029-0037-duck-training-upgrade/plan.md`
+
+### 1. Sửa Lỗi "Time-Limit Bootstrapping" Của Thuật Toán PPO (Task 1)
+- **Commit:** `83cd3d5` (`fix(ppo): bootstrap value on time-limit truncation`)
+- **Tệp ảnh hưởng:**
+  - `training/run_parallel_sim.py`
+  - `scripts/train_ppo.py`
+  - `tests/test_time_limit_bootstrap.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Khi một môi trường đạt tới giới hạn số bước `max_episode_steps = 500`, đây là sự kiện cắt ngắn chuỗi thời gian (time-limit truncation), không phải là trạng thái kết thúc do thất bại vật lý (hấp thụ/chết).
+  - Trước đây, `timeouts` bị gộp chung vào `dones` và môi trường bị reset ngay lập tức. Thuật toán GAE xem đây là trạng thái kết thúc có giá trị $V(s_{t+1}) = 0$, gây ra hiện tượng đánh sụt giá trị giả tạo (artificial value drop) và tạo các xung gai dao động (spikes) định kỳ trong đồ thị `value_loss`.
+  - Hơn nữa, nếu quan sát sau reset được lấy để đánh giá critic thì mạng critic sẽ đánh giá trên trạng thái khởi đầu mới thay vì trạng thái kết thúc của tập cũ.
+- **Biện pháp xử lý:**
+  - Trong `training/run_parallel_sim.py`: Tách biệt hoàn toàn `fallen = (root_z < 0.08) | (grav_z > -0.3) | diverged` và `timeouts = episode_steps >= max_episode_steps`. Gán `infos[i]["time_outs"] = bool(timeouts[i] and not fallen[i])` và lưu `infos[i]["terminal_obs"] = next_obs[i].copy()` **ngay trước** khi gọi `reset_env(i)`.
+  - Trong `scripts/train_ppo.py`: Thiết kế hàm thuần `apply_timeout_bootstrap(rewards, time_outs, terminal_values, gamma)`. Khi có môi trường timeout (`time_outs.any()`), gọi mạng Critic $V(s_{\text{terminal}}) = \text{model.forward\_critic}(s_{\text{terminal}})$ và bù trực tiếp $\gamma \cdot V(s_{\text{terminal}})$ vào vector phần thưởng $r_t$ trước khi đưa vào bộ đệm GAE.
+
+---
+
+### 2. Thiết Kế Hàm Thưởng Chống Kẹt Trước Cột (Command Relaxation & Approach-Velocity Penalty) (Task 2)
+- **Commit:** `4e0d16b` (`feat(reward): relax ang-vel tracking near obstacles, penalize approach speed`)
+- **Tệp ảnh hưởng:**
+  - `training/env_config.py`
+  - `training/run_parallel_sim.py`
+  - `tests/test_obstacle_rewards.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Robot khi đối diện cột chướng ngại vật ở cự ly gần thường bị "tiến thoái lưỡng nan": lệnh vận tốc góc $w_z^{\text{cmd}}$ bắt buộc nó phải giữ hướng, trong khi hình phạt khoảng cách tĩnh ép nó không được đứng gần. Robot không dám xoay thân để né vì xoay sẽ bị mất điểm `tracking_ang_vel`.
+  - Đồng thời, hình phạt khoảng cách tĩnh phạt robot cả khi nó đang lùi lại hoặc đang né xa vật thể, gây ức chế hành vi di chuyển.
+- **Biện pháp xử lý:**
+  - Triển khai hàm mặt nạ nới lỏng góc quay:
+    $$\text{ang\_vel\_mask}(d_{\min}) = \text{clip}\left(\frac{d_{\min} - 0.25}{0.55 - 0.25}, 0.1, 1.0\right)$$
+    Khi robot cách cột trong khoảng nguy hiểm ($0.25\text{ m} \to 0.55\text{ m}$), trọng số phạt sai lệch góc quay giảm dần về $0.1$, cho phép robot tự do quay đầu né tránh.
+  - Thay thế phạt tĩnh bằng hàm phạt vận tốc tiếp cận (approach-velocity penalty):
+    $$\text{avoid\_vel\_penalty}(d_{\min}, \dot{d}_{\min}, \sigma_{\text{obs}}) = -\max(0.0, -\dot{d}_{\min}) \cdot \exp\left(-\frac{d_{\min}}{\sigma_{\text{obs}}}\right)$$
+    Khi robot né xa hoặc đứng yên ($\dot{d}_{\min} \ge 0$), mức phạt triệt tiêu về $0.0$. Chỉ khi robot lao nhanh về phía vật cản ($\dot{d}_{\min} < 0$), mức phạt mới xuất hiện và tăng theo hàm mũ khi $d_{\min}$ càng nhỏ.
+  - Trong `DuckParallelSim`, theo dõi `prev_d_min`, tính toán khoảng cách thực phẳng XY tới 4 cột hình trụ và đạo hàm vận tốc $\dot{d}_{\min} = (d_{\min} - \text{prev\_d\_min}) / \Delta t$.
+
+---
+
+### 3. Huấn Luyện Dáng Đi Bước Cao (Foot Clearance) & Phạt Va Chạm Ngang (Stumble Penalty) (Task 3)
+- **Commit:** `91fe663` (`feat(reward): foot clearance and stumble penalty`)
+- **Tệp ảnh hưởng:**
+  - `training/env_config.py`
+  - `training/run_parallel_sim.py`
+  - `tests/test_foot_rewards.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Robot có xu hướng kéo lê (drag) chân sát mặt sàn để giảm thiểu công năng và tránh bị mất thăng bằng. Khi gặp địa hình gờ đất hoặc bậc thang, mũi chân lập tức vấp phải vật cản và đổ ngã.
+  - Cảm biến `touch` thông thường trong MuJoCo chỉ cung cấp độ lớn lực pháp tuyến vô hướng (scalar), không phân tách được lực ngang $f_{xy}$ và lực dọc $f_z$ để phát hiện va chạm bên hông chân.
+- **Biện pháp xử lý:**
+  - Trích xuất lực tiếp xúc 3D bàn chân qua `mujoco.mj_contactForce`, chiếu qua ma trận quay `contact.frame` sang hệ toạ độ thế giới (World Frame) để thu được vector lực $[F_x, F_y, F_z]$.
+  - Trích xuất độ cao $z_{\text{foot}}$ và vận tốc phẳng $v_{xy}$ của từng bàn chân qua `mujoco.mj_objectVelocity`.
+  - Triển khai hàm `compute_foot_clearance_and_stumble` (vector hóa):
+    * Phạt độ cao chân vung (theo chuẩn ETH Robotic Systems Lab):
+      $$R_{\text{clearance}} = -\sum_{\text{foot}} (z - h_{\text{target}})^2 \cdot \sqrt{\|v_{xy}\|} \cdot \mathbb{I}(|F_z| < 1.0\text{ N})$$
+      Ép chân khi đang vung có vận tốc lớn phải đạt đỉnh độ cao $h_{\text{target}} = 0.06\text{ m}$, loại bỏ hoàn toàn tật lê chân.
+    * Phạt vấp gờ đất (Stumble penalty):
+      $$R_{\text{stumble}} = -\sum_{\text{foot}} \mathbb{I}\left(f_{xy} > 2.0 |f_z| \;\wedge\; f_{xy} > 2.0\text{ N}\right)$$
+      Ngưỡng $f_{xy} > 2.0\text{ N}$ giúp lọc nhiễu tiếp xúc nhỏ, chỉ kích hoạt khi mũi chân va mạnh vào cạnh đứng của gờ đất.
+
+---
+
+### 4. Bổ Sung Gờ Đất Vào Mô Hình XML & Xây Dựng Terrain Curriculum (Task 4)
+- **Commit:** `ebf6dde` (`feat(curriculum): terrain and pillar curriculum with hidden hurdles`)
+- **Tệp ảnh hưởng:**
+  - `models/mjcf/microduck_8dof.xml`
+  - `training/terrain_curriculum.py`
+  - `training/run_parallel_sim.py`
+  - `scripts/train_ppo.py`
+  - `tests/test_mjcf_model.py`
+  - `tests/test_terrain_curriculum.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Huấn luyện robot vượt chướng ngại vật ngay từ đầu trên địa hình gồ ghề sẽ khiến tỷ lệ ngã quá cao, robot không kịp hình thành phản xạ bước đi cơ bản.
+- **Biện pháp xử lý:**
+  - Thêm 3 thanh gờ đất hình hộp chữ nhật vào `microduck_8dof.xml`:
+    * `hurdle_1`: vị trí $(0.30, 0, -0.02)$, kích thước half-size `0.02 0.60 0.015`.
+    * `hurdle_2`: vị trí $(0.55, 0, -0.025)$, kích thước half-size `0.02 0.60 0.020`.
+    * `hurdle_back`: vị trí $(-0.35, 0, -0.02)$, kích thước half-size `0.02 0.60 0.015`.
+    Ở Stage 0, mặt trên của cả 3 gờ đều nằm chìm dưới mặt phẳng sàn ($z_{\text{top}} \le -0.005\text{ m} < 0$).
+  - Thiết kế bộ quản lý giáo trình `training/terrain_curriculum.py` gồm 4 cấp độ (Stage 0 -> 3):
+    * **Stage 0:** Cột chướng ngại vật dãn rộng $2.0\times$, gờ đất chìm hoàn toàn dưới sàn.
+    * **Stage 1:** Cột chướng ngại vật co về $1.3\times$, gờ đất nâng lên $+5\text{ mm}$ ($pos_z = 0.005\text{ m}$). Điều kiện lên cấp: `ep_len_mean >= 400` và `rew_lin_vel >= 75% max`.
+    * **Stage 2:** Cột chướng ngại vật ở cự ly chuẩn $1.0\times$, gờ đất nâng lên $+15\text{ mm}$ ($pos_z = 0.015\text{ m}$). Điều kiện: `ep_len_mean >= 420`.
+    * **Stage 3:** Cột chướng ngại vật $1.0\times$, gờ đất nâng tối đa $+25\text{ mm}$ ($pos_z = 0.025\text{ m}$).
+    * Cơ chế giữ vững (Hold Mechanism): Phải duy trì đạt chuẩn liên tục trong `hold_iters = 10` vòng lặp mới được chuyển cấp; cấp độ chỉ tăng dần và không bao giờ tụt lùi.
+  - Tích hợp hàm `set_stage(model, stage)` can thiệp trực tiếp vào `model.geom_pos` dùng chung trong `DuckParallelSim` và vòng huấn luyện PPO.
+
+---
+
+### 5. Nghiệm Thu & Kiểm Thử Toàn Diện (Task 5)
+- **Tệp báo cáo:** `plans/261029-0037-duck-training-upgrade/reports/training_upgrade_report.md`
+- **Kết quả kiểm thử tự động:**
+  - Toàn bộ test suite dự án: **104 / 104 tests PASSED (100%)**
+  - Tốc độ huấn luyện PPO đạt: **~1,450 FPS** trên CPU đa luồng với 16 môi trường song song.
+  - Điểm thưởng tăng trưởng đều đặn từ $+0.84 \to +1.134$.
+  - Xuất mô hình ONNX (`microduck_rpi5_policy.onnx`) và header C/C++ lượng tử hóa INT8 (`esp32_policy_weights.h`, `esp32_quant_config.h`) thành công tuyệt đối.
