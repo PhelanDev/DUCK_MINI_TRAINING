@@ -506,7 +506,7 @@ def run_interactive_cli(
             break
 
 
-def main():
+def main() -> int:
     """Main CLI entry point."""
     parser = build_arg_parser()
     args = parser.parse_args()
@@ -537,7 +537,8 @@ def main():
             gait_demo=args.gait_demo,
             dt=args.dt,
         )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -96,6 +96,16 @@ Cả hai mô hình robot (`microduck_rpi5_8dof` và `microduck_esp32_8dof`) đ�
 3. **Microphone số I2S MEMS (Digital Audio Sensor):**
    - Cổng thu âm thanh số (mô phỏng module INMP441) kết nối chuẩn I2S 24-bit/48kHz phục vụ tác vụ nhận diện từ khóa giọng nói ("Hey Duck") và định vị nguồn âm thanh.
 
+### 3.1. Bốn Cột Chướng Ngại Vật Trong Môi Trường Mô Phỏng (`<worldbody>`)
+
+Cả 3 mô hình MuJoCo MJCF (`microduck_8dof.xml`, `microduck_rpi5_8dof.xml`, `microduck_esp32_8dof.xml`) được bổ sung 4 cột chướng ngại vật hình trụ (`obstacle_front`, `obstacle_left`, `obstacle_right`, `obstacle_back`) với kích thước bán kính $0.08\text{ m}$, chiều cao $0.50\text{ m}$ (`size="0.08 0.25"`), bật cờ tiếp xúc `contype="1" conaffinity="1"` đặt trực tiếp trong `<worldbody>`:
+- `obstacle_front`: Tọa độ $[+0.80, 0.00, 0.25]\text{ m}$ (ngay phía trước hướng di chuyển chính).
+- `obstacle_left`: Tọa độ $[+0.50, +0.60, 0.25]\text{ m}$ (chếch phía trước bên trái).
+- `obstacle_right`: Tọa độ $[+0.50, -0.60, 0.25]\text{ m}$ (chếch phía trước bên phải).
+- `obstacle_back`: Tọa độ $[-0.60, 0.00, 0.25]\text{ m}$ (phía sau robot).
+
+Các cột vật cản này cung cấp mục tiêu phản xạ chùm tia ToF LiDAR thực tế, tạo môi trường đa dạng cho bài toán né tránh chướng ngại vật trong quá trình huấn luyện RL.
+
 ---
 
 ## 4. Hai Nhánh Phần Cứng Độc Lập (Two Independent Pipelines)
@@ -181,7 +191,11 @@ $$R_{\text{total}} = w_v R_{\text{lin\_vel}} + w_\omega R_{\text{ang\_vel}} + w_
   $$R_{\text{lin\_vel}} = \exp\left(-\frac{\|v_{xy}^{\text{body}} - v_{xy}^{\text{cmd}}\|^2}{0.25}\right)$$
 - **Né chướng ngại vật ($R_{\text{obstacle\_avoidance}}$):** Khi khoảng cách đo được từ bất kỳ tia LiDAR nào nhỏ hơn cự ly an toàn ($d_{\min} < d_{\text{safe}} = 0.35\text{ m}$), thuật toán phạt tuyến tính theo mức độ vi phạm để robot tránh va chạm. Khi đường đi thông thoáng ($d_{\min} \ge 0.35\text{ m}$), giá trị thưởng bằng $0.0$ (loại bỏ hoàn toàn lỗ hổng Reward Hacking khiến robot đứng yên nhìn vào khoảng trống):
   $$R_{\text{obstacle\_avoidance}} = \min(0.0, d_{\min} - 0.35)$$
+- **Thưởng dáng đi nhấc chân luân phiên ($R_{\text{contact}}$):** Khuyến khích chu kỳ bước đi hai chân tự nhiên (Gait Cycle), phân biệt rõ ràng giữa trạng thái di chuyển và đứng yên:
+  - Khi có lệnh di chuyển ($\|\mathbf{v}_{xy}^{\text{cmd}}\| > 0.05\text{ m/s}$): Robot hai chân phải luân phiên nhấc một chân (Swing Phase) trong khi chân còn lại bám trụ (Stance Phase). Thưởng tối đa $+1.0$ khi **chính xác 1 chân tiếp xúc sàn** (`num_contacts == 1`). Nhận thưởng $0.0$ nếu kéo lê cả 2 chân trên sàn (`num_contacts == 2`) hoặc nhảy bổng cả hai chân lên không (`num_contacts == 0`).
+  - Khi đứng yên ($\|\mathbf{v}_{xy}^{\text{cmd}}\| \le 0.05\text{ m/s}$): Thưởng $+0.5$ khi **cả 2 chân cùng tiếp đất** (`num_contacts == 2`) để duy trì thế đứng thăng bằng ổn định; nhận $0.0$ nếu đứng co một chân.
 - **Giữ thân thẳng đứng ($R_{\text{upright}}$):** Giữ thành phần trọng trường chiếu $g_z \to -1$.
+- **Phạt rung giật hành động ($P_{\text{action\_rate}}$):** Phạt bình phương sai phân hành động liên tiếp $\|\mathbf{a}_t - \mathbf{a}_{t-1}\|^2$ để triệt tiêu hiện tượng giật cơ khí và bảo vệ bánh răng hộp số MG996R.
 
 ### 5.4. Cảnh Báo Phần Cứng Thực Tế: Sim-to-Real Với Servo RC PWM MG996R
 
@@ -310,15 +324,30 @@ python scripts/interactive_viewer.py --headless --duration 3.0 --gait-demo
 
 ---
 
-## 10. Mô Phỏng Song Song & Đo Hiệu Năng FPS (Parallel Sim Benchmark)
+## 10. Bộ Mô Phỏng Song Song & Đo Hiệu Năng FPS (ParallelSimRunner & Benchmark)
 
-Hệ thống cung cấp module mô phỏng song song đa luồng theo lô (Batched Vectorized Simulator) tối ưu hóa tối đa CPU:
+Hệ thống cung cấp module mô phỏng song song đa luồng theo lô (`ParallelSimRunner`) tối ưu hóa tối đa CPU với các cơ chế Sim-to-Real trọng yếu:
+
+1. **Giới Hạn Bước Episode (Episode Truncation - 500 Steps):**
+   - Mỗi tập mô phỏng được giới hạn tối đa `max_episode_steps = 500` bước ($10\text{ s}$ ở chu kỳ $50\text{ Hz}$, $dt = 0.02\text{ s}$).
+   - Khi `episode_steps >= 500`, cờ `timeouts` được kích hoạt và gán vào cờ `dones`, đồng thời trả về `infos["timeout"] = True`. Điều này ngăn chặn mạng RL khai thác các tập vô tận để tích lũy điểm thưởng tĩnh và chuẩn hóa phân phối dữ liệu huấn luyện.
+2. **Ngẫu Nhiên Hóa Miền Không Gian Trạng Thái (Domain Randomization):**
+   - **Góc khớp ban đầu khi Reset:** Bổ sung nhiễu đồng đều $\Delta q_{\text{init}} \in [-0.03, +0.03]\text{ rad}$ cho tất cả các khớp (đảm bảo góc gập gối $\ge 0.0$).
+   - **Lệnh vận tốc ngẫu nhiên:** Vận tốc mục tiêu được lấy mẫu ngẫu nhiên:
+     - Tiến/lùi: $v_x \in [0.0, 0.25]\text{ m/s}$
+     - Trượt ngang: $v_y \in [-0.08, +0.08]\text{ m/s}$
+     - Quay thân: $\omega_z \in [-0.50, +0.50]\text{ rad/s}$
+3. **Đồng Bộ Hóa Quan Sát Tự Động Reset (Aligned Auto-Reset Observation):**
+   - Khi một môi trường bị ngã hoặc hết thời gian (`dones[i] == True`), hàm `step()` ngay lập tức cập nhật `next_obs[i] = self.reset_env(i)`.
+   - Cơ chế này đảm bảo observation trả về cho thuật toán RL luôn là trạng thái bắt đầu sạch của episode mới, giải quyết triệt để lỗi lệch pha trạng thái (out-of-sync transition) trong bộ đệm RolloutBuffer. Đồng thời, `last_actions` của môi trường reset được đưa về $0.0$.
+
+### Lệnh Chạy Kiểm Thử Hiệu Năng Benchmark:
 
 ```bash
-# 1. Chạy benchmark nhánh Raspberry Pi 5 (64 môi trường)
+# 1. Chạy benchmark nhánh Raspberry Pi 5 (64 môi trường, 200 bước)
 python pipelines/rpi5_stack/training/run_parallel_sim.py --num_envs 64 --steps 200
 
-# 2. Chạy benchmark nhánh Dual ESP32-S3 (64 môi trường)
+# 2. Chạy benchmark nhánh Dual ESP32-S3 (64 môi trường, 200 bước)
 python pipelines/dual_esp32s3_stack/training/run_parallel_sim.py --num_envs 64 --steps 200
 
 # 3. Chạy benchmark nhánh cơ sở (128 môi trường, 4 luồng CPU)
@@ -331,9 +360,58 @@ python training/run_parallel_sim.py --num_envs 128 --steps 100 --threads 4
 
 ---
 
-## 11. Hướng Dẫn Nạp & Triển Khai Trên Phần Cứng Thật (Deployment Guide)
+## 11. Pipeline Huấn Luyện PPO & Xuất Mô Hình Triển Khai (PPO Training & Policy Export)
 
-### 11.1. Triển Khai Trên Nhánh Raspberry Pi 5
+### 11.1. Pipeline Huấn Luyện PPO (`scripts/train_ppo.py`)
+
+Hệ thống tích hợp thuật toán học tăng cường **Proximal Policy Optimization (PPO)** tối ưu hóa cho bài toán điều khiển robot hai chân:
+
+- **Kiến trúc mạng Actor-Critic:**
+  - Không gian đầu vào: Vector quan sát 42 chiều.
+  - Tầng ẩn: 2 tầng fully-connected gồm 256 nơ-ron kích hoạt `nn.ELU`.
+  - Actor Head: Dự đoán trung bình hành động 8 chiều $\mathbf{a}_t \in [-1, 1]^8$, đi kèm tham số học độ lệch chuẩn `log_std`. Khởi tạo trực giao (Orthogonal Initialization) với gain 0.01 ở tầng ra cuối để tránh biến thiên đột ngột ở các bước đầu.
+  - Critic Head: Ước lượng hàm giá trị trạng thái $V(s) \in \mathbb{R}^1$.
+- **Ước lượng lợi thế tổng quát (Generalized Advantage Estimation - GAE):**
+  - Hệ số chiết khấu $\gamma = 0.99$, hệ số làm mịn GAE $\lambda = 0.95$.
+- **Hàm mất mát PPO:**
+  - PPO Clipped Surrogate Loss với ngưỡng cắt $\epsilon = 0.2$.
+  - Trọng số hàm mất mát Critic $c_1 = 0.5$, hệ số thưởng Entropy $c_2 = 0.01$ để duy trì tính khám phá.
+
+```bash
+# Huấn luyện PPO với 64 môi trường song song (100,000 timesteps):
+python scripts/train_ppo.py --num_envs 64 --total_timesteps 100000
+
+# Chạy kiểm thử tích hợp nhanh (Dry-run 1 epoch, 4 envs, 4 steps) phục vụ CI/CD:
+python scripts/train_ppo.py --dry-run
+```
+
+Checkpoints được tự động lưu tại `models/checkpoints/microduck_ppo.pt` chứa đầy đủ trọng số Actor, Critic, trạng thái Adam optimizer và cấu hình siêu tham số.
+
+---
+
+### 11.2. Xuất Chính Sách Triển Khai Đa Nền Tảng (`scripts/export_policy.py`)
+
+Công cụ `scripts/export_policy.py` tự động chuyển đổi checkpoint PyTorch thành các định dạng tối ưu trên phần cứng đích:
+
+```bash
+# Xuất mô hình từ checkpoint huấn luyện PPO:
+python scripts/export_policy.py --checkpoint models/checkpoints/microduck_ppo.pt
+```
+
+1. **Dành cho Raspberry Pi 5 (Float32 ONNX):**
+   - Xuất file ONNX: `models/microduck_rpi5_policy.onnx` (Input: `[1, 42]`, Output: `[1, 8]`, Opset 13).
+   - Tương thích hoàn toàn với ONNX Runtime trên Linux ARM64, độ sai lệch số học so với PyTorch $< 2 \times 10^{-7}$.
+2. **Dành cho Dual ESP32-S3 (INT8 C/C++ Headers):**
+   - Lượng tử hóa đối xứng trọng số thành `const int8_t` và bias thành `const int32_t`.
+   - Sinh file header trọng số: `pipelines/dual_esp32s3_stack/deployment/esp32_policy_weights.h` tích hợp hàm nội suy nhúng siêu tốc `evaluate_policy_int8()`.
+   - Sinh file cấu hình thang đo: `pipelines/dual_esp32s3_stack/deployment/esp32_quant_config.h` chứa mảng hằng số `OBS_CHANNEL_SCALES[42]` và `ACT_INV_SCALE`.
+   - Tương thích hoàn toàn với trình biên dịch `g++ / xtensa-esp32s3-elf-g++` không yêu cầu bất kỳ thư viện ngoài nào.
+
+---
+
+## 12. Hướng Dẫn Nạp & Triển Khai Trên Phần Cứng Thật (Deployment Guide)
+
+### 12.1. Triển Khai Trên Nhánh Raspberry Pi 5
 
 1. **Chuẩn bị môi trường trên Raspberry Pi OS (64-bit Lite):**
    ```bash
@@ -346,7 +424,9 @@ python training/run_parallel_sim.py --num_envs 128 --steps 100 --threads 4
    # Chọn Interface Options -> I2C -> Enable -> Reboot
    sudo i2cdetect -y 1  # Kiểm tra thấy địa chỉ 0x40 của PCA9685
    ```
-3. **Khởi chạy chương trình điều khiển thời gian thực:**
+3. **Đồng bộ hóa trạng thái hành động (`last_raw_actions`):**
+   - Trong `infer_rpi5.py`, biến `self.last_raw_actions` lưu giữ hành động chuẩn hóa $[-1.0, 1.0]$ của mạng Actor và đưa vào các chiều $25..32$ của vector quan sát (thay vì đưa góc radian), đảm bảo đồng bộ 100% với môi trường mô phỏng.
+4. **Khởi chạy chương trình điều khiển thời gian thực:**
    ```bash
    # Chạy chế độ mô phỏng kiểm thử an toàn (Mock PCA9685)
    python pipelines/rpi5_stack/deployment/infer_rpi5.py --mock-pca --rate 50
@@ -358,28 +438,32 @@ python training/run_parallel_sim.py --num_envs 128 --steps 100 --threads 4
 
 ---
 
-### 11.2. Triển Khai Trên Nhánh Dual ESP32-S3
+### 12.2. Triển Khai Trên Nhánh Dual ESP32-S3
 
 1. **Cài đặt công cụ lập trình:**
-   - Cài đặt **Arduino IDE 2.x** hoặc **ESP-IDF v5.x**.
-   - Cài đặt gói bo mạch `esp32` by Espressif Systems (phiên bản $\ge 2.0.14$).
+   - Cài đặt **Arduino IDE 2.x** hoặc **ESP-IDF v5.x** kèm gói bo mạch `esp32` ($\ge 2.0.14$).
    - Chọn Board: `ESP32S3 Dev Module`, Flash Size: `16MB`, PSRAM: `OPI PSRAM`.
-2. **Nối dây liên kết giữa 2 bo ESP32-S3:**
-   - Nối chéo UART2:
+2. **Phân tách bus I2C cho cụm 5-ray LiDAR trên MCU 1:**
+   - Để tránh xung đột phần cứng với bus SCCB của Camera OV2640 (GPIO 4: SIOD, GPIO 5: SIOC), cụm 5 cảm biến khoảng cách ToF VL53L1X được đấu nối vào **bus I2C chuyên biệt**:
+     - `PIN_I2C_SDA`: **GPIO 19**
+     - `PIN_I2C_SCL`: **GPIO 20**
+3. **Nối dây liên kết UART giữa 2 bo ESP32-S3:**
+   - Nối chéo UART2 ($921,600\text{ bps}$):
      - `MCU 1 GPIO 17 (TX)` $\rightarrow$ `MCU 2 GPIO 18 (RX)`
      - `MCU 1 GPIO 18 (RX)` $\leftarrow$ `MCU 2 GPIO 17 (TX)`
      - Nối chung đường mass `GND` giữa 2 bo mạch.
-3. **Nạp Firmware:**
+4. **Hiệu chỉnh IMU & Suy luận INT8 trên MCU 2:**
+   - **Đảo dấu vector trọng trường IMU:** Các trục gia tốc MPU6050 được đảo dấu (`-ax`, `-ay`, `-az`) kết hợp bộ lọc thông thấp số IIR ($\alpha = 0.80$), đảm bảo khi robot đứng thẳng, vector trọng trường đo được là $[0, 0, -1]$ khớp tuyệt đối với hệ quy chiếu MuJoCo.
+   - **Đồng bộ hóa `g_last_raw_actions`:** Mảng `g_last_raw_actions` $[-1.0, 1.0]$ được đưa vào các chiều $25..32$ của vector quan sát.
+   - **Suy luận trực tiếp INT8:** Hàm `evaluate_policy_int8()` thực thi nội suy mạng nơ-ron Actor trực tiếp trên MCU 2 trong thời gian $< 2.8\text{ ms}$, xuất 8 kênh xung PWM trực tiếp tới servo MG996R theo chu kỳ nghiêm ngặt $50\text{ Hz}$ ($20\text{ ms}$).
+5. **Nạp Firmware:**
    - **Nạp MCU 1:** Mở sketch [`pipelines/dual_esp32s3_stack/deployment/mcu1_vision_audio_s3/mcu1_main.ino`](file:///d:/duckV1/pipelines/dual_esp32s3_stack/deployment/mcu1_vision_audio_s3/mcu1_main.ino) và nhấn **Upload**.
    - **Nạp MCU 2:** Mở sketch [`pipelines/dual_esp32s3_stack/deployment/mcu2_locomotion_s3/mcu2_main.ino`](file:///d:/duckV1/pipelines/dual_esp32s3_stack/deployment/mcu2_locomotion_s3/mcu2_main.ino) và nhấn **Upload**.
-   - Header giao thức [`pipelines/dual_esp32s3_stack/deployment/uart_packet_protocol.h`](file:///d:/duckV1/pipelines/dual_esp32s3_stack/deployment/uart_packet_protocol.h) tự động đồng bộ cấu trúc gói tin có CRC16 giữa 2 vi điều khiển.
-4. **Lượng tử hóa mô hình INT8:**
-   - Dùng script chuyển đổi mạng nơ-ron Actor sang dạng bảng mảng hằng số `const int8_t policy_weights[]` đặt trực tiếp trong bộ nhớ Flash của MCU 2, kích hoạt tập lệnh SIMD/PIE của Xtensa LX7 để đạt tốc độ suy luận $< 3\text{ ms}$.
    *Chi tiết sơ đồ chân, mạch chia kênh và nguồn phân tầng xem tại:* [`pipelines/dual_esp32s3_stack/docs/dual_esp32s3_hardware_spec.md`](file:///d:/duckV1/pipelines/dual_esp32s3_stack/docs/dual_esp32s3_hardware_spec.md).
 
 ---
 
-## 12. Chạy Toàn Bộ Test Suite Tự Động (Project Test Suite)
+## 13. Chạy Toàn Bộ Test Suite Tự Động (Project Test Suite)
 
 Dự án sở hữu bộ kiểm thử tự động toàn diện thẩm định toàn bộ mô hình vật lý, cấu hình huấn luyện và mã nguồn triển khai:
 
@@ -388,10 +472,28 @@ pytest -v
 ```
 
 ### Các hạng mục kiểm thử tự động gồm:
-- **`test_rpi5_model.py`:** Thẩm định mô hình MJCF và URDF nhánh Pi 5 (ngân sách khối lượng $860\text{ g}$, 5 tia LiDAR, thấu kính camera, mic site).
-- **`test_esp32_model.py`:** Thẩm định mô hình MJCF và URDF nhánh ESP32 (ngân sách khối lượng $780\text{ g}$, CoM thấp, 5 tia LiDAR, camera, mic).
-- **`test_pipeline_training.py`:** Thẩm định vector quan sát 42 chiều, hàm thưởng né vật cản `obstacle_avoidance`, các hàm lượng tử hóa INT8 và runner song song của cả 2 nhánh.
-- **`test_deployment_artifacts.py`:** Thẩm định script Python `infer_rpi5.py`, biên dịch cú pháp C/C++ giao thức nhị phân `uart_packet_protocol.h`, kiểm tra sketch Arduino MCU 1 & MCU 2 và 2 bộ tài liệu đặc tả phần cứng.
-- **`test_mjcf_model.py` & `test_urdf_model.py`:** Thẩm định mô hình cơ sở.
-- **`test_parallel_runner.py` & `test_env_config.py`:** Thẩm định cấu hình môi trường gốc.
-- **`test_verify_script.py` & `test_interactive_viewer.py`:** Thẩm định script kiểm tra chéo và trình trực quan 3D.
+- **`test_rpi5_model.py`:** Thẩm định mô hình MJCF và URDF nhánh Pi 5 (ngân sách khối lượng $860\text{ g}$, 5 tia LiDAR, thấu kính camera, mic site, 4 cột chướng ngại vật).
+- **`test_esp32_model.py`:** Thẩm định mô hình MJCF và URDF nhánh ESP32 (ngân sách khối lượng $780\text{ g}$, CoM thấp, 5 tia LiDAR, camera, mic, 4 cột chướng ngại vật).
+- **`test_mjcf_model.py` & `test_urdf_model.py`:** Thẩm định cấu trúc hình học, quán tính và 4 cột chướng ngại vật của mô hình cơ sở.
+- **`test_env_config.py` & `test_pipeline_training.py`:** Thẩm định không gian quan sát 42 chiều, hàm thưởng né vật cản, hàm thưởng nhấc chân luân phiên `foot_contact`, lượng tử hóa INT8 và runner song song.
+- **`test_parallel_runner.py`:** Thẩm định `ParallelSimRunner` (Episode truncation 500 bước, domain randomization, aligned auto-reset, nhị phân hóa tiếp xúc chân).
+- **`test_ppo_training.py`:** Thẩm định mạng ActorCritic, GAE advantages, PPO dry-run CLI, xuất Float32 ONNX parity, và biên dịch C++ INT8 evaluation.
+- **`test_deployment_artifacts.py`:** Thẩm định runtime `infer_rpi5.py` (`last_raw_actions`), giao thức `uart_packet_protocol.h`, chân I2C GPIO 19/20 trong `mcu1_main.ino`, đảo dấu IMU và suy luận INT8 trong `mcu2_main.ino`, cùng 2 bộ tài liệu đặc tả phần cứng.
+- **`test_verify_script.py` & `test_interactive_viewer.py`:** Thẩm định script kiểm tra chéo và trình trực quan 3D tương tác.
+
+---
+
+## 14. Bảng Tổng Hợp 10 Điểm Nghẽn Kỹ Thuật Đã Được Khắc Phục (10 Technical Bottlenecks Summary)
+
+| STT | Điểm Nghẽn Kỹ Thuật (Bottleneck) | Nguyên Nhân Gốc Rễ (Root Cause) | Giải Pháp Kỹ Thuật Đã Triển Khai | Tệp Nguồn Ảnh Hưởng |
+| :---: | :--- | :--- | :--- | :--- |
+| **1** | **Thiếu vật cản trong mô hình MJCF** | Cảm biến LiDAR 5 tia quét vào hư không vô tận ($2.0\text{ m}$), robot không có đối tượng phản xạ để học né tránh. | Thêm 4 cột hình trụ `obstacle_*` (`size="0.08 0.25"`) vào `<worldbody>` cả 3 mô hình MJCF. | `models/mjcf/microduck_8dof.xml`, `pipelines/*/models/mjcf/*.xml` |
+| **2** | **Hàm thưởng tiếp xúc chân sơ sài** | Tính tổng đơn thuần tiếp xúc chân dẫn tới việc kéo lê 2 chân hoặc nhảy tâng tâng. | Thiết kế hàm thưởng dáng đi bipedal: thưởng $+1.0$ khi đúng 1 chân chạm sàn (di chuyển), thưởng $+0.5$ khi cả 2 chân chạm sàn (đứng yên). | `training/env_config.py`, `pipelines/*/training/env_config.py` |
+| **3** | **Không giới hạn độ dài tập mô phỏng** | Episode kéo dài vô tận khiến phân phối dữ liệu RL bị lệch, robot đứng yên tích điểm vô hạn. | Tích hợp Episode Truncation tại 500 bước ($10\text{ s}$ ở $50\text{ Hz}$), đánh dấu `infos["timeout"] = True` và kết thúc tập. | `training/run_parallel_sim.py`, `pipelines/*/training/run_parallel_sim.py` |
+| **4** | **Thiếu ngẫu nhiên hóa khi reset** | Mọi episode khởi tạo ở đúng một tư thế tĩnh và lệnh vận tốc cố định, policy kém tổng quát. | Ngẫu nhiên hóa góc khớp ban đầu $[-0.03, +0.03]\text{ rad}$ và lấy mẫu ngẫu nhiên lệnh vận tốc $[v_x, v_y, \omega_z]$ khi reset. | `training/run_parallel_sim.py`, `pipelines/*/training/run_parallel_sim.py` |
+| **5** | **Observation trả về lệch pha khi Done** | Khi done, runner trả về observation của trạng thái đã ngã thay vì trạng thái reset ban đầu, làm méo buffer RL. | Cập nhật tức thời `next_obs[i] = self.reset_env(i)` ngay trong hàm `step()` khi phát hiện done. | `training/run_parallel_sim.py`, `pipelines/*/training/run_parallel_sim.py` |
+| **6** | **Thiếu pipeline huấn luyện RL hoàn chỉnh** | Chưa có mã nguồn huấn luyện end-to-end cho mô hình 42 chiều quan sát và 8 hành động. | Xây dựng pipeline `scripts/train_ppo.py` hoàn chỉnh: Actor-Critic ($42 \to 256 \to 256 \to 8$), GAE, Clipped PPO và cờ `--dry-run`. | `scripts/train_ppo.py`, `tests/test_ppo_training.py` |
+| **7** | **Thiếu công cụ xuất mô hình đa nền tảng** | Khó khăn khi chuyển đổi mạng PyTorch sang phần cứng thật trên Linux Pi 5 và vi điều khiển ESP32-S3. | Xây dựng `scripts/export_policy.py`: xuất Float32 ONNX cho Pi 5 và INT8 C/C++ header nhúng (`evaluate_policy_int8`) cho ESP32-S3. | `scripts/export_policy.py`, `models/microduck_rpi5_policy.onnx`, `pipelines/dual_esp32s3_stack/deployment/*.h` |
+| **8** | **Lệch định dạng hành động bước trước** | Trên mạch thật đưa góc radian vào observation chiều $25..32$, trong khi mô phỏng học trên hành động $[-1.0, 1.0]$. | Chuẩn hóa mảng `last_raw_actions` lưu trữ giá trị chuẩn hóa $[-1.0, 1.0]$ trên cả `infer_rpi5.py` và `mcu2_main.ino`. | `pipelines/rpi5_stack/deployment/infer_rpi5.py`, `pipelines/dual_esp32s3_stack/deployment/mcu2_locomotion_s3/mcu2_main.ino` |
+| **9** | **Xung đột chân I2C LiDAR trên MCU 1** | Cụm 5 ToF LiDAR và SCCB của Camera OV2640 dùng chung GPIO 4/5 gây nghẽn và treo bus I2C. | Tách biệt hoàn toàn cụm LiDAR sang bus I2C chuyên dụng trên GPIO 19 (SDA) và GPIO 20 (SCL). | `pipelines/dual_esp32s3_stack/deployment/mcu1_vision_audio_s3/mcu1_main.ino`, `dual_esp32s3_hardware_spec.md` |
+| **10** | **Sai lệch dấu vector trọng trường IMU** | Chiều gia tốc đứng thẳng đo từ MPU6050 là $+1$, trong khi MuJoCo quy chiếu trọng trường là $-1$. | Đảo dấu các trục gia tốc (`-ax`, `-ay`, `-az`) kết hợp bộ lọc IIR $\alpha=0.80$, nhúng suy luận INT8 trực tiếp trên MCU 2. | `pipelines/dual_esp32s3_stack/deployment/mcu2_locomotion_s3/mcu2_main.ino` |

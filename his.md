@@ -104,3 +104,82 @@
 - **Kết quả:** **64 / 64 tests PASSED (100%)**
 - **Thời gian chạy:** 8.36 giây trên môi trường Python 3.14.
 - **Trạng thái Git:** Toàn bộ thay đổi đã được kiểm tra tính tương thích, mã sạch, không còn lỗi tiềm ẩn.
+
+---
+
+## 📌 Phiên Làm Việc: 2026-10-28 23:55:00+07:00 - Chiến Dịch Khắc Phục Toàn Diện 10 Điểm Nghẽn Kỹ Thuật (10 Technical Bottlenecks Campaign)
+
+Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to-Real trên robot MicroDuck 8-DOF, chia thành 5 giai đoạn triển khai tuần tự theo kế hoạch chuẩn hóa SDD:
+
+### Giai Đoạn 1: Chuẩn Hóa Vật Lý & Hàm Thưởng (Task 1)
+- **Commit:** `683c681` (`feat(sim): add lidar obstacles to mjcf models and update foot contact gait reward`)
+- **Điểm nghẽn 1: Thiếu vật cản trong mô hình MuJoCo MJCF**
+  - *Tệp ảnh hưởng:* `models/mjcf/microduck_8dof.xml`, `pipelines/rpi5_stack/models/mjcf/microduck_rpi5_8dof.xml`, `pipelines/dual_esp32s3_stack/models/mjcf/microduck_esp32_8dof.xml`.
+  - *Nguyên nhân:* Cụm cảm biến ToF LiDAR 5 tia quét vào không gian vô tận ($2.0\text{ m}$), mô hình không có mục tiêu phản xạ quang học và không có vật cản vật lý để học né tránh.
+  - *Khắc phục:* Bổ sung 4 cột chướng ngại vật dạng hình trụ `obstacle_front` ($[+0.8, 0, 0.25]$), `obstacle_left` ($[+0.5, +0.6, 0.25]$), `obstacle_right` ($[+0.5, -0.6, 0.25]$), `obstacle_back` ($[-0.6, 0, 0.25]$) với `size="0.08 0.25"` và `contype="1" conaffinity="1"` vào `<worldbody>`.
+- **Điểm nghẽn 2: Hàm thưởng tiếp xúc chân sơ sài**
+  - *Tệp ảnh hưởng:* `training/env_config.py`, `pipelines/*/training/env_config.py`, `tests/test_env_config.py`.
+  - *Nguyên nhân:* Tính tổng đơn thuần lực tiếp xúc khiến robot có xu hướng kéo lê 2 chân hoặc nhảy bổng hai chân để ăn điểm.
+  - *Khắc phục:* Thiết kế lại hàm thưởng dáng đi bipedal: khi có lệnh di chuyển ($v_{\text{cmd}} > 0.05\text{ m/s}$), chỉ thưởng $+1.0$ khi chính xác 1 chân tiếp đất (`num_contacts == 1`); khi robot dừng ($v_{\text{cmd}} \le 0.05\text{ m/s}$), thưởng $+0.5$ khi cả 2 chân tiếp đất (`num_contacts == 2`).
+
+### Giai Đoạn 2: Nâng Cấp Bộ Mô Phỏng Song Song (Task 2)
+- **Commit:** `b67b735` (`feat(sim): implement episode truncation, domain randomization and aligned auto-reset`)
+- **Điểm nghẽn 3: Episode kéo dài vô hạn không có giới hạn ngắt (Truncation)**
+  - *Tệp ảnh hưởng:* `training/run_parallel_sim.py`, `pipelines/*/training/run_parallel_sim.py`.
+  - *Nguyên nhân:* Episode không bị giới hạn thời gian làm phân phối dữ liệu huấn luyện bị lệch trọng số và robot có thể đứng yên tích lũy điểm thưởng vô hạn.
+  - *Khắc phục:* Thêm `max_episode_steps = 500` ($10\text{ s}$ ở $50\text{ Hz}$), đếm `episode_steps += 1`, kích hoạt cờ `timeouts` kết hợp vào `dones` và trả về `infos["timeout"] = True`.
+- **Điểm nghẽn 4: Thiếu ngẫu nhiên hóa miền không gian trạng thái (Domain Randomization)**
+  - *Tệp ảnh hưởng:* `training/run_parallel_sim.py`, `pipelines/*/training/run_parallel_sim.py`.
+  - *Nguyên nhân:* Robot luôn khởi tạo ở tư thế tĩnh lý tưởng và vận tốc mặc định, dẫn đến policy thiếu tính thích nghi khi gặp nhiễu vật lý thực tế.
+  - *Khắc phục:* Khi `reset_env`, áp dụng nhiễu đồng đều cho góc khớp $\Delta q \in [-0.03, +0.03]\text{ rad}$ (đảm bảo góc gập gối $\ge 0.0$) và lấy mẫu ngẫu nhiên lệnh vận tốc: $v_x \in [0.0, 0.25]\text{ m/s}$, $v_y \in [-0.08, 0.08]\text{ m/s}$, $\omega_z \in [-0.5, 0.5]\text{ rad/s}$.
+- **Điểm nghẽn 5: Quan sát lệch pha khi môi trường kết thúc (Out-of-Sync Done Observation)**
+  - *Tệp ảnh hưởng:* `training/run_parallel_sim.py`, `pipelines/*/training/run_parallel_sim.py`.
+  - *Nguyên nhân:* Khi môi trường bị `done`, observation trả về trong mảng `next_obs` là trạng thái robot đã ngã xuống sàn thay vì trạng thái reset của episode mới, làm sai lệch hàm cập nhật Bellman trong bộ đệm RL.
+  - *Khắc phục:* Cập nhật tức thời `next_obs[i] = self.reset_env(i)` ngay trong hàm `step()` khi phát hiện `dones[i] == True`, đồng thời đặt lại `last_actions[i] = 0.0`.
+
+### Giai Đoạn 3: Pipeline Huấn Luyện PPO & Xuất Mô Hình (Task 3)
+- **Commit:** `cd08bf9` (`feat(rl): implement ppo training pipeline and policy export for rpi5 onnx and esp32 int8`)
+- **Điểm nghẽn 6: Thiếu pipeline huấn luyện học tăng cường chuẩn mực**
+  - *Tệp ảnh hưởng:* `scripts/train_ppo.py`, `tests/test_ppo_training.py`.
+  - *Nguyên nhân:* Dự án chỉ có bộ mô phỏng mà chưa có module huấn luyện PPO chính thức tương thích với không gian quan sát 42 chiều và 8 hành động.
+  - *Khắc phục:* Xây dựng `scripts/train_ppo.py` với kiến trúc mạng nơ-ron Actor-Critic ($42 \to 256 \to 256 \to 8$), kích hoạt ELU, Orthogonal Initialization, Generalized Advantage Estimation (GAE $\gamma=0.99, \lambda=0.95$), Clipped surrogate objective ($\epsilon=0.2$), lưu checkpoint `.pt` và cờ `--dry-run` cho CI/CD.
+- **Điểm nghẽn 7: Thiếu công cụ xuất mô hình đa nền tảng**
+  - *Tệp ảnh hưởng:* `scripts/export_policy.py`, `models/microduck_rpi5_policy.onnx`, `pipelines/dual_esp32s3_stack/deployment/*.h`.
+  - *Nguyên nhân:* Khó khăn trong việc chuyển giao mạng Actor từ PyTorch sang định dạng nhúng trên Linux SBC và vi điều khiển.
+  - *Khắc phục:* Xây dựng `scripts/export_policy.py`:
+    * Xuất Float32 ONNX Opset 13 cho Raspberry Pi 5 (`models/microduck_rpi5_policy.onnx`), kiểm chứng sai số tuyệt đối $< 2 \times 10^{-7}$ so với PyTorch.
+    * Lượng tử hóa đối xứng INT8, sinh mảng trọng số `const int8_t` trong `esp32_policy_weights.h` và cấu hình `esp32_quant_config.h` (kèm hàm nhúng `evaluate_policy_int8`) cho Dual ESP32-S3, biên dịch C++ độc lập.
+
+### Giai Đoạn 4: Đồng Bộ Hóa Mã Nguồn Triển Khai Phần Cứng (Task 4)
+- **Commit:** `02a2ce9` (`fix(hardware): sync last_raw_actions, separate lidar i2c pins and correct imu gravity sign`)
+- **Điểm nghẽn 8: Lệch định dạng hành động bước trước (`last_raw_actions`)**
+  - *Tệp ảnh hưởng:* `pipelines/rpi5_stack/deployment/infer_rpi5.py`, `pipelines/dual_esp32s3_stack/deployment/mcu2_locomotion_s3/mcu2_main.ino`.
+  - *Nguyên nhân:* Trong mô phỏng, chiều $25..32$ của vector quan sát là hành động chuẩn hóa $[-1.0, 1.0]$. Tuy nhiên, trên mã nguồn chạy thật lại truyền góc radian mục tiêu $q_{\text{target}}$, làm sai lệch toàn bộ phân phối đầu vào của mạng nơ-ron.
+  - *Khắc phục:* Lưu trữ và cập nhật `last_raw_actions` chuẩn hóa $[-1.0, 1.0]$ ở cả Pi 5 (`infer_rpi5.py`) và MCU 2 (`mcu2_main.ino`).
+- **Điểm nghẽn 9: Xung đột bus I2C giữa LiDAR và Camera trên MCU 1**
+  - *Tệp ảnh hưởng:* `pipelines/dual_esp32s3_stack/deployment/mcu1_vision_audio_s3/mcu1_main.ino`, `dual_esp32s3_hardware_spec.md`.
+  - *Nguyên nhân:* Cụm 5 ToF LiDAR và giao tiếp SCCB của Camera OV2640 cùng dùng chung chân GPIO 4 và 5 gây nghẽn bus và treo hệ thống.
+  - *Khắc phục:* Tách cụm LiDAR 5 tia sang bus I2C chuyên biệt trên GPIO 19 (SDA) và GPIO 20 (SCL), giữ nguyên GPIO 4/5 cho camera.
+- **Điểm nghẽn 10: Sai lệch dấu vector trọng trường IMU & Suy luận INT8 trên MCU 2**
+  - *Tệp ảnh hưởng:* `pipelines/dual_esp32s3_stack/deployment/mcu2_locomotion_s3/mcu2_main.ino`, `tests/test_deployment_artifacts.py`.
+  - *Nguyên nhân:* Gia tốc trọng trường đọc từ MPU6050 hướng lên là $+1.0$, trong khi hệ quy chiếu MuJoCo là $-1.0$. Đồng thời MCU 2 thiếu mã suy luận mạng nơ-ron cục bộ.
+  - *Khắc phục:* Đảo dấu các trục gia tốc (`-ax`, `-ay`, `-az`) kết hợp bộ lọc số IIR thông thấp ($\alpha = 0.80$), nhúng trực tiếp hàm `evaluate_policy_int8()` để thực hiện suy luận cục bộ $< 2.8\text{ ms}$ tại $50\text{ Hz}$.
+
+### Giai Đoạn 5: Khôi Phục Công Cụ Trực Quan & Kiểm Thử Toàn Diện (Task 5)
+- **Tệp ảnh hưởng:**
+  - `scripts/interactive_viewer.py`
+  - `tests/test_interactive_viewer.py`
+  - `README.md`
+  - `his.md`
+- **Nội dung thực hiện:**
+  - Hoàn thiện `scripts/interactive_viewer.py`: Chuẩn hóa CLI parser, hỗ trợ trực quan hóa 3D passive viewer, tự động chuyển đổi chế độ headless mode khi không có màn hình hiển thị kèm báo cáo chỉ số thăng bằng, hỗ trợ dòng lệnh tương tác `--interactive` điều khiển góc từng khớp, hàm `main()` trả về mã thoát $0$.
+  - Mở rộng bộ kiểm thử `tests/test_interactive_viewer.py`: Bổ sung bài test kiểm tra hàm `main()` ở chế độ headless trả về $0$ và kiểm thử tự động toàn bộ chuỗi lệnh trong CLI viewer.
+  - Cập nhật toàn diện tài liệu `README.md` bằng tiếng Việt phản ánh đầy đủ 10 điểm nghẽn kỹ thuật, hướng dẫn huấn luyện PPO và triển khai mạch thật.
+  - Ghi nhận lịch sử chi tiết 10 điểm nghẽn kỹ thuật vào `his.md`.
+
+---
+
+### Kết Quả Kiểm Thử Toàn Diện Cuối Cùng (Final Test Suite Verification)
+- **Lệnh chạy:** `pytest -v`
+- **Kết quả:** **83 / 83 tests PASSED (100%)**
+- **Độ ổn định:** Toàn bộ các bài kiểm tra mô hình vật lý, môi trường mô phỏng song song, huấn luyện PPO, xuất mô hình ONNX/INT8, firmware Arduino C++, và công cụ trực quan 3D đều vượt qua tuyệt đối.

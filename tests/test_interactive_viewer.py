@@ -205,3 +205,36 @@ def test_reset_last_actions_fix():
                 )
     finally:
         runner.close()
+
+
+def test_interactive_viewer_main_headless(monkeypatch):
+    """Verify interactive_viewer main() function returns 0 in headless mode."""
+    from scripts.interactive_viewer import main
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["interactive_viewer.py", "--headless", "--duration", "0.05", "--dt", "0.005"],
+    )
+    exit_code = main()
+    assert exit_code == 0
+
+
+def test_interactive_viewer_cli_simulation(monkeypatch):
+    """Verify run_interactive_cli processes standard commands and exits gracefully."""
+    from scripts.interactive_viewer import run_interactive_cli
+
+    commands = iter([
+        "pose squat",
+        "set head_pitch 0.1",
+        "step 10",
+        "status",
+        "reset",
+        "help",
+        "quit",
+    ])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(commands))
+
+    # Should run and exit without raising an exception
+    run_interactive_cli(model_path="models/mjcf/microduck_8dof.xml", dt=0.005)
+
