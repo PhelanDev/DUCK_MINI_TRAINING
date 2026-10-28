@@ -295,7 +295,6 @@ class ParallelSimRunner:
         if np.any(dones):
             for i in np.where(dones)[0]:
                 self.reset_env(i)
-            self.last_actions[dones] = 0.0
 
         self.last_actions[:] = actions
         if np.any(dones):
