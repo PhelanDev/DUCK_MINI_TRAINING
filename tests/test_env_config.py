@@ -12,6 +12,7 @@ from training.env_config import (
     scale_actions,
     clip_action_rates,
     compute_rewards,
+    quat_rotate_inverse,
     _DEFAULT_CFG,
 )
 
@@ -233,3 +234,87 @@ def test_reward_action_rate_penalty():
     assert r_diff["total_reward"] < r_same["total_reward"]
     # Verify expected math: difference is -0.01 * 32.0 = -0.32
     assert np.isclose(r_same["total_reward"] - r_diff["total_reward"], 0.32)
+
+
+def test_quat_rotate_inverse_frame_transformation():
+    """Verify transforming world frame velocity to body frame across orientations."""
+    # 1. Identity quaternion -> no rotation
+    q_ident = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    v_world = np.array([1.0, 0.5, -0.2], dtype=np.float32)
+    np.testing.assert_allclose(quat_rotate_inverse(q_ident, v_world), v_world, atol=1e-6)
+
+    # 2. Robot yawed 90 degrees (+Z axis): facing +Y in world frame
+    # When moving along +Y in world frame, velocity in robot body frame must be forward (+X)
+    q_yaw90 = np.array([np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)], dtype=np.float32)
+    v_world_y = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    v_body = quat_rotate_inverse(q_yaw90, v_world_y)
+    np.testing.assert_allclose(v_body, [1.0, 0.0, 0.0], atol=1e-6)
+
+    # 3. Robot yawed 180 degrees (+Z axis): facing -X in world frame
+    # When moving along -X in world frame, velocity in robot body frame must be forward (+X)
+    q_yaw180 = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    v_world_nx = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    v_body_180 = quat_rotate_inverse(q_yaw180, v_world_nx)
+    np.testing.assert_allclose(v_body_180, [1.0, 0.0, 0.0], atol=1e-6)
+
+    # 4. Batched orientation test (shape (N, 3))
+    q_batch = np.stack([q_ident, q_yaw90, q_yaw180])
+    v_batch = np.stack([v_world, v_world_y, v_world_nx])
+    v_batch_body = quat_rotate_inverse(q_batch, v_batch)
+    assert v_batch_body.shape == (3, 3)
+    np.testing.assert_allclose(v_batch_body[1], [1.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(v_batch_body[2], [1.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_batched_compute_rewards_equivalence():
+    """Verify batched compute_rewards produces identical values to single-env loop."""
+    num_envs = 5
+    base_lin = np.random.uniform(-1.0, 1.0, size=(num_envs, 3)).astype(np.float32)
+    cmd_lin = np.random.uniform(-1.0, 1.0, size=(num_envs, 3)).astype(np.float32)
+    base_ang = np.random.uniform(-1.0, 1.0, size=(num_envs, 3)).astype(np.float32)
+    cmd_ang = np.random.uniform(-1.0, 1.0, size=(num_envs,)).astype(np.float32)
+    grav = np.random.uniform(-1.0, 1.0, size=(num_envs, 3)).astype(np.float32)
+    torques = np.random.uniform(-1.0, 1.0, size=(num_envs, 8)).astype(np.float32)
+    j_vel = np.random.uniform(-1.0, 1.0, size=(num_envs, 8)).astype(np.float32)
+    f_contact = np.random.uniform(0.0, 1.0, size=(num_envs, 4)).astype(np.float32)
+    actions = np.random.uniform(-1.0, 1.0, size=(num_envs, 8)).astype(np.float32)
+    last_act = np.random.uniform(-1.0, 1.0, size=(num_envs, 8)).astype(np.float32)
+
+    # Batched execution
+    batch_rewards = compute_rewards(
+        base_lin_vel=base_lin,
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=cmd_ang,
+        proj_gravity=grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=f_contact,
+        actions=actions,
+        last_actions=last_act,
+    )
+
+    # Sequential execution
+    for i in range(num_envs):
+        single_r = compute_rewards(
+            base_lin_vel=base_lin[i],
+            cmd_lin_vel=cmd_lin[i],
+            base_ang_vel=base_ang[i],
+            cmd_ang_vel=cmd_ang[i],
+            proj_gravity=grav[i],
+            joint_torques=torques[i],
+            joint_vel=j_vel[i],
+            foot_contact=f_contact[i],
+            actions=actions[i],
+            last_actions=last_act[i],
+        )
+        assert np.isclose(batch_rewards["total_reward"][i], single_r["total_reward"], atol=1e-5)
+        assert np.isclose(batch_rewards["tracking_lin_vel"][i], single_r["tracking_lin_vel"], atol=1e-5)
+        assert np.isclose(batch_rewards["upright"][i], single_r["upright"], atol=1e-5)
+
+
+def test_pd_gains_config():
+    """Verify KP and KD are standardized in MicroDuck8DoFConfig."""
+    cfg = MicroDuck8DoFConfig()
+    assert hasattr(cfg, "KP") and cfg.KP == 25.0
+    assert hasattr(cfg, "KD") and cfg.KD == 0.8

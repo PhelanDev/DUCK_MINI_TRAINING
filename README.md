@@ -213,10 +213,31 @@ Hàm thưởng được tổng hợp từ các thành phần cân bằng:
 
 $$R_{\text{total}} = w_v R_{\text{lin\_vel}} + w_\omega R_{\text{ang\_vel}} + w_u R_{\text{upright}} + w_c R_{\text{contact}} - w_\tau P_{\text{torque}} - w_{\Delta a} P_{\text{action\_rate}}$$
 
-- **Bám vận tốc dài ($R_{\text{lin\_vel}}$):** $\exp\left(-\frac{\|v_{xy} - v_{xy}^{\text{cmd}}\|^2}{0.25}\right)$
+- **Bám vận tốc dài ($R_{\text{lin\_vel}}$):** $\exp\left(-\frac{\|v_{xy}^{\text{body}} - v_{xy}^{\text{cmd}}\|^2}{0.25}\right)$ — *Lưu ý quan trọng:* Vận tốc dài $v_{xy}^{\text{body}}$ phải được chiếu từ hệ tọa độ Thế giới (World Frame `d.qvel[0:3]`) về hệ tọa độ Thân (Body Frame) qua nghịch đảo quaternion $q^{-1}$ (`quat_rotate_inverse`) trước khi so sánh với lệnh vận tốc tiến/lùi $v_{xy}^{\text{cmd}}$.
 - **Bám vận tốc quay ($R_{\text{ang\_vel}}$):** $\exp\left(-\frac{(\omega_z - \omega_z^{\text{cmd}})^2}{0.25}\right)$
 - **Giữ thân thẳng đứng ($R_{\text{upright}}$):** Khuyến khích véc-tơ trọng trường chiếu $g_z \to -1$.
 - **Phạt rung giật & quá tải ($P_{\text{torque}}, P_{\text{action\_rate}}$):** Tối thiểu hóa năng lượng và gia tốc giật để đảm bảo Sim-to-Real an toàn.
+
+### 8.4. Cảnh Báo Phần Cứng Thực Tế: Sim-to-Real Với Servo RC PWM vs Smart Bus Servo
+
+> [!WARNING]
+> **Khoảng cách Sim-to-Real chí mạng giữa mô phỏng và đời thực đối với Servo RC PWM:**
+> Trong không gian quan sát 37 chiều (hoặc 42 chiều), có tới **16 chiều** đại diện cho trạng thái nội tại của robot gồm `joint_pos` (8 chiều) và `joint_vel` (8 chiều).
+
+1. **Vấn đề "Mù" Trạng Thái Khớp trên Servo RC PWM (MG996R + PCA9685):**
+   - Servo RC PWM truyền thống chỉ nhận tín hiệu xung 1 chiều từ PCA9685 ($500\mu\text{s} - 2500\mu\text{s}$) và **hoàn toàn không có đường truyền trả lời về góc quay thực tế**.
+   - Nếu đưa policy huấn luyện từ mô phỏng ra robot thật sử dụng MG996R mà không có encoder phản hồi, việc nhét góc đặt cũ $a_{t-1}$ vào làm `joint_pos` và tính sai phân làm `joint_vel` sẽ làm mạng RL bị **mù trạng thái tải thực tế**. Khi một chân bị cản trở hoặc sụp tải trọng, robot không nhận biết được độ lệch góc và sẽ ngã sấp mặt ngay lập tức.
+2. **Hai Phương Án Xử Lý Cho Đồ Án & Thực Tế:**
+   - **Phương án A (Độ chiết áp MG996R - Tiết kiệm chi phí):** Tháo nắp đáy servo MG996R, hàn câu 1 sợi dây từ chân giữa của chiết áp (Wiper) đưa về kênh ADC của vi điều khiển (ESP32-S3 hoặc chip ADC 16-bit ADS1115 qua I2C) để đo trực tiếp điện áp tỷ lệ với góc khớp.
+   - **Phương án B (Khuyến nghị chuẩn công nghiệp - Smart Serial Bus Servo):** Thay thế cụm MG996R + PCA9685 bằng dòng Smart Bus Servo có encoder từ tính 12-bit (như **Feetech SCS0009** $2.3\text{ kg}\cdot\text{cm}$ cho bản nhẹ, hoặc **Feetech STS3215 / Waveshare ST3215** $19\text{ kg}\cdot\text{cm}$ cho bản chuẩn) giao tiếp UART Half-Duplex $1\text{ Mbps}$. Giao thức này cho phép đọc đồng thời cả vị trí góc thực tế, tốc độ, dòng tải và nhiệt độ của 8 khớp trong thời gian $< 2\text{ ms}$, đảm bảo khớp hoàn toàn với 16 chiều proprioceptive state trong mạng RL.
+
+### 8.5. Cảm Biến Bàn Chân & Mở Rộng 5 Tia LiDAR (Perception Stack)
+
+- **Cảm biến tiếp xúc bàn chân (Foot Contact - 4 chiều):**
+  - Không gian quan sát chuẩn hóa 4 chiều `[left_toe, left_heel, right_toe, right_heel]` dành sẵn cho thiết kế bàn chân phân biệt mũi/gót.
+  - Trên mô hình XML cơ bản, mỗi bàn chân sử dụng 1 cảm biến tiếp đất ở tâm bàn chân (`left_foot_touch_site`, `right_foot_touch_site`), 2 chiều cuối được đệm giá trị `0.0`. Khi triển khai suy luận tối ưu trên ESP32-S3, có thể thu gọn xuống 2 chiều (tổng 35 chiều) để giảm bớt phép nhân ma trận trên tập lệnh PIE INT8.
+- **Tích hợp LiDAR 5 tia (42 chiều):**
+  - Nhánh nâng cao (`rpi5_stack` và `dual_esp32s3_stack`) bổ sung 5 tia cảm biến khoảng cách `<rangefinder>` (quét góc quạt ngang $[-30^\circ, -15^\circ, 0^\circ, +15^\circ, +30^\circ]$ đặt tại vị trí `d.sensordata[28:33]`), mở rộng vector quan sát lên **42 chiều** để thực hiện tác vụ bám lệnh kết hợp né vật cản thời gian thực.
 
 ---
 

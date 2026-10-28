@@ -127,3 +127,37 @@ def test_parallel_sim_cli_invalid_path():
     )
     assert res.returncode != 0
     assert "Error during parallel simulation" in res.stderr
+
+
+def test_parallel_sim_body_frame_velocity_tracking():
+    """Verify linear velocity is projected to body frame so yaw rotation tracks correctly."""
+    runner = ParallelSimRunner(
+        model_path="models/mjcf/microduck_8dof.xml",
+        num_envs=2,
+    )
+    try:
+        runner.reset()
+        # Env 0: Robot facing world +X (identity quat), moving forward along +X at 0.5 m/s
+        # Target command: [0.5, 0.0, 0.0]
+        runner.commands[0] = [0.5, 0.0, 0.0]
+        runner.datas[0].qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+        runner.datas[0].qvel[0:3] = [0.5, 0.0, 0.0]
+
+        # Env 1: Robot rotated 90 deg (yaw +pi/2, facing world +Y), moving along world +Y at 0.5 m/s
+        # In body frame, this is forward velocity vx = 0.5 m/s!
+        runner.commands[1] = [0.5, 0.0, 0.0]
+        runner.datas[1].qpos[3:7] = [np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)]
+        runner.datas[1].qvel[0:3] = [0.0, 0.5, 0.0]
+
+        # Step with zero action (hold)
+        actions = np.zeros((2, 8), dtype=np.float32)
+        next_obs, rewards, dones, infos = runner.step(actions)
+
+        # Both environments must have matching tracking reward, invariant to yaw orientation!
+        r0 = infos[0]["tracking_lin_vel"]
+        r1 = infos[1]["tracking_lin_vel"]
+        assert r0 > 0.5, f"Env 0 tracking reward should be > 0.5, got {r0}"
+        assert r1 > 0.5, f"Env 1 (yaw 90) tracking reward should be > 0.5, got {r1}"
+        np.testing.assert_allclose(r0, r1, atol=1e-4, err_msg=f"Yaw-invariant rewards must match: {r0} vs {r1}")
+    finally:
+        runner.close()

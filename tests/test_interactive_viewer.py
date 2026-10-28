@@ -152,6 +152,19 @@ def test_interactive_viewer_gait_demo_headless():
     assert metrics["is_stable"] is True
 
 
+def test_interactive_viewer_pd_gains_sync():
+    """Verify interactive viewer PD gains match MicroDuck8DoFConfig."""
+    import inspect
+    from scripts.interactive_viewer import apply_pd_control
+    from training.env_config import _DEFAULT_CFG
+
+    sig = inspect.signature(apply_pd_control)
+    kp_default = sig.parameters["kp"].default
+    kd_default = sig.parameters["kd"].default
+    assert kp_default == _DEFAULT_CFG.KP == 25.0
+    assert kd_default == _DEFAULT_CFG.KD == 0.8
+
+
 def test_reset_last_actions_fix():
     """Test the deferred item: runner.last_actions[dones] is zeroed when envs reset."""
     from training.run_parallel_sim import ParallelSimRunner

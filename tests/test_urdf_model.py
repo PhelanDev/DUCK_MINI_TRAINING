@@ -1,5 +1,6 @@
 import os
 import xml.etree.ElementTree as ET
+import numpy as np
 import pytest
 
 def test_urdf_structure_and_actuators():
@@ -115,3 +116,25 @@ def test_urdf_mujoco_compilation():
     
     # 8 revolute joints
     assert model.nu == 8 or model.njnt >= 8
+
+
+def test_urdf_head_link_com_synchronization():
+    """Verify head_link CoM matches between all URDF models and MJCF box definitions."""
+    urdf_paths = [
+        os.path.join(os.path.dirname(__file__), "..", "models", "urdf", "microduck_8dof.urdf"),
+        os.path.join(os.path.dirname(__file__), "..", "pipelines", "rpi5_stack", "models", "urdf", "microduck_rpi5_8dof.urdf"),
+        os.path.join(os.path.dirname(__file__), "..", "pipelines", "dual_esp32s3_stack", "models", "urdf", "microduck_esp32_8dof.urdf"),
+    ]
+
+    for p in urdf_paths:
+        tree = ET.parse(p)
+        root = tree.getroot()
+        head_link = [l for l in root.iter("link") if l.attrib.get("name") == "head_link"][0]
+        origin = head_link.find("inertial").find("origin")
+        xyz = [float(x) for x in origin.attrib["xyz"].split()]
+        np.testing.assert_allclose(
+            xyz,
+            [0.010, 0.0, 0.0225],
+            atol=1e-5,
+            err_msg=f"head_link CoM in {p} must be [0.010, 0, 0.0225]",
+        )
