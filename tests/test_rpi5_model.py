@@ -230,3 +230,19 @@ def test_rpi5_urdf_mujoco_compilation():
     data = mujoco.MjData(model)
     mujoco.mj_step(model, data)
     assert model.nu == 8 or model.njnt >= 8
+
+
+def test_rpi5_mjcf_obstacles():
+    assert os.path.exists(MJCF_PATH), f"MJCF model not found: {MJCF_PATH}"
+    tree = ET.parse(MJCF_PATH)
+    root = tree.getroot()
+    worldbody = root.find("worldbody")
+    assert worldbody is not None
+    obstacle_names = {"obstacle_front", "obstacle_left", "obstacle_right", "obstacle_back"}
+    geoms = {g.attrib.get("name"): g for g in worldbody.findall("geom")}
+    for name in obstacle_names:
+        assert name in geoms, f"Missing {name} obstacle in worldbody"
+        geom = geoms[name]
+        assert geom.attrib.get("type") == "cylinder"
+        assert geom.attrib.get("contype") == "1"
+        assert geom.attrib.get("conaffinity") == "1"

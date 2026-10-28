@@ -318,3 +318,83 @@ def test_pd_gains_config():
     cfg = MicroDuck8DoFConfig()
     assert hasattr(cfg, "KP") and cfg.KP == 25.0
     assert hasattr(cfg, "KD") and cfg.KD == 0.8
+
+
+def test_foot_contact_gait_reward():
+    """Verify alternating foot contact reward during locomotion and double support when stationary."""
+    base_lin_vel = np.zeros(3, dtype=np.float32)
+    base_ang_vel = np.zeros(3, dtype=np.float32)
+    proj_gravity = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+    joint_torques = np.zeros(8, dtype=np.float32)
+    joint_vel = np.zeros(8, dtype=np.float32)
+
+    # 1. Moving command (cmd_speed > 0.05)
+    cmd_moving = np.array([0.3, 0.0, 0.0], dtype=np.float32)
+
+    # 1 foot in contact -> reward = 1.0
+    r_single = compute_rewards(
+        base_lin_vel=base_lin_vel,
+        cmd_lin_vel=cmd_moving,
+        base_ang_vel=base_ang_vel,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_gravity,
+        joint_torques=joint_torques,
+        joint_vel=joint_vel,
+        foot_contact=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    assert r_single["foot_contact"] == 1.0
+
+    # 2 feet in contact -> reward = 0.0
+    r_double = compute_rewards(
+        base_lin_vel=base_lin_vel,
+        cmd_lin_vel=cmd_moving,
+        base_ang_vel=base_ang_vel,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_gravity,
+        joint_torques=joint_torques,
+        joint_vel=joint_vel,
+        foot_contact=np.array([1.0, 1.0, 0.0, 0.0]),
+    )
+    assert r_double["foot_contact"] == 0.0
+
+    # 0 feet in contact -> reward = 0.0
+    r_none = compute_rewards(
+        base_lin_vel=base_lin_vel,
+        cmd_lin_vel=cmd_moving,
+        base_ang_vel=base_ang_vel,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_gravity,
+        joint_torques=joint_torques,
+        joint_vel=joint_vel,
+        foot_contact=np.zeros(4),
+    )
+    assert r_none["foot_contact"] == 0.0
+
+    # 2. Stationary command (cmd_speed <= 0.05)
+    cmd_stationary = np.zeros(3, dtype=np.float32)
+
+    # 2 feet in contact -> reward = 0.5
+    r_stand = compute_rewards(
+        base_lin_vel=base_lin_vel,
+        cmd_lin_vel=cmd_stationary,
+        base_ang_vel=base_ang_vel,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_gravity,
+        joint_torques=joint_torques,
+        joint_vel=joint_vel,
+        foot_contact=np.array([1.0, 1.0, 0.0, 0.0]),
+    )
+    assert r_stand["foot_contact"] == 0.5
+
+    # 1 foot in contact while stationary -> reward = 0.0
+    r_stand_single = compute_rewards(
+        base_lin_vel=base_lin_vel,
+        cmd_lin_vel=cmd_stationary,
+        base_ang_vel=base_ang_vel,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_gravity,
+        joint_torques=joint_torques,
+        joint_vel=joint_vel,
+        foot_contact=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    assert r_stand_single["foot_contact"] == 0.0

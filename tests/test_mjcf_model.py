@@ -75,3 +75,19 @@ def test_mujoco_compilation():
     # Total mass ~ 780g (0.78 kg) +/- 10%
     total_mass = sum(model.body_mass)
     assert 0.70 <= total_mass <= 0.85, f"Expected total mass ~0.78kg, got {total_mass:.3f}kg"
+
+
+def test_mjcf_obstacles():
+    xml_path = os.path.join(os.path.dirname(__file__), "..", "models", "mjcf", "microduck_8dof.xml")
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    worldbody = root.find("worldbody")
+    assert worldbody is not None
+    obstacle_names = {"obstacle_front", "obstacle_left", "obstacle_right", "obstacle_back"}
+    geoms = {g.attrib.get("name"): g for g in worldbody.findall("geom")}
+    for name in obstacle_names:
+        assert name in geoms, f"Missing {name} obstacle in worldbody"
+        geom = geoms[name]
+        assert geom.attrib.get("type") == "cylinder"
+        assert geom.attrib.get("contype") == "1"
+        assert geom.attrib.get("conaffinity") == "1"

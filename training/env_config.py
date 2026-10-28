@@ -265,8 +265,15 @@ def compute_rewards(
             np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
         )
 
-    # 7. Foot contact reward (encourages stable stance phase)
-    r_foot_contact = np.sum(f_contact > 0.0, axis=-1).astype(np.float32)
+    # 7. Foot contact reward (khuyến khích nhấc chân luân phiên khi di chuyển)
+    num_contacts = np.sum(f_contact > 0.0, axis=-1)
+    cmd_speed = np.linalg.norm(cmd_lin[..., :2], axis=-1) + np.abs(target_yaw)
+    is_moving_cmd = cmd_speed > 0.05
+    r_foot_contact = np.where(
+        is_moving_cmd,
+        (num_contacts == 1).astype(np.float32),
+        (num_contacts == 2).astype(np.float32) * 0.5,
+    ).astype(np.float32)
 
     # 8. Obstacle avoidance reward / penalty
     if lidar_ranges is not None:
