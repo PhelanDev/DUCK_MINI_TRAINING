@@ -12,6 +12,7 @@ from training.env_config import (
     scale_actions,
     clip_action_rates,
     compute_rewards,
+    _DEFAULT_CFG,
 )
 
 
@@ -74,9 +75,23 @@ def test_observation_packing():
     np.testing.assert_allclose(obs[33:37], foot_contact)
 
 
+def test_observation_defensive_shape_check():
+    # Provide wrong size joint positions (7 instead of 8)
+    with pytest.raises(AssertionError, match="Expected observation shape \\(37,\\)"):
+        compute_observations(
+            base_ang_vel=np.zeros(3),
+            proj_grav=np.zeros(3),
+            commands=np.zeros(3),
+            joint_pos=np.zeros(7),  # Wrong size!
+            joint_vel=np.zeros(8),
+            last_actions=np.zeros(8),
+            foot_contact=np.zeros(4),
+        )
+
+
 def test_action_scaling():
     cfg = MicroDuck8DoFConfig()
-    
+
     # -1 should map to low limits, +1 to high limits, 0 to midpoints
     raw_min = -np.ones(8, dtype=np.float32)
     scaled_min = scale_actions(raw_min, cfg)
@@ -98,6 +113,10 @@ def test_action_scaling():
     for i, name in enumerate(cfg.JOINT_NAMES):
         low, high = cfg.JOINT_LIMITS[name]
         assert low <= scaled_overflow[i] <= high
+
+    # Default cached configuration test (no cfg passed)
+    scaled_default = scale_actions(raw_min)
+    np.testing.assert_allclose(scaled_default, _DEFAULT_CFG.low_limits)
 
 
 def test_clip_action_rates():
@@ -147,6 +166,8 @@ def test_reward_computation():
     assert "upright" in rewards
     assert "torque_penalty" in rewards
     assert "joint_vel_penalty" in rewards
+    assert "action_rate_penalty" in rewards
+    assert rewards["action_rate_penalty"] == 0.0
 
     # When tracking is perfect, upright is vertical, torques are 0, reward should be high
     perfect_total = rewards["total_reward"]
@@ -163,3 +184,52 @@ def test_reward_computation():
         foot_contact=np.zeros(4),
     )
     assert bad_rewards["total_reward"] < perfect_total
+
+
+def test_reward_action_rate_penalty():
+    base_lin_vel = np.array([0.5, 0.0, 0.0], dtype=np.float32)
+    cmd_lin_vel = np.array([0.5, 0.0, 0.0], dtype=np.float32)
+    base_ang_vel = np.zeros(3, dtype=np.float32)
+    cmd_ang_vel = np.zeros(3, dtype=np.float32)
+    proj_gravity = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+    joint_torques = np.zeros(8, dtype=np.float32)
+    joint_vel = np.zeros(8, dtype=np.float32)
+    foot_contact = np.ones(4, dtype=np.float32)
+
+    # Identical actions -> penalty is 0.0
+    actions_same = np.ones(8, dtype=np.float32) * 0.5
+    last_actions_same = np.ones(8, dtype=np.float32) * 0.5
+    r_same = compute_rewards(
+        base_lin_vel=base_lin_vel,
+        cmd_lin_vel=cmd_lin_vel,
+        base_ang_vel=base_ang_vel,
+        cmd_ang_vel=cmd_ang_vel,
+        proj_gravity=proj_gravity,
+        joint_torques=joint_torques,
+        joint_vel=joint_vel,
+        foot_contact=foot_contact,
+        actions=actions_same,
+        last_actions=last_actions_same,
+    )
+    assert r_same["action_rate_penalty"] == 0.0
+
+    # Large action shift -> non-zero penalty reduces total reward
+    actions_diff = np.ones(8, dtype=np.float32) * 1.0
+    last_actions_diff = -np.ones(8, dtype=np.float32) * 1.0
+    # diff = 2.0 each, diff^2 = 4.0 * 8 = 32.0
+    r_diff = compute_rewards(
+        base_lin_vel=base_lin_vel,
+        cmd_lin_vel=cmd_lin_vel,
+        base_ang_vel=base_ang_vel,
+        cmd_ang_vel=cmd_ang_vel,
+        proj_gravity=proj_gravity,
+        joint_torques=joint_torques,
+        joint_vel=joint_vel,
+        foot_contact=foot_contact,
+        actions=actions_diff,
+        last_actions=last_actions_diff,
+    )
+    assert np.isclose(r_diff["action_rate_penalty"], 32.0)
+    assert r_diff["total_reward"] < r_same["total_reward"]
+    # Verify expected math: difference is -0.01 * 32.0 = -0.32
+    assert np.isclose(r_same["total_reward"] - r_diff["total_reward"], 0.32)

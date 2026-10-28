@@ -73,6 +73,10 @@ class MicroDuck8DoFConfig:
         )
 
 
+# Module-level cached configuration for high-frequency simulation steps
+_DEFAULT_CFG = MicroDuck8DoFConfig()
+
+
 def compute_observations(
     base_ang_vel: np.ndarray,
     proj_grav: np.ndarray,
@@ -94,7 +98,7 @@ def compute_observations(
     - Feet contact sensors (4)
     Total = 37 dims.
     """
-    return np.concatenate(
+    obs = np.concatenate(
         [
             np.asarray(base_ang_vel, dtype=np.float32).ravel(),
             np.asarray(proj_grav, dtype=np.float32).ravel(),
@@ -107,6 +111,9 @@ def compute_observations(
         axis=-1,
     ).astype(np.float32)
 
+    assert obs.shape == (37,), f"Expected observation shape (37,), got {obs.shape}"
+    return obs
+
 
 def scale_actions(
     raw_actions: np.ndarray,
@@ -117,7 +124,7 @@ def scale_actions(
     Safely clips outputs to respect the hardware limits of each MG996R joint.
     """
     if cfg is None:
-        cfg = MicroDuck8DoFConfig()
+        cfg = _DEFAULT_CFG
 
     actions = np.asarray(raw_actions, dtype=np.float32)
     clipped_actions = np.clip(actions, -1.0, 1.0)
@@ -156,11 +163,13 @@ def compute_rewards(
     joint_torques: np.ndarray,
     joint_vel: np.ndarray,
     foot_contact: np.ndarray,
+    actions: Optional[np.ndarray] = None,
+    last_actions: Optional[np.ndarray] = None,
     weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """Compute balanced reward terms and total reward for RL training."""
     if weights is None:
-        weights = MicroDuck8DoFConfig().REWARD_WEIGHTS
+        weights = _DEFAULT_CFG.REWARD_WEIGHTS
 
     base_lin = np.asarray(base_lin_vel, dtype=np.float32)
     cmd_lin = np.asarray(cmd_lin_vel, dtype=np.float32)
@@ -198,7 +207,15 @@ def compute_rewards(
     # 5. Joint velocity smoothing penalty
     r_joint_vel_penalty = float(np.sum(np.square(j_vel)))
 
-    # 6. Foot contact reward (encourages stable stance phase)
+    # 6. Action rate penalty (protects MG996R gears against jerky policy outputs)
+    if actions is not None and last_actions is not None:
+        act = np.asarray(actions, dtype=np.float32)
+        last_act = np.asarray(last_actions, dtype=np.float32)
+        r_action_rate_penalty = float(np.sum(np.square(act - last_act)))
+    else:
+        r_action_rate_penalty = 0.0
+
+    # 7. Foot contact reward (encourages stable stance phase)
     r_foot_contact = float(np.sum(f_contact > 0.0))
 
     total = float(
@@ -207,6 +224,7 @@ def compute_rewards(
         + weights.get("upright", 1.0) * r_upright
         + weights.get("torque_penalty", -0.001) * r_torque_penalty
         + weights.get("joint_vel_penalty", -0.0001) * r_joint_vel_penalty
+        + weights.get("action_rate_penalty", -0.01) * r_action_rate_penalty
         + weights.get("foot_contact", 0.1) * r_foot_contact
     )
 
@@ -217,5 +235,6 @@ def compute_rewards(
         "upright": r_upright,
         "torque_penalty": r_torque_penalty,
         "joint_vel_penalty": r_joint_vel_penalty,
+        "action_rate_penalty": r_action_rate_penalty,
         "foot_contact": r_foot_contact,
     }
