@@ -175,6 +175,42 @@ def compute_gae(
     return advantages, returns
 
 
+def apply_timeout_bootstrap(
+    rewards: torch.Tensor,
+    time_outs: torch.Tensor,
+    terminal_values: torch.Tensor,
+    gamma: float = 0.99,
+) -> torch.Tensor:
+    """Bootstrap value into reward for time-limit truncations.
+
+    When an environment reaches its time limit (time_outs=True), it is truncated
+    rather than reaching an absorbing terminal failure state. Adding gamma * V(s_terminal)
+    to the immediate reward ensures continuation value is accounted for in GAE returns.
+
+    Args:
+        rewards: Tensor of shape (num_envs,)
+        time_outs: Boolean tensor of shape (num_envs,)
+        terminal_values: Critic estimates for timed-out envs (shape (num_timeouts,) or (num_envs,))
+        gamma: Discount factor
+
+    Returns:
+        Adjusted rewards tensor with bootstrapped values added at timed-out indices.
+    """
+    out = rewards.clone()
+    if not time_outs.any():
+        return out
+
+    vals = terminal_values.squeeze(-1) if terminal_values.dim() > 1 else terminal_values
+    num_timeouts = int(time_outs.sum().item())
+    if vals.numel() == num_timeouts:
+        out[time_outs] += gamma * vals.to(rewards.device, dtype=rewards.dtype)
+    elif vals.numel() == rewards.numel():
+        out[time_outs] += gamma * vals[time_outs].to(rewards.device, dtype=rewards.dtype)
+    else:
+        raise ValueError(f"Shape mismatch: {vals.shape} vs num timeouts {num_timeouts}")
+    return out
+
+
 def train_ppo(
     model_path: Union[str, Path] = DEFAULT_MODEL_PATH,
     num_envs: int = 64,
@@ -279,14 +315,34 @@ def train_ppo(
                 actions_np = actions.cpu().numpy()
                 actions_clamped = np.clip(actions_np, -1.0, 1.0)
 
-                next_obs_np, rewards_np, dones_np, _ = runner.step(actions_clamped)
+                next_obs_np, rewards_np, dones_np, infos = runner.step(actions_clamped)
+
+                # Time-limit value bootstrapping: add gamma * V(s_terminal) for truncated envs
+                step_rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
+                timeout_mask = torch.tensor(
+                    [info.get("time_outs", False) for info in infos],
+                    dtype=torch.bool,
+                    device=dev,
+                )
+
+                if timeout_mask.any():
+                    timeout_indices = torch.where(timeout_mask)[0]
+                    terminal_obs_list = [infos[idx.item()]["terminal_obs"] for idx in timeout_indices]
+                    terminal_obs_tensor = torch.as_tensor(
+                        np.stack(terminal_obs_list), dtype=torch.float32, device=dev
+                    )
+                    with torch.no_grad():
+                        terminal_values = model.forward_critic(terminal_obs_tensor)
+                    step_rewards = apply_timeout_bootstrap(
+                        step_rewards, timeout_mask, terminal_values, gamma=gamma
+                    )
 
                 # Store into buffers
                 obs_buffer[step] = current_obs
                 actions_buffer[step] = actions
                 log_probs_buffer[step] = log_probs
                 values_buffer[step] = values
-                rewards_buffer[step] = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
+                rewards_buffer[step] = step_rewards
                 dones_buffer[step] = torch.as_tensor(dones_np, dtype=torch.float32, device=dev)
 
                 current_obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=dev)

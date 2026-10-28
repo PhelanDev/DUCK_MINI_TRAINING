@@ -302,7 +302,8 @@ class ParallelSimRunner:
 
         self.episode_steps += 1
         timeouts = self.episode_steps >= self.max_episode_steps
-        dones = (root_z < 0.08) | (grav_z > -0.3) | diverged | timeouts
+        fallen = (root_z < 0.08) | (grav_z > -0.3) | diverged
+        dones = fallen | timeouts
 
         # Maintain per-env info dictionary list for diagnostic logging / evaluation
         infos: List[Dict[str, Any]] = [
@@ -311,10 +312,12 @@ class ParallelSimRunner:
         ]
         for i in range(self.num_envs):
             infos[i]["timeout"] = bool(timeouts[i])
+            infos[i]["time_outs"] = bool(timeouts[i] and not fallen[i])
 
         self.last_actions[:] = actions
         if np.any(dones):
             for i in np.where(dones)[0]:
+                infos[i]["terminal_obs"] = next_obs[i].copy()
                 next_obs[i] = self.reset_env(i)
 
         return next_obs, rewards, dones, infos
@@ -327,6 +330,9 @@ class ParallelSimRunner:
 
     def __del__(self):
         self.close()
+
+
+DuckParallelSim = ParallelSimRunner
 
 
 def run_benchmark(
