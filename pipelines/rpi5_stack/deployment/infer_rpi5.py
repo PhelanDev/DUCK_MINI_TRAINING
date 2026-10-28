@@ -294,7 +294,7 @@ def main():
     )
     parser.add_argument("--model_path", type=str, default=None, help="Path to Float32 ONNX policy model")
     parser.add_argument("--i2c_bus", type=int, default=1, help="I2C bus number for PCA9685 (default: 1)")
-    parser.add_argument("--mock", action="store_true", help="Run in mock mode without I2C hardware")
+    parser.add_argument("--mock", "--mock-pca", dest="mock", action="store_true", help="Run in mock mode without I2C hardware")
     parser.add_argument("--freq", type=float, default=50.0, help="Control loop frequency in Hz (default: 50.0)")
     parser.add_argument("--steps", type=int, default=None, help="Number of steps to execute (default: continuous)")
     args = parser.parse_args()

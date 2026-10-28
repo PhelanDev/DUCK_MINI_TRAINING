@@ -119,23 +119,24 @@ def test_rpi5_infer_onnx_model_execution(tmp_path):
 
 
 def test_rpi5_infer_cli():
-    """Verify CLI flags --mock, --freq, --steps work properly."""
+    """Verify CLI flags --mock, --mock-pca, --freq, --steps work properly."""
     script_path = REPO_ROOT / "pipelines" / "rpi5_stack" / "deployment" / "infer_rpi5.py"
     assert script_path.exists(), f"Missing script: {script_path}"
 
-    cmd = [
-        sys.executable,
-        str(script_path),
-        "--mock",
-        "--freq",
-        "50",
-        "--steps",
-        "5",
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    assert res.returncode == 0, f"CLI failed with error: {res.stderr}\nOutput: {res.stdout}"
-    assert "Mock PCA9685" in res.stdout or "mock" in res.stdout.lower()
-    assert "Step 5" in res.stdout or "completed" in res.stdout.lower()
+    for mock_flag in ["--mock", "--mock-pca"]:
+        cmd = [
+            sys.executable,
+            str(script_path),
+            mock_flag,
+            "--freq",
+            "50",
+            "--steps",
+            "5",
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        assert res.returncode == 0, f"CLI with {mock_flag} failed with error: {res.stderr}\nOutput: {res.stdout}"
+        assert "Mock PCA9685" in res.stdout or "mock" in res.stdout.lower()
+        assert "Step 5" in res.stdout or "completed" in res.stdout.lower()
 
 
 def test_rpi5_hardware_spec_doc():
