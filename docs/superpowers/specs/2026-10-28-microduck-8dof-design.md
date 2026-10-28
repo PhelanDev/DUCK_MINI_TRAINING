@@ -108,3 +108,4 @@ d:\duckV1\
 2. **Kiểm tra độ vững tĩnh:** Đặt robot đứng trên sàn phẳng với trọng lực $-9.81\text{ m/s}^2$, kiểm tra robot không bị sụp khớp gối dưới mô-men giữ của MG996R.
 3. **Kiểm tra khả năng chạy song song:** Chạy `python training/run_parallel_sim.py --num_envs 64` (hoặc test vector envs) để xác nhận tải song song nhiều con vịt mô phỏng mượt mà không bị nghẽn RAM/CPU.
 4. **Kiểm tra giao diện tương tác:** Chạy `scripts/interactive_viewer.py` để trực tiếp điều khiển cả 8 khớp.
+
