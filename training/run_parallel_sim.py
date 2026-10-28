@@ -43,6 +43,7 @@ class ParallelSimRunner:
         num_threads: Optional[int] = None,
         kp: Optional[float] = None,
         kd: Optional[float] = None,
+        max_episode_steps: int = 500,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -89,25 +90,36 @@ class ParallelSimRunner:
         # Default forward velocity command [vx=0.5, vy=0.0, wz=0.0]
         self.commands[:, 0] = 0.5
 
+        self.max_episode_steps = int(max_episode_steps)
+        self.episode_steps = np.zeros(self.num_envs, dtype=np.int32)
+        self.rng = np.random.default_rng(seed=42)
+
         # Initialize environments
         self.reset()
 
     def reset_env(self, env_idx: int) -> np.ndarray:
-        """Reset a single environment to nominal standing pose."""
+        """Reset a single environment with domain randomization and random velocity commands."""
         d = self.datas[env_idx]
         mujoco.mj_resetData(self.model, d)
 
-        # Default nominal root position (standing height ~0.17m)
         d.qpos[0:3] = [0.0, 0.0, 0.170]
-        d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]  # identity quaternion (upright)
-        d.qpos[7:15] = 0.0  # joint angles at zero
+        d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+        # Thêm nhiễu nhỏ vào góc khớp ban đầu để đa dạng hóa trạng thái xuất phát
+        d.qpos[7:15] = self.rng.uniform(-0.03, 0.03, size=self.action_dim)
+        d.qpos[11] = max(0.0, d.qpos[11])  # left_knee_pitch >= 0
+        d.qpos[14] = max(0.0, d.qpos[14])  # right_knee_pitch >= 0
         d.qvel[:] = 0.0
 
-        # Step forward kinematics and sensor update
+        # Ngẫu nhiên hóa lệnh vận tốc mục tiêu [vx, vy, wz]
+        self.commands[env_idx, 0] = self.rng.uniform(0.0, 0.25)
+        self.commands[env_idx, 1] = self.rng.uniform(-0.08, 0.08)
+        self.commands[env_idx, 2] = self.rng.uniform(-0.50, 0.50)
+
         mujoco.mj_forward(self.model, d)
 
         self.last_actions[env_idx] = 0.0
-        self.last_targets[env_idx] = 0.0
+        self.last_targets[env_idx] = d.qpos[7:15].astype(np.float32)
+        self.episode_steps[env_idx] = 0
         return self._extract_obs(env_idx)
 
     def reset(self, env_ids: Optional[Union[List[int], np.ndarray]] = None) -> np.ndarray:
@@ -277,7 +289,7 @@ class ParallelSimRunner:
         )
         rewards = reward_dict["total_reward"]
 
-        # Vectorized termination check: fall over, excessive tilt, or numerical divergence
+        # Vectorized termination check: fall over, excessive tilt, numerical divergence, or timeout
         root_z = np.array([d.qpos[2] for d in self.datas], dtype=np.float32)
         grav_z = proj_grav[:, 2]
         diverged = np.array([
@@ -285,21 +297,23 @@ class ParallelSimRunner:
             for d in self.datas
         ], dtype=bool)
 
-        dones = (root_z < 0.08) | (grav_z > -0.3) | diverged
+        self.episode_steps += 1
+        timeouts = self.episode_steps >= self.max_episode_steps
+        dones = (root_z < 0.08) | (grav_z > -0.3) | diverged | timeouts
 
         # Maintain per-env info dictionary list for diagnostic logging / evaluation
         infos: List[Dict[str, Any]] = [
             {k: float(v[i]) for k, v in reward_dict.items()}
             for i in range(self.num_envs)
         ]
-
-        if np.any(dones):
-            for i in np.where(dones)[0]:
-                self.reset_env(i)
+        for i in range(self.num_envs):
+            infos[i]["timeout"] = bool(timeouts[i])
 
         self.last_actions[:] = actions
         if np.any(dones):
-            self.last_actions[dones] = 0.0
+            for i in np.where(dones)[0]:
+                next_obs[i] = self.reset_env(i)
+
         return next_obs, rewards, dones, infos
 
     def close(self):

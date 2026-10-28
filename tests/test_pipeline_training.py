@@ -366,3 +366,90 @@ def test_cli_benchmark_both_stacks():
     assert res_esp32.returncode == 0, f"ESP32 CLI benchmark failed:\n{res_esp32.stderr}"
     assert "Parallel Simulation Benchmark" in res_esp32.stdout
     assert "Steps Per Second (FPS):" in res_esp32.stdout
+
+
+
+def test_rpi5_truncation_randomization_aligned_obs():
+    """Verify RPi5 runner supports episode truncation, domain randomization, and aligned auto-reset."""
+    rpi5_model_path = REPO_ROOT / "pipelines" / "rpi5_stack" / "models" / "mjcf" / "microduck_rpi5_8dof.xml"
+    runner = RPi5ParallelSimRunner(
+        model_path=rpi5_model_path,
+        num_envs=4,
+        decimation=5,
+    )
+    try:
+        assert runner.max_episode_steps == 500
+        assert hasattr(runner, "episode_steps")
+        assert runner.episode_steps.shape == (4,)
+        assert np.all(runner.episode_steps == 0)
+
+        # Domain randomization checks
+        assert np.all(runner.commands[:, 0] >= 0.0) and np.all(runner.commands[:, 0] <= 0.25)
+        assert np.all(runner.commands[:, 1] >= -0.08) and np.all(runner.commands[:, 1] <= 0.08)
+        assert np.all(runner.commands[:, 2] >= -0.50) and np.all(runner.commands[:, 2] <= 0.50)
+        for d in runner.datas:
+            assert np.all(d.qpos[7:15] >= -0.03 - 1e-6)
+            assert np.all(d.qpos[7:15] <= 0.03 + 1e-6)
+            assert d.qpos[11] >= 0.0
+            assert d.qpos[14] >= 0.0
+
+        # Step and verify episode_steps increment
+        actions = np.zeros((4, 8), dtype=np.float32)
+        next_obs, rewards, dones, infos = runner.step(actions)
+        assert np.all(runner.episode_steps == 1)
+
+        # Trigger timeout truncation on env 2
+        runner.episode_steps[2] = 499
+        next_obs, rewards, dones, infos = runner.step(actions)
+        assert dones[2] == True
+        assert runner.episode_steps[2] == 0  # auto-reset
+        assert infos[2].get("timeout") == True
+        # Aligned next_obs check (42 dims)
+        assert next_obs.shape == (4, 42)
+        expected_reset_obs = runner._extract_obs(2)
+        np.testing.assert_allclose(next_obs[2], expected_reset_obs, atol=1e-5)
+    finally:
+        runner.close()
+
+
+def test_esp32_truncation_randomization_aligned_obs():
+    """Verify ESP32 runner supports episode truncation, domain randomization, and aligned auto-reset."""
+    esp32_model_path = REPO_ROOT / "pipelines" / "dual_esp32s3_stack" / "models" / "mjcf" / "microduck_esp32_8dof.xml"
+    runner = ESP32ParallelSimRunner(
+        model_path=esp32_model_path,
+        num_envs=4,
+        decimation=5,
+    )
+    try:
+        assert runner.max_episode_steps == 500
+        assert hasattr(runner, "episode_steps")
+        assert runner.episode_steps.shape == (4,)
+        assert np.all(runner.episode_steps == 0)
+
+        # Domain randomization checks
+        assert np.all(runner.commands[:, 0] >= 0.0) and np.all(runner.commands[:, 0] <= 0.25)
+        assert np.all(runner.commands[:, 1] >= -0.08) and np.all(runner.commands[:, 1] <= 0.08)
+        assert np.all(runner.commands[:, 2] >= -0.50) and np.all(runner.commands[:, 2] <= 0.50)
+        for d in runner.datas:
+            assert np.all(d.qpos[7:15] >= -0.03 - 1e-6)
+            assert np.all(d.qpos[7:15] <= 0.03 + 1e-6)
+            assert d.qpos[11] >= 0.0
+            assert d.qpos[14] >= 0.0
+
+        # Step and verify episode_steps increment
+        actions = np.zeros((4, 8), dtype=np.float32)
+        next_obs, rewards, dones, infos = runner.step(actions)
+        assert np.all(runner.episode_steps == 1)
+
+        # Trigger timeout truncation on env 1
+        runner.episode_steps[1] = 499
+        next_obs, rewards, dones, infos = runner.step(actions)
+        assert dones[1] == True
+        assert runner.episode_steps[1] == 0  # auto-reset
+        assert infos[1].get("timeout") == True
+        # Aligned next_obs check (42 dims)
+        assert next_obs.shape == (4, 42)
+        expected_reset_obs = runner._extract_obs(1)
+        np.testing.assert_allclose(next_obs[1], expected_reset_obs, atol=1e-5)
+    finally:
+        runner.close()

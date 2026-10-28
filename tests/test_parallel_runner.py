@@ -148,6 +148,9 @@ def test_parallel_sim_body_frame_velocity_tracking():
         runner.commands[1] = [0.5, 0.0, 0.0]
         runner.datas[1].qpos[3:7] = [np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)]
         runner.datas[1].qvel[0:3] = [0.0, 0.5, 0.0]
+        # Synchronize joints between env 0 and 1 so velocity tracking reward is strictly yaw-invariant
+        runner.datas[1].qpos[7:15] = runner.datas[0].qpos[7:15].copy()
+        runner.last_targets[1] = runner.last_targets[0].copy()
 
         # Step with zero action (hold)
         actions = np.zeros((2, 8), dtype=np.float32)
@@ -176,5 +179,99 @@ def test_parallel_sim_foot_contact_binarization():
         assert np.all((foot_contacts == 0.0) | (foot_contacts == 1.0))
         # Padded elements [35:37] must be 0.0
         assert np.all(foot_contacts[:, 2:] == 0.0)
+    finally:
+        runner.close()
+
+
+def test_parallel_sim_domain_randomization_and_velocity_commands():
+    """Verify reset_env applies domain randomization on joint angles and commands."""
+    runner = ParallelSimRunner(
+        model_path="models/mjcf/microduck_8dof.xml",
+        num_envs=4,
+    )
+    try:
+        assert hasattr(runner, "max_episode_steps")
+        assert runner.max_episode_steps == 500
+        assert hasattr(runner, "episode_steps")
+        assert hasattr(runner, "rng")
+        assert runner.episode_steps.shape == (4,)
+        assert np.all(runner.episode_steps == 0)
+
+        # Check domain randomization on commands [vx: 0.0 to 0.25, vy: -0.08 to 0.08, wz: -0.50 to 0.50]
+        cmds = runner.commands
+        assert np.all(cmds[:, 0] >= 0.0) and np.all(cmds[:, 0] <= 0.25)
+        assert np.all(cmds[:, 1] >= -0.08) and np.all(cmds[:, 1] <= 0.08)
+        assert np.all(cmds[:, 2] >= -0.50) and np.all(cmds[:, 2] <= 0.50)
+
+        # Check joint perturbation in qpos[7:15] within [-0.03, 0.03]
+        for d in runner.datas:
+            joint_angles = d.qpos[7:15]
+            assert np.all(joint_angles >= -0.03 - 1e-6)
+            assert np.all(joint_angles <= 0.03 + 1e-6)
+            # Knees must be >= 0 (left_knee_pitch: index 11, right_knee_pitch: index 14)
+            assert d.qpos[11] >= 0.0
+            assert d.qpos[14] >= 0.0
+
+        # last_targets must match randomized joint angles
+        for i in range(runner.num_envs):
+            np.testing.assert_allclose(
+                runner.last_targets[i],
+                runner.datas[i].qpos[7:15].astype(np.float32),
+            )
+    finally:
+        runner.close()
+
+
+def test_parallel_sim_episode_steps_and_truncation():
+    """Verify episode_steps increments each step and triggers done when reaching max_episode_steps."""
+    runner = ParallelSimRunner(
+        model_path="models/mjcf/microduck_8dof.xml",
+        num_envs=2,
+    )
+    try:
+        actions = np.zeros((2, 8), dtype=np.float32)
+
+        # Step 3 times
+        for s in range(1, 4):
+            next_obs, rewards, dones, infos = runner.step(actions)
+            assert np.all(runner.episode_steps == s)
+            assert not np.any(dones)
+
+        # Fast forward env 0 to max_episode_steps - 1
+        runner.episode_steps[0] = runner.max_episode_steps - 1
+        runner.episode_steps[1] = 10
+
+        next_obs, rewards, dones, infos = runner.step(actions)
+        assert dones[0] == True, "Env 0 must trigger done on timeout (500 steps)"
+        assert dones[1] == False, "Env 1 must not trigger done"
+        # Check auto-reset of episode_steps on env 0
+        assert runner.episode_steps[0] == 0, "Env 0 episode_steps must be reset to 0 after done"
+        assert runner.episode_steps[1] == 11
+        assert infos[0].get("timeout") == True
+        assert infos[1].get("timeout") == False
+    finally:
+        runner.close()
+
+
+def test_parallel_sim_aligned_next_obs_on_done():
+    """Verify next_obs returned by step() is aligned with the reset observation for done envs."""
+    runner = ParallelSimRunner(
+        model_path="models/mjcf/microduck_8dof.xml",
+        num_envs=2,
+    )
+    try:
+        # Cause env 0 to fall over / tilt upside down
+        runner.datas[0].qpos[3:7] = [0.0, 1.0, 0.0, 0.0]
+        runner.datas[0].qpos[2] = 0.05
+
+        actions = np.zeros((2, 8), dtype=np.float32)
+        next_obs, rewards, dones, infos = runner.step(actions)
+
+        assert dones[0] == True
+        # Env 0 was reset inside step: its data has root_z ~ 0.170
+        assert runner.datas[0].qpos[2] > 0.15
+        # next_obs[0] must match the observation of the reset state, NOT the fallen 0.02 state!
+        expected_reset_obs = runner._extract_obs(0)
+        np.testing.assert_allclose(next_obs[0], expected_reset_obs, atol=1e-5)
     finally:
         runner.close()
