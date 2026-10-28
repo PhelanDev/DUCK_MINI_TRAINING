@@ -68,6 +68,7 @@ class MicroDuck8DoFConfig:
             "action_rate_penalty": -0.01,
             "foot_contact": 0.1,
             "obstacle_avoidance": 0.2,
+            "sigma_obs": 0.3,
         }
     )
 
@@ -186,6 +187,31 @@ def quat_rotate_inverse(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     return (v_arr + qw * t + np.cross(qv, t)).astype(np.float32)
 
 
+def ang_vel_mask(d_min: Union[float, np.ndarray]) -> np.ndarray:
+    """Mask tracking_ang_vel when close to obstacles to allow robot to turn away freely.
+
+    mask = clip((d_min - 0.25) / (0.55 - 0.25), 0.1, 1.0)
+    """
+    d = np.asarray(d_min, dtype=np.float32)
+    return np.clip((d - 0.25) / (0.55 - 0.25), 0.1, 1.0).astype(np.float32)
+
+
+def avoid_vel_penalty(
+    d_min: Union[float, np.ndarray],
+    d_min_dot: Union[float, np.ndarray],
+    sigma_obs: float = 0.3,
+) -> np.ndarray:
+    """Penalize approaching obstacles with velocity towards them.
+
+    avoid_vel_penalty = -max(0, -d_min_dot) * exp(-d_min / sigma_obs)
+    """
+    d = np.asarray(d_min, dtype=np.float32)
+    d_dot = np.asarray(d_min_dot, dtype=np.float32)
+    approach_speed = np.maximum(0.0, -d_dot)
+    penalty = -approach_speed * np.exp(-d / sigma_obs)
+    return penalty.astype(np.float32)
+
+
 def compute_rewards(
     base_lin_vel: np.ndarray,
     cmd_lin_vel: np.ndarray,
@@ -199,6 +225,8 @@ def compute_rewards(
     actions: Optional[np.ndarray] = None,
     last_actions: Optional[np.ndarray] = None,
     weights: Optional[Dict[str, float]] = None,
+    d_min: Optional[Union[float, np.ndarray]] = None,
+    d_min_dot: Optional[Union[float, np.ndarray]] = None,
 ) -> Dict[str, Union[float, np.ndarray]]:
     """Compute balanced reward terms and total reward for RL training.
 
@@ -240,6 +268,8 @@ def compute_rewards(
     # 2. Angular velocity tracking around Z axis
     ang_err_sq = np.square(base_ang[..., 2] - target_yaw)
     r_track_ang_vel = np.exp(-ang_err_sq / 0.25)
+    if d_min is not None:
+        r_track_ang_vel = r_track_ang_vel * ang_vel_mask(d_min)
 
     # 3. Upright posture reward (gravity projection along body Z should be -1.0)
     grav_err_sq = (
@@ -276,7 +306,10 @@ def compute_rewards(
     ).astype(np.float32)
 
     # 8. Obstacle avoidance reward / penalty
-    if lidar_ranges is not None:
+    if d_min is not None and d_min_dot is not None:
+        sigma = weights.get("sigma_obs", 0.3)
+        r_obstacle = avoid_vel_penalty(d_min, d_min_dot, sigma_obs=sigma)
+    elif lidar_ranges is not None:
         ranges = np.asarray(lidar_ranges, dtype=np.float32)
         min_dist = np.min(ranges, axis=-1)
         r_obstacle = np.where(
