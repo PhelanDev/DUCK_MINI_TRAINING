@@ -108,7 +108,11 @@ def verify_joint_consistency(mjcf_path: str, urdf_path: str) -> Dict[str, Dict[s
     return results
 
 
-def verify_mass_and_inertials(urdf_path: str) -> Dict[str, Any]:
+def verify_mass_and_inertials(
+    urdf_path: str,
+    target_mass: Optional[float] = None,
+    tolerance: float = 0.10,
+) -> Dict[str, Any]:
     """Parse link masses, verify positive diagonal inertias and triangle inequalities."""
     if not os.path.exists(urdf_path):
         raise FileNotFoundError(f"URDF file not found: {urdf_path}")
@@ -166,12 +170,17 @@ def verify_mass_and_inertials(urdf_path: str) -> Dict[str, Any]:
             "valid": valid,
         })
 
-    # Expected total mass ~ 0.780 kg (tolerance [0.70, 0.85] kg)
-    mass_in_range = 0.70 <= total_mass <= 0.85
+    # Expected total mass check with target_mass and tolerance
+    if target_mass is None:
+        target_mass = 0.860 if "rpi5" in urdf_path.lower() else 0.780
+    min_mass = target_mass * (1.0 - tolerance)
+    max_mass = target_mass * (1.0 + tolerance)
+    mass_in_range = min_mass <= total_mass <= max_mass
 
     return {
         "links": link_data,
         "total_mass": total_mass,
+        "target_mass": target_mass,
         "mass_in_range": mass_in_range,
         "all_inertias_valid": all_inertias_valid,
     }
@@ -286,7 +295,8 @@ def print_summary(
         print(f"{link['name']:<20} | {link['mass']:<10.3f} | {link['mass'] * 1000:<10.1f} | {pos_str:<16} | {tri_str:<14}")
     print("-" * 80)
     total_m = mass_info["total_mass"]
-    print(f"Total Mass: {total_m:.3f} kg ({total_m * 1000:.1f} g) [Target: ~0.780 kg +/- 10%]")
+    target_m = mass_info.get("target_mass", 0.780)
+    print(f"Total Mass: {total_m:.3f} kg ({total_m * 1000:.1f} g) [Target: ~{target_m:.3f} kg +/- 10%]")
 
     print("\n3. CENTER OF MASS (CoM) VERIFICATION")
     print("-" * 80)
@@ -326,11 +336,17 @@ def main() -> int:
         default=100,
         help="Number of simulation steps for dynamic check",
     )
+    parser.add_argument(
+        "--target-mass",
+        type=float,
+        default=None,
+        help="Target total mass in kg (default: auto-detected, 0.860kg for rpi5 or 0.780kg for base/esp32)",
+    )
     args = parser.parse_args()
 
     try:
         joint_results = verify_joint_consistency(args.mjcf, args.urdf)
-        mass_info = verify_mass_and_inertials(args.urdf)
+        mass_info = verify_mass_and_inertials(args.urdf, target_mass=args.target_mass)
         com_info = verify_center_of_mass(args.mjcf)
         sim_ok = run_simulation_check(args.mjcf, args.urdf, num_steps=args.steps)
     except Exception as exc:
