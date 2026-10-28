@@ -32,8 +32,8 @@
 #define PIN_I2S_DIN        42
 
 // I2C Bus for 5-Ray ToF LiDAR Rangefinder Array
-#define PIN_I2C_SDA        4
-#define PIN_I2C_SCL        5
+#define PIN_I2C_SDA        19
+#define PIN_I2C_SCL        20
 #define LIDAR_I2C_ADDR     0x29
 #define OBSTACLE_THRESHOLD 0.35f  // meters
 

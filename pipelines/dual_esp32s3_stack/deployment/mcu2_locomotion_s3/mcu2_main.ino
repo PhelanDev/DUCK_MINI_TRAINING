@@ -14,6 +14,8 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include "../uart_packet_protocol.h"
+#include "../esp32_quant_config.h"
+#include "../esp32_policy_weights.h"
 
 // ============================================================================
 // Pin Definitions & Hardware Configuration
@@ -60,7 +62,9 @@ HardwareSerial UartLink(MCU2_UART_NUM);
 // [25..32]: Previous actions (8)
 // [33..36]: Foot contact states (4)
 // [37..41]: 5-Ray LiDAR rangefinder distances (5)
+#ifndef OBS_DIM
 #define OBS_DIM 42
+#endif
 static float g_obs[OBS_DIM];
 
 // Locomotion & Joint State
@@ -68,6 +72,7 @@ static float g_current_joint_pos[8] = {0};
 static float g_last_joint_pos[8]    = {0};
 static float g_target_angles[8]     = {0};
 static float g_last_targets[8]      = {0};
+float g_last_raw_actions[8]         = {0};
 
 // Telemetry from MCU 1
 static VelocityCmdPacket g_cmd_pkt = {0.20f, 0.0f, 0.0f};
@@ -156,14 +161,21 @@ void read_mpu6050(float *gyro, float *proj_grav) {
         float ax = ax_raw / 16384.0f;
         float ay = ay_raw / 16384.0f;
         float az = az_raw / 16384.0f;
+        static float s_filt_grav[3] = {0.0f, 0.0f, -1.0f};
         float norm = sqrtf(ax * ax + ay * ay + az * az);
         if (norm > 1e-4f) {
-            proj_grav[0] = ax / norm;
-            proj_grav[1] = ay / norm;
-            proj_grav[2] = az / norm;
-        } else {
-            proj_grav[0] = 0.0f; proj_grav[1] = 0.0f; proj_grav[2] = -1.0f;
+            // Invert axis signs to match MuJoCo world gravity frame [0, 0, -1]
+            float gx_norm = -ax / norm;
+            float gy_norm = -ay / norm;
+            float gz_norm = -az / norm;
+            const float alpha = 0.80f;
+            s_filt_grav[0] = alpha * s_filt_grav[0] + (1.0f - alpha) * gx_norm;
+            s_filt_grav[1] = alpha * s_filt_grav[1] + (1.0f - alpha) * gy_norm;
+            s_filt_grav[2] = alpha * s_filt_grav[2] + (1.0f - alpha) * gz_norm;
         }
+        proj_grav[0] = s_filt_grav[0];
+        proj_grav[1] = s_filt_grav[1];
+        proj_grav[2] = s_filt_grav[2];
     } else {
         // Fallback default
         gyro[0] = 0.0f; gyro[1] = 0.0f; gyro[2] = 0.0f;
@@ -269,9 +281,9 @@ void assemble_observation(float *obs_out) {
         g_last_joint_pos[i] = g_current_joint_pos[i];
     }
 
-    // [25..32]: Last actions (8)
+    // [25..32]: Last actions (8) - normalized raw actions [-1.0, 1.0]
     for (int i = 0; i < 8; ++i) {
-        obs_out[25 + i] = g_last_targets[i];
+        obs_out[25 + i] = g_last_raw_actions[i];
     }
 
     // [33..36]: Feet contact sensors (4) - [Left, Right, Padded, Padded] to match training
@@ -287,34 +299,29 @@ void assemble_observation(float *obs_out) {
 }
 
 void evaluate_locomotion_policy(const float *obs, float *target_angles_out) {
-    // Generates bipedal walking gait phase coupled with velocity command & LiDAR
-    float t = g_step_count * CONTROL_DT;
-    float walk_freq = 1.5f; // 1.5 Hz stride cadence
-    float phase = 2.0f * PI * walk_freq * t;
-
-    float vx = obs[6];
-    float wz = obs[8];
-
-    // If obstacle is detected (<0.35m on any ray), turn away
-    if (g_lidar_pkt.obstacle_detected) {
-        vx = 0.05f;
-        wz = 0.50f;
+    // Quantize 42-dim float observation to INT8 using channel-specific scales
+    int8_t obs_int8[OBS_DIM];
+    for (int i = 0; i < OBS_DIM; ++i) {
+        float val = roundf(obs[i] * OBS_CHANNEL_SCALES[i]);
+        if (val > 127.0f) val = 127.0f;
+        if (val < -128.0f) val = -128.0f;
+        obs_int8[i] = (int8_t)val;
     }
 
-    // Dynamic gait generation for 8 MG996R joints:
-    // Head stabilization
-    target_angles_out[0] = -wz * 0.2f;       // head_yaw
-    target_angles_out[1] = 0.0f;             // head_pitch
+    // Evaluate quantized policy network directly on Xtensa LX7
+    int8_t raw_actions_int8[ACTION_DIM];
+    evaluate_policy_int8(obs_int8, raw_actions_int8);
 
-    // Left leg
-    target_angles_out[2] = 0.05f * sinf(phase);                 // left_hip_roll
-    target_angles_out[3] = vx * 0.40f * sinf(phase);            // left_hip_pitch
-    target_angles_out[4] = (sinf(phase) > 0) ? (vx * 0.50f) : 0.0f; // left_knee_pitch
+    // Dequantize actions and scale to physical joint angle limits
+    for (int i = 0; i < ACTION_DIM; ++i) {
+        float raw_act = (float)raw_actions_int8[i] * ACT_INV_SCALE;
+        raw_act = constrain(raw_act, -1.0f, 1.0f);
+        g_last_raw_actions[i] = raw_act;
 
-    // Right leg (180 deg out of phase)
-    target_angles_out[5] = -0.05f * sinf(phase);                // right_hip_roll
-    target_angles_out[6] = -vx * 0.40f * sinf(phase);           // right_hip_pitch
-    target_angles_out[7] = (sinf(phase) < 0) ? (vx * 0.50f) : 0.0f; // right_knee_pitch
+        // Linear scaling: raw [-1, 1] -> [JOINT_MIN_LIMITS[i], JOINT_MAX_LIMITS[i]]
+        float target_angle = JOINT_MIN_LIMITS[i] + (raw_act + 1.0f) * 0.5f * (JOINT_MAX_LIMITS[i] - JOINT_MIN_LIMITS[i]);
+        target_angles_out[i] = constrain(target_angle, JOINT_MIN_LIMITS[i], JOINT_MAX_LIMITS[i]);
+    }
 }
 
 // ============================================================================

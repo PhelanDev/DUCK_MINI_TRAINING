@@ -182,6 +182,7 @@ class RPi5InferenceEngine:
 
         # State tracking for rate limiting
         self.last_targets = np.zeros(self.cfg.ACTION_DIM, dtype=np.float32)
+        self.last_raw_actions = np.zeros(self.cfg.ACTION_DIM, dtype=np.float32)
         self.joint_limits_list = [
             self.cfg.JOINT_LIMITS[name] for name in self.cfg.JOINT_NAMES
         ]
@@ -209,7 +210,8 @@ class RPi5InferenceEngine:
         )
 
         # 1. Infer raw actions
-        raw_actions = self.predict_action(obs)
+        raw_actions = np.clip(self.predict_action(obs), -1.0, 1.0)
+        self.last_raw_actions = raw_actions.copy()
 
         # 2. Scale actions to joint angles
         scaled_targets = scale_actions(raw_actions, self.cfg)
@@ -262,7 +264,7 @@ class RPi5InferenceEngine:
                     commands=commands,
                     joint_pos=self.last_targets,
                     joint_vel=np.zeros(8, dtype=np.float32),
-                    last_actions=self.last_targets,
+                    last_actions=self.last_raw_actions,
                     foot_contact=foot_contact,
                     lidar_ranges=lidar_ranges,
                 )

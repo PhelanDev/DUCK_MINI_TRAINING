@@ -94,13 +94,13 @@ MCU 1 tập trung toàn bộ năng lực phần cứng cho nhận thức môi tr
 | | CAM_PCLK | GPIO 16 | Xung pixel clock |
 | | CAM_VSYNC | GPIO 6 | Tín hiệu đồng bộ khung |
 | | CAM_HREF | GPIO 7 | Tín hiệu đồng bộ dòng |
-| | CAM_SIOD / SIOC | GPIO 4, GPIO 5 | I2C SCCB điều khiển cảm biến |
+| | CAM_SIOD / SIOC | GPIO 4, GPIO 5 | I2C SCCB điều khiển cảm biến (độc quyền) |
 | **Micro I2S (INMP441)** | I2S_BCLK | GPIO 1 | Xung nhịp bit lấy mẫu âm thanh |
 | | I2S_WS (LRCL) | GPIO 2 | Chọn kênh Word Select (Trái/Phải) |
 | | I2S_DIN (SD) | GPIO 42 | Dữ liệu âm thanh số 24-bit trả về |
 | | VDD / GND | 3.3V / GND | Nguồn nuôi micro âm thanh mỏ vịt |
-| **LiDAR 5 Tia (ToF)** | I2C_SDA | GPIO 4 | Giao tiếp I2C đọc khoảng cách 5 hướng |
-| | I2C_SCL | GPIO 5 | Xung nhịp I2C 400kHz |
+| **LiDAR 5 Tia (ToF)** | I2C_SDA | GPIO 19 | Giao tiếp I2C đọc khoảng cách 5 hướng (tách rời SCCB Camera) |
+| | I2C_SCL | GPIO 20 | Xung nhịp I2C 400kHz |
 | | XSHUT_1..5 | GPIO 38, 39, 40, 41, 47 | Reset và định địa chỉ động 5 cảm biến |
 
 ---

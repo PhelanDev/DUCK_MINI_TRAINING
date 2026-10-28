@@ -65,11 +65,18 @@ def test_rpi5_infer_script_import_and_mock():
 
     # 3. Test RPi5InferenceEngine in mock mode
     engine = RPi5InferenceEngine(mock=True, freq=50.0)
+    assert hasattr(engine, "last_raw_actions"), "Engine must track last_raw_actions"
+    assert engine.last_raw_actions.shape == (8,)
+    assert np.all(engine.last_raw_actions == 0.0)
+
     raw_obs = np.zeros(42, dtype=np.float32)
     targets, pwms = engine.step(raw_obs)
 
     assert targets.shape == (8,)
     assert pwms.shape == (8,)
+    assert engine.last_raw_actions.shape == (8,)
+    assert np.all(engine.last_raw_actions >= -1.0) and np.all(engine.last_raw_actions <= 1.0)
+
     # Verify rate limiting between consecutive steps
     large_delta_obs = np.ones(42, dtype=np.float32)
     next_targets, _ = engine.step(large_delta_obs)
@@ -116,6 +123,8 @@ def test_rpi5_infer_onnx_model_execution(tmp_path):
     assert targets.shape == (8,)
     assert pwms.shape == (8,)
     assert np.all(pwms >= 500) and np.all(pwms <= 2500)
+    assert np.isclose(engine.last_raw_actions[0], 0.5, atol=1e-5), "Obs[0]=1.0 should yield raw_action[0]=0.5"
+    assert np.all(engine.last_raw_actions >= -1.0) and np.all(engine.last_raw_actions <= 1.0)
 
 
 def test_rpi5_infer_cli():
@@ -286,7 +295,7 @@ int main() {{
 
 
 def test_mcu1_vision_audio_sketch():
-    """Verify MCU 1 Arduino sketch contains necessary peripherals and high-speed UART."""
+    """Verify MCU 1 Arduino sketch contains necessary peripherals, pinouts, and high-speed UART."""
     sketch_path = (
         REPO_ROOT
         / "pipelines"
@@ -305,10 +314,13 @@ def test_mcu1_vision_audio_sketch():
     assert "camera" in content.lower() or "cam" in content.lower()
     assert "i2s" in content.lower() or "mic" in content.lower()
     assert "lidar" in content.lower() or "vl53" in content.lower() or "tof" in content.lower()
+    # LiDAR I2C pinout separation from camera SCCB
+    assert "#define PIN_I2C_SDA        19" in content
+    assert "#define PIN_I2C_SCL        20" in content
 
 
 def test_mcu2_locomotion_sketch():
-    """Verify MCU 2 Arduino sketch handles UART, MPU6050, 42-dim obs, and 50Hz servo loop."""
+    """Verify MCU 2 Arduino sketch handles UART, MPU6050, 42-dim obs, and 50Hz INT8 policy."""
     sketch_path = (
         REPO_ROOT
         / "pipelines"
@@ -323,11 +335,26 @@ def test_mcu2_locomotion_sketch():
     assert "uart_packet_protocol.h" in content
     assert "921600" in content, "MCU 2 UART must run at 921600 baud"
     assert "setup()" in content and "loop()" in content
+    # Quantization and policy headers
+    assert "esp32_quant_config.h" in content
+    assert "esp32_policy_weights.h" in content
     # IMU, observation, control frequency
     assert "mpu" in content.lower() or "imu" in content.lower()
-    assert "42" in content, "MCU 2 must assemble 42-dim observation"
+    assert "OBS_DIM" in content and "42" in content, "MCU 2 must assemble 42-dim observation"
     assert "50" in content or "20" in content, "MCU 2 must run 50Hz (20ms) loop"
     assert "mg996r" in content.lower() or "servo" in content.lower() or "pwm" in content.lower()
+    # Gravity sign inversion & low-pass filtering
+    assert "-ax / norm" in content
+    assert "-ay / norm" in content
+    assert "-az / norm" in content
+    assert "s_filt_grav" in content
+    assert "0.80" in content
+    # Decoupled raw actions array & observation assembly
+    assert "g_last_raw_actions" in content
+    assert "obs_out[25 + i] = g_last_raw_actions[i];" in content
+    # INT8 Quantized evaluation with OBS_CHANNEL_SCALES
+    assert "OBS_CHANNEL_SCALES" in content
+    assert "evaluate_policy_int8" in content
 
 
 def test_dual_esp32_hardware_spec_doc():
@@ -352,3 +379,111 @@ def test_dual_esp32_hardware_spec_doc():
     assert "MPU6050" in content or "IMU" in content
     assert "LiDAR" in content or "ToF" in content
     assert "BMS" in content or "2S" in content or "7.4V" in content
+    # Verify GPIO 19 and 20 for LiDAR I2C and GPIO 4, 5 for Camera SCCB
+    assert "GPIO 19" in content and "GPIO 20" in content
+    assert "CAM_SIOD" in content or "SCCB" in content
+
+
+def test_mcu2_int8_policy_cpp_execution(tmp_path):
+    """Compile and verify INT8 policy inference and IMU gravity filtering with C++ compiler."""
+    quant_header = (
+        REPO_ROOT
+        / "pipelines"
+        / "dual_esp32s3_stack"
+        / "deployment"
+        / "esp32_quant_config.h"
+    )
+    policy_header = (
+        REPO_ROOT
+        / "pipelines"
+        / "dual_esp32s3_stack"
+        / "deployment"
+        / "esp32_policy_weights.h"
+    )
+    assert quant_header.exists(), f"Missing quant header: {quant_header}"
+    assert policy_header.exists(), f"Missing policy header: {policy_header}"
+
+    cpp_source = f"""#include <iostream>
+#include <cassert>
+#include <cmath>
+#include <algorithm>
+#include "{quant_header.as_posix()}"
+#include "{policy_header.as_posix()}"
+
+int main() {{
+    // 1. Verify gravity sign inversion and filtering matching MuJoCo [0, 0, -1]
+    float ax = 0.0f, ay = 0.0f, az = 1.0f; // Upright resting accelerometer reading (+1g on z)
+    float norm = std::sqrt(ax * ax + ay * ay + az * az);
+    assert(norm > 1e-4f);
+
+    float gx_norm = -ax / norm;
+    float gy_norm = -ay / norm;
+    float gz_norm = -az / norm;
+
+    static float s_filt_grav[3] = {{0.0f, 0.0f, -1.0f}};
+    const float alpha = 0.80f;
+    s_filt_grav[0] = alpha * s_filt_grav[0] + (1.0f - alpha) * gx_norm;
+    s_filt_grav[1] = alpha * s_filt_grav[1] + (1.0f - alpha) * gy_norm;
+    s_filt_grav[2] = alpha * s_filt_grav[2] + (1.0f - alpha) * gz_norm;
+
+    assert(std::fabs(s_filt_grav[0] - 0.0f) < 1e-4);
+    assert(std::fabs(s_filt_grav[1] - 0.0f) < 1e-4);
+    assert(std::fabs(s_filt_grav[2] - (-1.0f)) < 1e-4);
+
+    // 2. Build 42-dimensional observation vector
+    float obs[OBS_DIM] = {{0.0f}};
+    obs[3] = s_filt_grav[0];
+    obs[4] = s_filt_grav[1];
+    obs[5] = s_filt_grav[2]; // -1.0f gravity
+    obs[6] = 0.2f;           // vx = 0.2 m/s
+    obs[33] = 1.0f;          // foot contact L
+    obs[34] = 1.0f;          // foot contact R
+    for (int i = 0; i < 5; ++i) {{
+        obs[37 + i] = 1.5f;  // 1.5m LiDAR clear
+    }}
+
+    // Quantize observation to INT8
+    int8_t obs_int8[OBS_DIM];
+    for (int i = 0; i < OBS_DIM; ++i) {{
+        float val = std::round(obs[i] * OBS_CHANNEL_SCALES[i]);
+        val = std::max(-128.0f, std::min(127.0f, val));
+        obs_int8[i] = (int8_t)val;
+    }}
+
+    // Forward inference
+    int8_t actions_int8[ACTION_DIM];
+    evaluate_policy_int8(obs_int8, actions_int8);
+
+    // Dequantize and check bounds
+    float raw_actions[ACTION_DIM];
+    for (int i = 0; i < ACTION_DIM; ++i) {{
+        float raw = (float)actions_int8[i] * ACT_INV_SCALE;
+        raw = std::max(-1.0f, std::min(1.0f, raw));
+        raw_actions[i] = raw;
+        assert(raw >= -1.0f && raw <= 1.0f);
+    }}
+
+    std::cout << "MCU 2 INT8 policy inference executed successfully." << std::endl;
+    return 0;
+}}
+"""
+    test_cpp_file = tmp_path / "test_mcu2_policy.cpp"
+    test_cpp_file.write_text(cpp_source, encoding="utf-8")
+
+    out_exe = tmp_path / "test_mcu2_policy.exe"
+    compile_cmd = [
+        "g++",
+        "-O2",
+        "-std=c++17",
+        str(test_cpp_file),
+        "-o",
+        str(out_exe),
+    ]
+    compile_res = subprocess.run(compile_cmd, capture_output=True, text=True)
+    assert compile_res.returncode == 0, (
+        f"G++ compilation failed: {compile_res.stderr}\n{compile_res.stdout}"
+    )
+
+    run_res = subprocess.run([str(out_exe)], capture_output=True, text=True)
+    assert run_res.returncode == 0, f"Policy test execution failed: {run_res.stderr}"
+    assert "MCU 2 INT8 policy inference executed successfully." in run_res.stdout
