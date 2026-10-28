@@ -1,0 +1,451 @@
+<?xml version="1.0"?>
+<robot name="microduck_8dof">
+
+  <!-- Materials -->
+  <material name="duck_yellow">
+    <color rgba="0.95 0.85 0.1 1.0"/>
+  </material>
+  <material name="duck_orange">
+    <color rgba="1.0 0.5 0.05 1.0"/>
+  </material>
+  <material name="servo_grey">
+    <color rgba="0.2 0.2 0.22 1.0"/>
+  </material>
+  <material name="black">
+    <color rgba="0.05 0.05 0.05 1.0"/>
+  </material>
+  <material name="white">
+    <color rgba="0.95 0.95 0.95 1.0"/>
+  </material>
+
+  <!-- Base Link (Chassis: 110 x 80 x 70 mm, mass: 320g) -->
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.320"/>
+      <inertia ixx="0.0003013" ixy="0" ixz="0" iyy="0.0004533" iyz="0" izz="0.0004933"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.110 0.080 0.070"/>
+      </geometry>
+      <material name="duck_yellow"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.110 0.080 0.070"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Neck Link (35 x 35 x 30 mm, mass: 30g) -->
+  <joint name="head_yaw" type="revolute">
+    <parent link="base_link"/>
+    <child link="neck_link"/>
+    <origin xyz="0.020 0 0.035" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.57" upper="1.57" effort="1.0" velocity="6.0"/>
+    <dynamics damping="0.15" friction="0.0"/>
+  </joint>
+
+  <link name="neck_link">
+    <inertial>
+      <origin xyz="0 0 0.015" rpy="0 0 0"/>
+      <mass value="0.030"/>
+      <inertia ixx="5.3125e-6" ixy="0" ixz="0" iyy="5.3125e-6" iyz="0" izz="6.125e-6"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.015" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.035 0.035 0.030"/>
+      </geometry>
+      <material name="servo_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.015" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.035 0.035 0.030"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Head Link (Head 60 x 50 x 45 mm, Beak 36 x 36 x 12 mm, total mass: 60g) -->
+  <joint name="head_pitch" type="revolute">
+    <parent link="neck_link"/>
+    <child link="head_link"/>
+    <origin xyz="0 0 0.030" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.52" upper="0.78" effort="1.0" velocity="6.0"/>
+    <dynamics damping="0.15" friction="0.0"/>
+  </joint>
+
+  <link name="head_link">
+    <inertial>
+      <origin xyz="0.013 0 0.022" rpy="0 0 0"/>
+      <mass value="0.060"/>
+      <inertia ixx="2.2625e-5" ixy="0" ixz="0" iyy="2.8125e-5" iyz="0" izz="3.0500e-5"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.010 0 0.0225" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.060 0.050 0.045"/>
+      </geometry>
+      <material name="duck_yellow"/>
+    </visual>
+    <visual>
+      <origin xyz="0.048 0 0.015" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.036 0.036 0.012"/>
+      </geometry>
+      <material name="duck_orange"/>
+    </visual>
+    <collision>
+      <origin xyz="0.010 0 0.0225" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.060 0.050 0.045"/>
+      </geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.048 0 0.015" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.036 0.036 0.012"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Left Leg (3 DOF) -->
+  <!-- Left Hip Roll Joint & Link -->
+  <joint name="left_hip_roll" type="revolute">
+    <parent link="base_link"/>
+    <child link="left_hip_roll_link"/>
+    <origin xyz="0 0.035 -0.035" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.44" upper="0.44" effort="1.0" velocity="6.0"/>
+    <dynamics damping="0.15" friction="0.0"/>
+  </joint>
+
+  <link name="left_hip_roll_link">
+    <inertial>
+      <origin xyz="0 0.010 -0.010" rpy="0 0 0"/>
+      <mass value="0.050"/>
+      <inertia ixx="1.3333e-5" ixy="0" ixz="0" iyy="1.5104e-5" iyz="0" izz="1.5104e-5"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0.010 -0.010" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.045 0.040 0.040"/>
+      </geometry>
+      <material name="servo_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0.010 -0.010" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.045 0.040 0.040"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Left Hip Pitch Joint & Thigh Link -->
+  <joint name="left_hip_pitch" type="revolute">
+    <parent link="left_hip_roll_link"/>
+    <child link="left_thigh_link"/>
+    <origin xyz="0 0.015 -0.020" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.87" upper="0.87" effort="1.0" velocity="6.0"/>
+    <dynamics damping="0.15" friction="0.0"/>
+  </joint>
+
+  <link name="left_thigh_link">
+    <inertial>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <mass value="0.065"/>
+      <inertia ixx="2.7760e-5" ixy="0" ixz="0" iyy="2.9521e-5" iyz="0" izz="1.1510e-5"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.035 0.030 0.065"/>
+      </geometry>
+      <material name="duck_yellow"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.035 0.030 0.065"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Left Knee Pitch Joint & Shin Link -->
+  <joint name="left_knee_pitch" type="revolute">
+    <parent link="left_thigh_link"/>
+    <child link="left_shin_link"/>
+    <origin xyz="0 0 -0.065" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0.0" upper="1.48" effort="1.0" velocity="6.0"/>
+    <dynamics damping="0.15" friction="0.0"/>
+  </joint>
+
+  <link name="left_shin_link">
+    <inertial>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <mass value="0.045"/>
+      <inertia ixx="1.8188e-5" ixy="0" ixz="0" iyy="1.9219e-5" iyz="0" izz="5.7188e-6"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.030 0.025 0.065"/>
+      </geometry>
+      <material name="servo_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.030 0.025 0.065"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Left Foot Link (Ankle Fixed) -->
+  <joint name="left_ankle_fixed" type="fixed">
+    <parent link="left_shin_link"/>
+    <child link="left_foot_link"/>
+    <origin xyz="0 0 -0.065" rpy="0 0 0"/>
+  </joint>
+
+  <link name="left_foot_link">
+    <inertial>
+      <origin xyz="0.010 0 -0.005" rpy="0 0 0"/>
+      <mass value="0.030"/>
+      <inertia ixx="7.8125e-6" ixy="0" ixz="0" iyy="1.4313e-5" iyz="0" izz="2.1625e-5"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.010 0 -0.005" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.075 0.055 0.010"/>
+      </geometry>
+      <material name="duck_orange"/>
+    </visual>
+    <collision>
+      <origin xyz="0.010 0 -0.005" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.075 0.055 0.010"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Right Leg (3 DOF) -->
+  <!-- Right Hip Roll Joint & Link -->
+  <joint name="right_hip_roll" type="revolute">
+    <parent link="base_link"/>
+    <child link="right_hip_roll_link"/>
+    <origin xyz="0 -0.035 -0.035" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.44" upper="0.44" effort="1.0" velocity="6.0"/>
+    <dynamics damping="0.15" friction="0.0"/>
+  </joint>
+
+  <link name="right_hip_roll_link">
+    <inertial>
+      <origin xyz="0 -0.010 -0.010" rpy="0 0 0"/>
+      <mass value="0.050"/>
+      <inertia ixx="1.3333e-5" ixy="0" ixz="0" iyy="1.5104e-5" iyz="0" izz="1.5104e-5"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 -0.010 -0.010" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.045 0.040 0.040"/>
+      </geometry>
+      <material name="servo_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 -0.010 -0.010" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.045 0.040 0.040"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Right Hip Pitch Joint & Thigh Link -->
+  <joint name="right_hip_pitch" type="revolute">
+    <parent link="right_hip_roll_link"/>
+    <child link="right_thigh_link"/>
+    <origin xyz="0 -0.015 -0.020" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-0.87" upper="0.87" effort="1.0" velocity="6.0"/>
+    <dynamics damping="0.15" friction="0.0"/>
+  </joint>
+
+  <link name="right_thigh_link">
+    <inertial>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <mass value="0.065"/>
+      <inertia ixx="2.7760e-5" ixy="0" ixz="0" iyy="2.9521e-5" iyz="0" izz="1.1510e-5"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.035 0.030 0.065"/>
+      </geometry>
+      <material name="duck_yellow"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.035 0.030 0.065"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Right Knee Pitch Joint & Shin Link -->
+  <joint name="right_knee_pitch" type="revolute">
+    <parent link="right_thigh_link"/>
+    <child link="right_shin_link"/>
+    <origin xyz="0 0 -0.065" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0.0" upper="1.48" effort="1.0" velocity="6.0"/>
+    <dynamics damping="0.15" friction="0.0"/>
+  </joint>
+
+  <link name="right_shin_link">
+    <inertial>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <mass value="0.045"/>
+      <inertia ixx="1.8188e-5" ixy="0" ixz="0" iyy="1.9219e-5" iyz="0" izz="5.7188e-6"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.030 0.025 0.065"/>
+      </geometry>
+      <material name="servo_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 -0.0325" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.030 0.025 0.065"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Right Foot Link (Ankle Fixed) -->
+  <joint name="right_ankle_fixed" type="fixed">
+    <parent link="right_shin_link"/>
+    <child link="right_foot_link"/>
+    <origin xyz="0 0 -0.065" rpy="0 0 0"/>
+  </joint>
+
+  <link name="right_foot_link">
+    <inertial>
+      <origin xyz="0.010 0 -0.005" rpy="0 0 0"/>
+      <mass value="0.030"/>
+      <inertia ixx="7.8125e-6" ixy="0" ixz="0" iyy="1.4313e-5" iyz="0" izz="2.1625e-5"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.010 0 -0.005" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.075 0.055 0.010"/>
+      </geometry>
+      <material name="duck_orange"/>
+    </visual>
+    <collision>
+      <origin xyz="0.010 0 -0.005" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.075 0.055 0.010"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Transmissions for Actuators (EffortInterface for MG996R) -->
+  <transmission name="head_yaw_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="head_yaw">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="head_yaw_motor">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="head_pitch_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="head_pitch">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="head_pitch_motor">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="left_hip_roll_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="left_hip_roll">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="left_hip_roll_motor">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="left_hip_pitch_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="left_hip_pitch">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="left_hip_pitch_motor">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="left_knee_pitch_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="left_knee_pitch">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="left_knee_pitch_motor">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="right_hip_roll_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="right_hip_roll">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="right_hip_roll_motor">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="right_hip_pitch_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="right_hip_pitch">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="right_hip_pitch_motor">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="right_knee_pitch_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="right_knee_pitch">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="right_knee_pitch_motor">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+</robot>
