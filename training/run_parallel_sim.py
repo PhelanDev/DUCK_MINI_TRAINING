@@ -172,6 +172,9 @@ class ParallelSimRunner:
             raw_lidar = np.array(d.sensordata[28:33], dtype=np.float32)
             lidar_max = getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0)
             lidar_ranges = np.where(raw_lidar < 0.0, lidar_max, raw_lidar)
+        elif self.obs_dim == 42:
+            lidar_max = getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0)
+            lidar_ranges = np.full(5, lidar_max, dtype=np.float32)
         else:
             lidar_ranges = None
 
