@@ -96,11 +96,10 @@ void set_servo_angle(uint8_t index, float angle_rad) {
     // Safety clamping to physical joint range
     float clamped = constrain(angle_rad, JOINT_MIN_LIMITS[index], JOINT_MAX_LIMITS[index]);
 
-    // Map radians to pulse width (500us to 2500us for MG996R)
-    float span = JOINT_MAX_LIMITS[index] - JOINT_MIN_LIMITS[index];
-    float norm = (span > 1e-4f) ? (clamped - JOINT_MIN_LIMITS[index]) / span : 0.5f;
-    uint32_t pulse_us = (uint32_t)(500.0f + norm * 2000.0f);
-    pulse_us = constrain(pulse_us, 500, 2500);
+    // Map radians to pulse width centered at 1500us neutral (2000.0us span per PI rad)
+    // 0.0 rad -> 1500us (neutral), preventing knee jamming on [0.0, 1.48] range
+    float pulse = 1500.0f + clamped * (2000.0f / PI);
+    uint32_t pulse_us = (uint32_t)constrain(pulse, 500.0f, 2500.0f);
 
     ledcWrite(index, pulse_us_to_duty(pulse_us));
 }
@@ -170,6 +169,9 @@ void read_mpu6050(float *gyro, float *proj_grav) {
 
 void process_uart_packets() {
     while (UartLink.available() > 0) {
+        if (g_rx_head >= sizeof(g_rx_ring)) {
+            g_rx_head = 0; // Guard against unbounded buffer overrun
+        }
         uint8_t b = UartLink.read();
         g_rx_ring[g_rx_head++] = b;
 
@@ -178,6 +180,13 @@ void process_uart_packets() {
             // Scan for sync bytes
             if (g_rx_ring[0] == PACKET_SYNC_0 && g_rx_ring[1] == PACKET_SYNC_1) {
                 uint16_t payload_len = (uint16_t)g_rx_ring[4] | (((uint16_t)g_rx_ring[5]) << 8);
+
+                // Guard against oversized payload (corrupted length)
+                if (payload_len > PACKET_MAX_PAYLOAD) {
+                    g_rx_head = 0;
+                    continue;
+                }
+
                 uint16_t total_len = PACKET_HEADER_SIZE + payload_len + PACKET_CRC_SIZE;
 
                 if (g_rx_head >= total_len) {
@@ -351,3 +360,4 @@ void loop() {
 
     yield();
 }
+

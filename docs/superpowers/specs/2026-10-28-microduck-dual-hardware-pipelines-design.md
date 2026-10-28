@@ -83,3 +83,4 @@ d:\duckV1\
 3. **Triển khai nhúng:**
    - Script `infer_rpi5.py` nạp mô hình ONNX và điều khiển servo thành công.
    - Giao thức `uart_packet_protocol.h` và firmware mẫu cho 2 MCU ESP32-S3 đảm bảo toàn vẹn dữ liệu qua CRC16/CRC32.
+

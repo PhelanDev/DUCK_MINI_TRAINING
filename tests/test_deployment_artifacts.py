@@ -29,18 +29,24 @@ def test_rpi5_infer_script_import_and_mock():
     )
 
     # 1. Test angle_to_pwm conversion
-    # 0 rad (neutral) for a symmetric range (-1.57 to 1.57) maps close to mid-pulse ~1500us
-    mid_pwm = angle_to_pwm(0.0, -1.57, 1.57, min_pulse_us=500, max_pulse_us=2500)
-    assert 1450 <= mid_pwm <= 1550, f"Expected mid PWM ~1500us, got {mid_pwm}"
+    # 0 rad (neutral) MUST map to 1500us across all joints, preventing knee jamming on [0.0, 1.48]
+    assert angle_to_pwm(0.0, 0.0, 1.48) == 1500, "Knee 0.0 rad must map to 1500us neutral"
+    assert angle_to_pwm(0.0, -0.52, 0.78) == 1500, "Head pitch 0.0 rad must map to 1500us neutral"
+    assert angle_to_pwm(0.0, -0.87, 0.87) == 1500, "Hip pitch 0.0 rad must map to 1500us neutral"
+    assert angle_to_pwm(0.0, -1.57, 1.57) == 1500, "Symmetric joint 0.0 rad must map to 1500us neutral"
 
-    min_pwm = angle_to_pwm(-1.57, -1.57, 1.57, min_pulse_us=500, max_pulse_us=2500)
+    # Knee max extension (1.48 rad) maps to ~2442us
+    knee_max_pwm = angle_to_pwm(1.48, 0.0, 1.48)
+    assert 2440 <= knee_max_pwm <= 2445, f"Expected knee max ~2442us, got {knee_max_pwm}"
+
+    min_pwm = angle_to_pwm(-np.pi / 2, -1.5708, 1.5708, min_pulse_us=500, max_pulse_us=2500)
     assert min_pwm == 500, f"Expected min PWM 500us, got {min_pwm}"
 
-    max_pwm = angle_to_pwm(1.57, -1.57, 1.57, min_pulse_us=500, max_pulse_us=2500)
+    max_pwm = angle_to_pwm(np.pi / 2, -1.5708, 1.5708, min_pulse_us=500, max_pulse_us=2500)
     assert max_pwm == 2500, f"Expected max PWM 2500us, got {max_pwm}"
 
     # Clamping test
-    clamped_pwm = angle_to_pwm(5.0, -1.57, 1.57, min_pulse_us=500, max_pulse_us=2500)
+    clamped_pwm = angle_to_pwm(5.0, -np.pi / 2, np.pi / 2, min_pulse_us=500, max_pulse_us=2500)
     assert clamped_pwm == 2500
 
     # 2. Test pack_rpi5_observation
@@ -218,6 +224,29 @@ int main() {{
     buffer[encoded_len - 1] ^= 0xFF; // Corrupt CRC
     ok = decode_lidar_packet(buffer, encoded_len, &lidar_out, &seq_out);
     assert(ok == false);
+
+    // 5. Test buffer overflow protection in decode_packet
+    buffer[encoded_len - 1] ^= 0xFF; // Restore valid CRC
+    uint8_t p_type = 0;
+    uint16_t out_len = 0;
+    uint8_t tiny_dest[2];
+    // Attempting to decode into a 2-byte destination when payload is larger (21 bytes)
+    bool safe_decode = decode_packet(buffer, encoded_len, &p_type, &seq_out, tiny_dest, sizeof(tiny_dest), &out_len);
+    assert(safe_decode == false);
+
+    // 6. Test HeartbeatPacket encoding and C-pointer overload
+    HeartbeatPacket hb_in;
+    hb_in.uptime_ms = 12345;
+    hb_in.status = 0;
+    encoded_len = encode_heartbeat_packet(&hb_in, 7, buffer, sizeof(buffer));
+    assert(encoded_len > 0);
+
+    HeartbeatPacket hb_out;
+    ok = decode_heartbeat_packet(buffer, encoded_len, &hb_out, &seq_out);
+    assert(ok == true);
+    assert(seq_out == 7);
+    assert(hb_out.uptime_ms == 12345);
+    assert(hb_out.status == 0);
 
     std::cout << "All protocol tests passed successfully." << std::endl;
     return 0;

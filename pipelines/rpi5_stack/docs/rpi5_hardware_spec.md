@@ -139,3 +139,4 @@ Bo mạch mở rộng I2C PCA9685 được gán 8 kênh PWM đầu tiên tương
    - Khi góc nghiêng Pitch/Roll của robot vượt quá $\pm 45^\circ$ (ngã đổ), phần mềm lập tức ngắt xung PWM (kéo chân OE lên mức cao hoặc xuất xung 0) để bảo vệ bánh răng hộp số MG996R khỏi bị kẹt gãy do quá tải.
 3. **Giới hạn tốc độ góc (Velocity Rate Limiter):**
    - Đảm bảo bước nhảy góc đặt không vượt quá $\Delta \theta_{\max} = 6.0\text{ rad/s} \times 0.02\text{ s} = 0.12\text{ rad} \approx 6.88^\circ$ trong mỗi chu kỳ $20\text{ms}$.
+

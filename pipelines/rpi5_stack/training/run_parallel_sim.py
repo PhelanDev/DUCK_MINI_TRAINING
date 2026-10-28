@@ -27,6 +27,7 @@ from pipelines.rpi5_stack.training.env_config import (
     clip_action_rates,
     compute_observations,
     compute_rewards,
+    quat_rotate_inverse,
     scale_actions,
 )
 
@@ -45,8 +46,8 @@ class ParallelSimRunner:
         cfg: Optional[MicroDuck8DoFConfig] = None,
         decimation: int = 10,
         num_threads: Optional[int] = None,
-        kp: float = 20.0,
-        kd: float = 0.5,
+        kp: Optional[float] = None,
+        kd: Optional[float] = None,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -55,8 +56,8 @@ class ParallelSimRunner:
         self.cfg = cfg if cfg is not None else _DEFAULT_CFG
         self.num_envs = int(num_envs)
         self.decimation = max(1, int(decimation))
-        self.kp = float(kp)
-        self.kd = float(kd)
+        self.kp = float(kp) if kp is not None else float(self.cfg.KP)
+        self.kd = float(kd) if kd is not None else float(self.cfg.KD)
 
         # Load shared MuJoCo model and instantiate per-env data
         self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
@@ -206,20 +207,16 @@ class ParallelSimRunner:
             self.action_dim,
         ), f"Expected action shape ({self.num_envs}, {self.action_dim}), got {actions.shape}"
 
-        # 1. Scale actions to joint limits
-        scaled_targets = np.empty_like(actions)
-        for i in range(self.num_envs):
-            scaled_targets[i] = scale_actions(actions[i], self.cfg)
+        # 1. Scale actions to joint limits (vectorized)
+        scaled_targets = scale_actions(actions, self.cfg)
 
-        # 2. Rate-limit target joint changes
-        target_positions = np.empty_like(scaled_targets)
-        for i in range(self.num_envs):
-            target_positions[i] = clip_action_rates(
-                scaled_targets[i],
-                self.last_targets[i],
-                dt=self.control_dt,
-                max_velocity=self.cfg.MAX_VELOCITY,
-            )
+        # 2. Rate-limit target joint changes (vectorized)
+        target_positions = clip_action_rates(
+            scaled_targets,
+            self.last_targets,
+            dt=self.control_dt,
+            max_velocity=self.cfg.MAX_VELOCITY,
+        )
         self.last_targets[:] = target_positions
 
         # 3. Step physics simulation (either multi-threaded or sequential)
@@ -237,53 +234,63 @@ class ParallelSimRunner:
 
         # 4. Extract observations, compute rewards, and check done flags
         next_obs = np.empty((self.num_envs, self.obs_dim), dtype=np.float32)
-        rewards = np.empty(self.num_envs, dtype=np.float32)
-        dones = np.zeros(self.num_envs, dtype=bool)
-        infos: List[Dict[str, Any]] = []
-
         for i in range(self.num_envs):
-            d = self.datas[i]
             next_obs[i] = self._extract_obs(i)
 
-            # Extract terms for reward calculation
-            base_lin_vel = np.array(d.qvel[0:3], dtype=np.float32)
-            cmd_lin_vel = np.array([self.commands[i, 0], self.commands[i, 1], 0.0], dtype=np.float32)
-            base_ang_vel = np.array(d.sensordata[3:6], dtype=np.float32)
-            cmd_ang_vel = float(self.commands[i, 2])
-            proj_grav = next_obs[i, 3:6]
-            joint_torques = np.array(d.ctrl[:], dtype=np.float32)
-            joint_vel = np.array(d.sensordata[20:28], dtype=np.float32)
-            foot_contact = next_obs[i, 33:37]
-            lidar_ranges = next_obs[i, 37:42]
+        # Vectorized extraction of kinodynamic tensors
+        base_lin_vel_world = np.array([d.qvel[0:3] for d in self.datas], dtype=np.float32)
+        base_quat = np.array([d.qpos[3:7] for d in self.datas], dtype=np.float32)
+        # Project linear velocity from World Frame into Body Frame for tracking reward
+        base_lin_vel_body = quat_rotate_inverse(base_quat, base_lin_vel_world)
 
-            reward_dict = compute_rewards(
-                base_lin_vel=base_lin_vel,
-                cmd_lin_vel=cmd_lin_vel,
-                base_ang_vel=base_ang_vel,
-                cmd_ang_vel=cmd_ang_vel,
-                proj_gravity=proj_grav,
-                joint_torques=joint_torques,
-                joint_vel=joint_vel,
-                foot_contact=foot_contact,
-                lidar_ranges=lidar_ranges,
-                actions=actions[i],
-                last_actions=self.last_actions[i],
-                weights=self.cfg.REWARD_WEIGHTS,
-            )
-            rewards[i] = reward_dict["total_reward"]
-            infos.append(reward_dict)
+        cmd_lin_vel = np.zeros((self.num_envs, 3), dtype=np.float32)
+        cmd_lin_vel[:, :2] = self.commands[:, :2]
 
-            # Check termination conditions: fall over, excessive tilt, or numerical divergence
-            root_z = float(d.qpos[2])
-            grav_z = float(proj_grav[2])
-            if (
-                root_z < 0.08
-                or grav_z > -0.3
-                or not np.all(np.isfinite(d.qpos))
-                or not np.all(np.isfinite(d.qvel))
-            ):
-                dones[i] = True
+        base_ang_vel = np.array([d.sensordata[3:6] for d in self.datas], dtype=np.float32)
+        cmd_ang_vel = self.commands[:, 2]
+        proj_grav = next_obs[:, 3:6]
+        joint_torques = np.array([d.ctrl[:] for d in self.datas], dtype=np.float32)
+        joint_vel = np.array([d.sensordata[20:28] for d in self.datas], dtype=np.float32)
+        foot_contact = next_obs[:, 33:37]
+        lidar_ranges = next_obs[:, 37:42]
+
+        # Vectorized reward computation across all environments
+        reward_dict = compute_rewards(
+            base_lin_vel=base_lin_vel_body,
+            cmd_lin_vel=cmd_lin_vel,
+            base_ang_vel=base_ang_vel,
+            cmd_ang_vel=cmd_ang_vel,
+            proj_gravity=proj_grav,
+            joint_torques=joint_torques,
+            joint_vel=joint_vel,
+            foot_contact=foot_contact,
+            lidar_ranges=lidar_ranges,
+            actions=actions,
+            last_actions=self.last_actions,
+            weights=self.cfg.REWARD_WEIGHTS,
+        )
+        rewards = reward_dict["total_reward"]
+
+        # Vectorized termination check: fall over, excessive tilt, or numerical divergence
+        root_z = np.array([d.qpos[2] for d in self.datas], dtype=np.float32)
+        grav_z = proj_grav[:, 2]
+        diverged = np.array([
+            (not np.all(np.isfinite(d.qpos))) or (not np.all(np.isfinite(d.qvel)))
+            for d in self.datas
+        ], dtype=bool)
+
+        dones = (root_z < 0.08) | (grav_z > -0.3) | diverged
+
+        # Maintain per-env info dictionary list for diagnostic logging / evaluation
+        infos: List[Dict[str, Any]] = [
+            {k: float(v[i]) for k, v in reward_dict.items()}
+            for i in range(self.num_envs)
+        ]
+
+        if np.any(dones):
+            for i in np.where(dones)[0]:
                 self.reset_env(i)
+            self.last_actions[dones] = 0.0
 
         self.last_actions[:] = actions
         if np.any(dones):

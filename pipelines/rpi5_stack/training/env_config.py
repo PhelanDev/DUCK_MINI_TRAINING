@@ -57,6 +57,10 @@ class MicroDuck8DoFConfig:
     MAX_VELOCITY: float = 6.0  # rad/s (~344 deg/s)
     DEFAULT_DT: float = 0.02  # 50 Hz control loop frequency
 
+    # PD controller gains for simulated MG996R position servos
+    KP: float = 25.0  # Joint position proportional gain (N*m/rad)
+    KD: float = 0.8  # Joint velocity derivative gain (N*m*s/rad)
+
     # Balanced reward weights
     REWARD_WEIGHTS: Dict[str, float] = field(
         default_factory=lambda: {
@@ -166,6 +170,22 @@ def clip_action_rates(
     return (last + delta).astype(np.float32)
 
 
+def quat_rotate_inverse(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Rotate 3D vector v from World Frame into Body Frame using quaternion q = [w, x, y, z].
+
+    Supports both single vector/quaternion (shape (3,) / (4,)) and
+    batched arrays (shape (N, 3) / (N, 4)).
+    """
+    q_arr = np.asarray(q, dtype=np.float32)
+    v_arr = np.asarray(v, dtype=np.float32)
+
+    qw = q_arr[..., 0:1]
+    qv = -q_arr[..., 1:4]
+
+    t = 2.0 * np.cross(qv, v_arr)
+    return (v_arr + qw * t + np.cross(qv, t)).astype(np.float32)
+
+
 def compute_rewards(
     base_lin_vel: np.ndarray,
     cmd_lin_vel: np.ndarray,
@@ -179,8 +199,12 @@ def compute_rewards(
     actions: Optional[np.ndarray] = None,
     last_actions: Optional[np.ndarray] = None,
     weights: Optional[Dict[str, float]] = None,
-) -> Dict[str, float]:
-    """Compute balanced reward terms and total reward for 42-dim RL training."""
+) -> Dict[str, Union[float, np.ndarray]]:
+    """Compute balanced reward terms and total reward for 42-dim RL training.
+
+    Supports both single environment (1D arrays -> float rewards) and
+    batched environments (2D arrays of shape (N, ...) -> 1D arrays of shape (N,)).
+    """
     if weights is None:
         weights = _DEFAULT_CFG.REWARD_WEIGHTS
 
@@ -192,56 +216,71 @@ def compute_rewards(
     j_vel = np.asarray(joint_vel, dtype=np.float32)
     f_contact = np.asarray(foot_contact, dtype=np.float32)
 
+    is_batch = base_lin.ndim > 1
+
     # Target yaw rate
-    if hasattr(cmd_ang_vel, "__len__"):
-        cmd_ang_arr = np.asarray(cmd_ang_vel, dtype=np.float32).ravel()
-        target_yaw = float(cmd_ang_arr[2] if len(cmd_ang_arr) >= 3 else cmd_ang_arr[0])
+    if is_batch:
+        if isinstance(cmd_ang_vel, np.ndarray) and cmd_ang_vel.ndim > 1:
+            target_yaw = cmd_ang_vel[:, 2] if cmd_ang_vel.shape[-1] >= 3 else cmd_ang_vel[:, 0]
+        elif isinstance(cmd_ang_vel, np.ndarray) and cmd_ang_vel.shape[0] == base_lin.shape[0]:
+            target_yaw = cmd_ang_vel
+        else:
+            target_yaw = float(cmd_ang_vel)
     else:
-        target_yaw = float(cmd_ang_vel)
+        if hasattr(cmd_ang_vel, "__len__"):
+            cmd_ang_arr = np.asarray(cmd_ang_vel, dtype=np.float32).ravel()
+            target_yaw = float(cmd_ang_arr[2] if len(cmd_ang_arr) >= 3 else cmd_ang_arr[0])
+        else:
+            target_yaw = float(cmd_ang_vel)
 
     # 1. Linear velocity tracking in XY plane (exponential kernel)
-    lin_err_sq = float(np.sum(np.square(base_lin[:2] - cmd_lin[:2])))
-    r_track_lin_vel = float(np.exp(-lin_err_sq / 0.25))
+    lin_err_sq = np.sum(np.square(base_lin[..., :2] - cmd_lin[..., :2]), axis=-1)
+    r_track_lin_vel = np.exp(-lin_err_sq / 0.25)
 
     # 2. Angular velocity tracking around Z axis
-    ang_err_sq = float(np.square(base_ang[2] - target_yaw))
-    r_track_ang_vel = float(np.exp(-ang_err_sq / 0.25))
+    ang_err_sq = np.square(base_ang[..., 2] - target_yaw)
+    r_track_ang_vel = np.exp(-ang_err_sq / 0.25)
 
     # 3. Upright posture reward (gravity projection along body Z should be -1.0)
-    grav_err_sq = float(
-        np.square(grav[0]) + np.square(grav[1]) + np.square(grav[2] - (-1.0))
+    grav_err_sq = (
+        np.square(grav[..., 0])
+        + np.square(grav[..., 1])
+        + np.square(grav[..., 2] - (-1.0))
     )
-    r_upright = float(np.exp(-grav_err_sq / 0.2))
+    r_upright = np.exp(-grav_err_sq / 0.2)
 
     # 4. Energy and torque minimization penalty
-    r_torque_penalty = float(np.sum(np.square(torques)))
+    r_torque_penalty = np.sum(np.square(torques), axis=-1)
 
     # 5. Joint velocity smoothing penalty
-    r_joint_vel_penalty = float(np.sum(np.square(j_vel)))
+    r_joint_vel_penalty = np.sum(np.square(j_vel), axis=-1)
 
     # 6. Action rate penalty (protects MG996R gears against jerky policy outputs)
     if actions is not None and last_actions is not None:
         act = np.asarray(actions, dtype=np.float32)
         last_act = np.asarray(last_actions, dtype=np.float32)
-        r_action_rate_penalty = float(np.sum(np.square(act - last_act)))
+        r_action_rate_penalty = np.sum(np.square(act - last_act), axis=-1)
     else:
-        r_action_rate_penalty = 0.0
+        r_action_rate_penalty = (
+            np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+        )
 
     # 7. Foot contact reward (encourages stable stance phase)
-    r_foot_contact = float(np.sum(f_contact > 0.0))
+    r_foot_contact = np.sum(f_contact > 0.0, axis=-1).astype(np.float32)
 
     # 8. Obstacle avoidance reward / penalty
-    if lidar_ranges is not None and len(lidar_ranges) > 0:
-        min_dist = float(np.min(lidar_ranges))
-        if min_dist < _DEFAULT_CFG.OBSTACLE_THRESHOLD:
-            # Proximity penalty when closer than 0.35m
-            r_obstacle = float(min_dist - _DEFAULT_CFG.OBSTACLE_THRESHOLD)
-        else:
-            r_obstacle = float(min_dist)
+    if lidar_ranges is not None:
+        ranges = np.asarray(lidar_ranges, dtype=np.float32)
+        min_dist = np.min(ranges, axis=-1)
+        r_obstacle = np.where(
+            min_dist < _DEFAULT_CFG.OBSTACLE_THRESHOLD,
+            min_dist - _DEFAULT_CFG.OBSTACLE_THRESHOLD,
+            min_dist,
+        ).astype(np.float32)
     else:
-        r_obstacle = 0.0
+        r_obstacle = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
-    total = float(
+    total = (
         weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
         + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
         + weights.get("upright", 1.0) * r_upright
@@ -252,14 +291,27 @@ def compute_rewards(
         + weights.get("obstacle_avoidance", 0.2) * r_obstacle
     )
 
+    if not is_batch:
+        return {
+            "total_reward": float(total),
+            "tracking_lin_vel": float(r_track_lin_vel),
+            "tracking_ang_vel": float(r_track_ang_vel),
+            "upright": float(r_upright),
+            "torque_penalty": float(r_torque_penalty),
+            "joint_vel_penalty": float(r_joint_vel_penalty),
+            "action_rate_penalty": float(r_action_rate_penalty),
+            "foot_contact": float(r_foot_contact),
+            "obstacle_avoidance": float(r_obstacle),
+        }
+
     return {
-        "total_reward": total,
-        "tracking_lin_vel": r_track_lin_vel,
-        "tracking_ang_vel": r_track_ang_vel,
-        "upright": r_upright,
-        "torque_penalty": r_torque_penalty,
-        "joint_vel_penalty": r_joint_vel_penalty,
-        "action_rate_penalty": r_action_rate_penalty,
-        "foot_contact": r_foot_contact,
-        "obstacle_avoidance": r_obstacle,
+        "total_reward": total.astype(np.float32),
+        "tracking_lin_vel": r_track_lin_vel.astype(np.float32),
+        "tracking_ang_vel": r_track_ang_vel.astype(np.float32),
+        "upright": r_upright.astype(np.float32),
+        "torque_penalty": r_torque_penalty.astype(np.float32),
+        "joint_vel_penalty": r_joint_vel_penalty.astype(np.float32),
+        "action_rate_penalty": r_action_rate_penalty.astype(np.float32),
+        "foot_contact": r_foot_contact.astype(np.float32),
+        "obstacle_avoidance": r_obstacle.astype(np.float32),
     }

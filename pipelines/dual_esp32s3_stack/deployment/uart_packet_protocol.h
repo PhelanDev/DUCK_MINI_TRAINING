@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <string.h>
 
 #ifdef __cplusplus
@@ -27,6 +28,13 @@ extern "C" {
 #define PACKET_CRC_SIZE 2
 #define PACKET_MIN_SIZE (PACKET_HEADER_SIZE + PACKET_CRC_SIZE)
 #define PACKET_MAX_PAYLOAD 128
+
+// Return / Error Codes
+#define PACKET_OK                      0
+#define PACKET_ERR_INVALID_SYNC       -1
+#define PACKET_ERR_INCOMPLETE         -2
+#define PACKET_ERR_CRC_MISMATCH       -3
+#define PACKET_ERR_PAYLOAD_TOO_LARGE  -4
 
 // Packet Types
 typedef enum {
@@ -140,18 +148,19 @@ static inline uint16_t encode_packet(
 }
 
 /**
- * @brief Helper: Encode Velocity Command Packet
+ * @brief Helper: Encode Velocity Command Packet (C pointer API)
  */
 static inline uint16_t encode_velocity_packet(
-    const VelocityCmdPacket &pkt,
+    const VelocityCmdPacket *pkt,
     uint8_t seq,
     uint8_t *out_buffer,
     uint16_t max_len
 ) {
+    if (!pkt) return 0;
     return encode_packet(
         PKT_TYPE_VELOCITY_CMD,
         seq,
-        &pkt,
+        pkt,
         sizeof(VelocityCmdPacket),
         out_buffer,
         max_len
@@ -159,18 +168,19 @@ static inline uint16_t encode_velocity_packet(
 }
 
 /**
- * @brief Helper: Encode LiDAR Perception Packet
+ * @brief Helper: Encode LiDAR Perception Packet (C pointer API)
  */
 static inline uint16_t encode_lidar_packet(
-    const LidarPerceptionPacket &pkt,
+    const LidarPerceptionPacket *pkt,
     uint8_t seq,
     uint8_t *out_buffer,
     uint16_t max_len
 ) {
+    if (!pkt) return 0;
     return encode_packet(
         PKT_TYPE_LIDAR_PERCEPTION,
         seq,
-        &pkt,
+        pkt,
         sizeof(LidarPerceptionPacket),
         out_buffer,
         max_len
@@ -178,18 +188,19 @@ static inline uint16_t encode_lidar_packet(
 }
 
 /**
- * @brief Helper: Encode Heartbeat Packet
+ * @brief Helper: Encode Heartbeat Packet (C pointer API)
  */
 static inline uint16_t encode_heartbeat_packet(
-    const HeartbeatPacket &pkt,
+    const HeartbeatPacket *pkt,
     uint8_t seq,
     uint8_t *out_buffer,
     uint16_t max_len
 ) {
+    if (!pkt) return 0;
     return encode_packet(
         PKT_TYPE_HEARTBEAT,
         seq,
-        &pkt,
+        pkt,
         sizeof(HeartbeatPacket),
         out_buffer,
         max_len
@@ -197,7 +208,7 @@ static inline uint16_t encode_heartbeat_packet(
 }
 
 /**
- * @brief Generic function to decode a binary frame and verify CRC.
+ * @brief Generic function to decode a binary frame, verify CRC and guard against buffer overflow.
  */
 static inline bool decode_packet(
     const uint8_t *buffer,
@@ -205,6 +216,7 @@ static inline bool decode_packet(
     uint8_t *out_type,
     uint8_t *out_seq,
     uint8_t *out_payload,
+    size_t max_payload_len,
     uint16_t *out_payload_len
 ) {
     if (len < PACKET_MIN_SIZE) {
@@ -220,6 +232,11 @@ static inline bool decode_packet(
 
     uint16_t expected_total_len = PACKET_HEADER_SIZE + p_len + PACKET_CRC_SIZE;
     if (len < expected_total_len) {
+        return false;
+    }
+
+    // Critical Security: Guard against stack buffer overflow
+    if (out_payload != NULL && p_len > max_payload_len) {
         return false;
     }
 
@@ -243,7 +260,7 @@ static inline bool decode_packet(
 }
 
 /**
- * @brief Decode VelocityCmdPacket with CRC check.
+ * @brief Decode VelocityCmdPacket with CRC check and buffer bounds validation.
  */
 static inline bool decode_velocity_packet(
     const uint8_t *buffer,
@@ -253,22 +270,22 @@ static inline bool decode_velocity_packet(
 ) {
     uint8_t p_type = 0;
     uint16_t p_len = 0;
-    uint8_t payload[sizeof(VelocityCmdPacket)];
+    VelocityCmdPacket payload;
 
-    if (!decode_packet(buffer, len, &p_type, out_seq, payload, &p_len)) {
+    if (!decode_packet(buffer, len, &p_type, out_seq, (uint8_t *)&payload, sizeof(payload), &p_len)) {
         return false;
     }
     if (p_type != PKT_TYPE_VELOCITY_CMD || p_len != sizeof(VelocityCmdPacket)) {
         return false;
     }
     if (out_cmd) {
-        memcpy(out_cmd, payload, sizeof(VelocityCmdPacket));
+        memcpy(out_cmd, &payload, sizeof(VelocityCmdPacket));
     }
     return true;
 }
 
 /**
- * @brief Decode LidarPerceptionPacket with CRC check.
+ * @brief Decode LidarPerceptionPacket with CRC check and buffer bounds validation.
  */
 static inline bool decode_lidar_packet(
     const uint8_t *buffer,
@@ -278,22 +295,22 @@ static inline bool decode_lidar_packet(
 ) {
     uint8_t p_type = 0;
     uint16_t p_len = 0;
-    uint8_t payload[sizeof(LidarPerceptionPacket)];
+    LidarPerceptionPacket payload;
 
-    if (!decode_packet(buffer, len, &p_type, out_seq, payload, &p_len)) {
+    if (!decode_packet(buffer, len, &p_type, out_seq, (uint8_t *)&payload, sizeof(payload), &p_len)) {
         return false;
     }
     if (p_type != PKT_TYPE_LIDAR_PERCEPTION || p_len != sizeof(LidarPerceptionPacket)) {
         return false;
     }
     if (out_lidar) {
-        memcpy(out_lidar, payload, sizeof(LidarPerceptionPacket));
+        memcpy(out_lidar, &payload, sizeof(LidarPerceptionPacket));
     }
     return true;
 }
 
 /**
- * @brief Decode HeartbeatPacket with CRC check.
+ * @brief Decode HeartbeatPacket with CRC check and buffer bounds validation.
  */
 static inline bool decode_heartbeat_packet(
     const uint8_t *buffer,
@@ -303,22 +320,51 @@ static inline bool decode_heartbeat_packet(
 ) {
     uint8_t p_type = 0;
     uint16_t p_len = 0;
-    uint8_t payload[sizeof(HeartbeatPacket)];
+    HeartbeatPacket payload;
 
-    if (!decode_packet(buffer, len, &p_type, out_seq, payload, &p_len)) {
+    if (!decode_packet(buffer, len, &p_type, out_seq, (uint8_t *)&payload, sizeof(payload), &p_len)) {
         return false;
     }
     if (p_type != PKT_TYPE_HEARTBEAT || p_len != sizeof(HeartbeatPacket)) {
         return false;
     }
     if (out_hb) {
-        memcpy(out_hb, payload, sizeof(HeartbeatPacket));
+        memcpy(out_hb, &payload, sizeof(HeartbeatPacket));
     }
     return true;
 }
 
 #ifdef __cplusplus
 }
+
+// C++ Overloads with pass-by-reference for convenience
+static inline uint16_t encode_velocity_packet(
+    const VelocityCmdPacket &pkt,
+    uint8_t seq,
+    uint8_t *out_buffer,
+    uint16_t max_len
+) {
+    return encode_velocity_packet(&pkt, seq, out_buffer, max_len);
+}
+
+static inline uint16_t encode_lidar_packet(
+    const LidarPerceptionPacket &pkt,
+    uint8_t seq,
+    uint8_t *out_buffer,
+    uint16_t max_len
+) {
+    return encode_lidar_packet(&pkt, seq, out_buffer, max_len);
+}
+
+static inline uint16_t encode_heartbeat_packet(
+    const HeartbeatPacket &pkt,
+    uint8_t seq,
+    uint8_t *out_buffer,
+    uint16_t max_len
+) {
+    return encode_heartbeat_packet(&pkt, seq, out_buffer, max_len);
+}
+
 #endif
 
 #endif // UART_PACKET_PROTOCOL_H

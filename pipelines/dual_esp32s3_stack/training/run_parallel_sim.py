@@ -27,6 +27,7 @@ from pipelines.dual_esp32s3_stack.training.env_config import (
     clip_action_rates,
     compute_observations,
     compute_rewards,
+    quat_rotate_inverse,
     scale_actions,
 )
 
@@ -50,8 +51,8 @@ class ParallelSimRunner:
         cfg: Optional[MicroDuck8DoFConfig] = None,
         decimation: int = 10,
         num_threads: Optional[int] = None,
-        kp: float = 20.0,
-        kd: float = 0.5,
+        kp: Optional[float] = None,
+        kd: Optional[float] = None,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -60,8 +61,8 @@ class ParallelSimRunner:
         self.cfg = cfg if cfg is not None else _DEFAULT_CFG
         self.num_envs = int(num_envs)
         self.decimation = max(1, int(decimation))
-        self.kp = float(kp)
-        self.kd = float(kd)
+        self.kp = float(kp) if kp is not None else float(self.cfg.KP)
+        self.kd = float(kd) if kd is not None else float(self.cfg.KD)
 
         # Load shared MuJoCo model and instantiate per-env data
         self.model = mujoco.MjModel.from_xml_path(str(self.model_path))

@@ -95,13 +95,13 @@ MCU 1 tập trung toàn bộ năng lực phần cứng cho nhận thức môi tr
 | | CAM_VSYNC | GPIO 6 | Tín hiệu đồng bộ khung |
 | | CAM_HREF | GPIO 7 | Tín hiệu đồng bộ dòng |
 | | CAM_SIOD / SIOC | GPIO 4, GPIO 5 | I2C SCCB điều khiển cảm biến |
-| **Micro I2S (INMP441)** | I2S_BCLK | GPIO 15 | Xung nhịp bit lấy mẫu âm thanh |
-| | I2S_WS (LRCL) | GPIO 16 | Chọn kênh Word Select (Trái/Phải) |
-| | I2S_DIN (SD) | GPIO 7 | Dữ liệu âm thanh số 24-bit trả về |
+| **Micro I2S (INMP441)** | I2S_BCLK | GPIO 1 | Xung nhịp bit lấy mẫu âm thanh |
+| | I2S_WS (LRCL) | GPIO 2 | Chọn kênh Word Select (Trái/Phải) |
+| | I2S_DIN (SD) | GPIO 42 | Dữ liệu âm thanh số 24-bit trả về |
 | | VDD / GND | 3.3V / GND | Nguồn nuôi micro âm thanh mỏ vịt |
 | **LiDAR 5 Tia (ToF)** | I2C_SDA | GPIO 4 | Giao tiếp I2C đọc khoảng cách 5 hướng |
 | | I2C_SCL | GPIO 5 | Xung nhịp I2C 400kHz |
-| | XSHUT_1..5 | GPIO 38, 39, 40, 41, 42 | Reset và định địa chỉ động 5 cảm biến |
+| | XSHUT_1..5 | GPIO 38, 39, 40, 41, 47 | Reset và định địa chỉ động 5 cảm biến |
 
 ---
 
@@ -133,3 +133,4 @@ MCU 2 chịu trách nhiệm đọc tư thế bipedal và điều khiển 8 servo
 3. **Cơ chế ngắt an toàn bằng phần mềm (Software Watchdog):**
    - MCU 2 theo dõi điện áp pin qua cầu phân áp vào chân ADC (GPIO 1). Nếu điện áp xuống dưới $6.6\text{V}$, robot tự động ngồi gập gối về trạng thái nghỉ và ngắt xung PWM để bảo vệ pin không bị phồng/cháy nổ.
    - Nếu mất gói tín hiệu từ MCU 1 quá $500\text{ms}$, MCU 2 tự động dừng bước và giữ thăng bằng tại chỗ.
+

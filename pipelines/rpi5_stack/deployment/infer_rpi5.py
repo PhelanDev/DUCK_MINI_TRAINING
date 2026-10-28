@@ -43,23 +43,22 @@ except ImportError:
 
 def angle_to_pwm(
     angle_rad: float,
-    min_rad: float,
-    max_rad: float,
+    min_rad: float = -1.57,
+    max_rad: float = 1.57,
     min_pulse_us: int = 500,
     max_pulse_us: int = 2500,
+    neutral_pulse_us: int = 1500,
 ) -> int:
     """Map joint angle in radians to servo PWM pulse width in microseconds (us).
 
-    Clamps angle safely within [min_rad, max_rad].
-    MG996R standard range: ~500us to ~2500us (neutral 1500us).
+    Neutral angle 0.0 rad maps to neutral_pulse_us (1500us).
+    Servo sensitivity: 2000.0 us span over pi radians (-pi/2 to +pi/2, ~636.62 us/rad).
+    Clamps angle safely within [min_rad, max_rad] and output pulse to [min_pulse_us, max_pulse_us].
+    Prevents knee jamming on asymmetric joint limits (e.g. [0.0, 1.48] rad).
     """
     clamped_angle = float(np.clip(angle_rad, min_rad, max_rad))
-    if max_rad <= min_rad:
-        return int((min_pulse_us + max_pulse_us) / 2)
-
-    norm = (clamped_angle - min_rad) / (max_rad - min_rad)
-    pulse = min_pulse_us + norm * (max_pulse_us - min_pulse_us)
-    return int(np.clip(pulse, min_pulse_us, max_pulse_us))
+    pulse = neutral_pulse_us + clamped_angle * (2000.0 / np.pi)
+    return int(np.clip(np.round(pulse), min_pulse_us, max_pulse_us))
 
 
 def pack_rpi5_observation(
@@ -311,3 +310,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

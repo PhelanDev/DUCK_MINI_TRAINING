@@ -118,3 +118,4 @@
 - [ ] **Step 1: Update README.md with dual-pipeline guidance and sensor suite**
 - [ ] **Step 2: Run full pytest suite across all tests**
 - [ ] **Step 3: Commit and verify clean git status**
+

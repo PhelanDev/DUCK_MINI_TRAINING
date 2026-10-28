@@ -25,11 +25,11 @@
 #define PIN_UART_RX        18
 #define UART_BAUD_RATE     921600
 
-// I2S Microphone (INMP441)
+// I2S Microphone (INMP441) - Dedicated non-conflicting GPIOs
 #define I2S_PORT           I2S_NUM_0
-#define PIN_I2S_BCLK       15
-#define PIN_I2S_WS         16
-#define PIN_I2S_DIN        7
+#define PIN_I2S_BCLK       1
+#define PIN_I2S_WS         2
+#define PIN_I2S_DIN        42
 
 // I2C Bus for 5-Ray ToF LiDAR Rangefinder Array
 #define PIN_I2C_SDA        4
@@ -208,3 +208,4 @@ void loop() {
     // Yield CPU time to background tasks
     delay(1);
 }
+

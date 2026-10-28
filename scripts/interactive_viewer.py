@@ -25,6 +25,19 @@ if sys.platform == "win32":
 
 import numpy as np
 
+# Ensure repository root is in sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+try:
+    from training.env_config import _DEFAULT_CFG
+    DEFAULT_KP = _DEFAULT_CFG.KP
+    DEFAULT_KD = _DEFAULT_CFG.KD
+    DEFAULT_TORQUE_LIMIT = _DEFAULT_CFG.TORQUE_LIMIT
+except Exception:
+    DEFAULT_KP = 25.0
+    DEFAULT_KD = 0.8
+    DEFAULT_TORQUE_LIMIT = 1.0
+
 try:
     import mujoco
     import mujoco.viewer
@@ -169,9 +182,9 @@ def apply_pd_control(
     model: Any,
     data: Any,
     target_positions: np.ndarray,
-    kp: float = 25.0,
-    kd: float = 0.8,
-    torque_limit: float = 1.0,
+    kp: float = DEFAULT_KP,
+    kd: float = DEFAULT_KD,
+    torque_limit: float = DEFAULT_TORQUE_LIMIT,
 ) -> np.ndarray:
     """Compute and apply PD torques to simulate MG996R position servos."""
     current_positions = data.qpos[7:15]
