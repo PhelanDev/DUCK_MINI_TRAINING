@@ -268,6 +268,8 @@ class ParallelSimRunner:
                 self.reset_env(i)
 
         self.last_actions[:] = actions
+        if np.any(dones):
+            self.last_actions[dones] = 0.0
         return next_obs, rewards, dones, infos
 
     def close(self):
