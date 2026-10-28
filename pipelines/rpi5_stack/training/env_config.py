@@ -1,0 +1,265 @@
+"""Reinforcement Learning Environment Configuration for MicroDuck 8-DOF (RPi 5 Stack).
+
+Defines 42-dimensional perception observation space (including 5-ray LiDAR scanner),
+8-DOF MG996R action scaling, rate limiting, and balanced multi-objective reward
+calculation with obstacle avoidance for autonomous bipedal navigation.
+"""
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple, Union
+import numpy as np
+
+
+@dataclass
+class MicroDuck8DoFConfig:
+    """Configuration dataclass for MicroDuck 8-DOF on Raspberry Pi 5 Stack."""
+
+    STACK_NAME: str = "rpi5_stack"
+    TARGET_MASS: float = 0.860  # kg (~860g total weight)
+    POLICY_DTYPE: str = "float32"
+
+    OBS_DIM: int = 42
+    ACTION_DIM: int = 8
+    LIDAR_RAYS: int = 5
+    LIDAR_MIN_RANGE: float = 0.05
+    LIDAR_MAX_RANGE: float = 2.0
+    OBSTACLE_THRESHOLD: float = 0.35  # meters
+
+    JOINT_NAMES: List[str] = field(
+        default_factory=lambda: [
+            "head_yaw",
+            "head_pitch",
+            "left_hip_roll",
+            "left_hip_pitch",
+            "left_knee_pitch",
+            "right_hip_roll",
+            "right_hip_pitch",
+            "right_knee_pitch",
+        ]
+    )
+
+    # Physical limits for MG996R servo joints (radians)
+    JOINT_LIMITS: Dict[str, Tuple[float, float]] = field(
+        default_factory=lambda: {
+            "head_yaw": (-1.57, 1.57),
+            "head_pitch": (-0.52, 0.78),
+            "left_hip_roll": (-0.44, 0.44),
+            "left_hip_pitch": (-0.87, 0.87),
+            "left_knee_pitch": (0.0, 1.48),
+            "right_hip_roll": (-0.44, 0.44),
+            "right_hip_pitch": (-0.87, 0.87),
+            "right_knee_pitch": (0.0, 1.48),
+        }
+    )
+
+    # MG996R specifications
+    TORQUE_LIMIT: float = 1.0  # N.m (stall torque rating)
+    MAX_VELOCITY: float = 6.0  # rad/s (~344 deg/s)
+    DEFAULT_DT: float = 0.02  # 50 Hz control loop frequency
+
+    # Balanced reward weights
+    REWARD_WEIGHTS: Dict[str, float] = field(
+        default_factory=lambda: {
+            "tracking_lin_vel": 1.0,
+            "tracking_ang_vel": 0.5,
+            "upright": 1.0,
+            "torque_penalty": -0.001,
+            "joint_vel_penalty": -0.0001,
+            "action_rate_penalty": -0.01,
+            "foot_contact": 0.1,
+            "obstacle_avoidance": 0.2,
+        }
+    )
+
+    def __post_init__(self):
+        self.low_limits = np.array(
+            [self.JOINT_LIMITS[name][0] for name in self.JOINT_NAMES],
+            dtype=np.float32,
+        )
+        self.high_limits = np.array(
+            [self.JOINT_LIMITS[name][1] for name in self.JOINT_NAMES],
+            dtype=np.float32,
+        )
+
+
+# Module-level cached configuration for simulation steps
+_DEFAULT_CFG = MicroDuck8DoFConfig()
+
+
+def compute_observations(
+    base_ang_vel: np.ndarray,
+    proj_grav: np.ndarray,
+    commands: np.ndarray,
+    joint_pos: np.ndarray,
+    joint_vel: np.ndarray,
+    last_actions: np.ndarray,
+    foot_contact: np.ndarray,
+    lidar_ranges: np.ndarray,
+) -> np.ndarray:
+    """Pack raw state tensors into standard 42-dimensional observation vector.
+
+    Dimensions:
+    - Base angular velocity (3)
+    - Projected gravity vector (3)
+    - Velocity commands [vx, vy, wz] (3)
+    - Joint positions (8)
+    - Joint velocities (8)
+    - Previous actions (8)
+    - Feet contact sensors (4)
+    - 5-ray LiDAR rangefinder distances (5)
+    Total = 42 dimensions.
+    """
+    obs = np.concatenate(
+        [
+            np.asarray(base_ang_vel, dtype=np.float32).ravel(),
+            np.asarray(proj_grav, dtype=np.float32).ravel(),
+            np.asarray(commands, dtype=np.float32).ravel(),
+            np.asarray(joint_pos, dtype=np.float32).ravel(),
+            np.asarray(joint_vel, dtype=np.float32).ravel(),
+            np.asarray(last_actions, dtype=np.float32).ravel(),
+            np.asarray(foot_contact, dtype=np.float32).ravel(),
+            np.asarray(lidar_ranges, dtype=np.float32).ravel(),
+        ],
+        axis=-1,
+    ).astype(np.float32)
+
+    assert obs.shape == (42,), f"Expected observation shape (42,), got {obs.shape}"
+    return obs
+
+
+def scale_actions(
+    raw_actions: np.ndarray,
+    cfg: Optional[MicroDuck8DoFConfig] = None,
+) -> np.ndarray:
+    """Scale raw normalized actions [-1, 1] into physical joint target angles.
+
+    Safely clips outputs to respect the hardware limits of each MG996R joint.
+    """
+    if cfg is None:
+        cfg = _DEFAULT_CFG
+
+    actions = np.asarray(raw_actions, dtype=np.float32)
+    clipped_actions = np.clip(actions, -1.0, 1.0)
+
+    # Linear mapping: raw -1.0 -> low_limit, +1.0 -> high_limit
+    scaled = cfg.low_limits + (clipped_actions + 1.0) * 0.5 * (
+        cfg.high_limits - cfg.low_limits
+    )
+    return np.clip(scaled, cfg.low_limits, cfg.high_limits).astype(np.float32)
+
+
+def clip_action_rates(
+    current_targets: np.ndarray,
+    last_targets: np.ndarray,
+    dt: float = 0.02,
+    max_velocity: float = 6.0,
+) -> np.ndarray:
+    """Limit rate of angle target change to prevent exceeding max servo velocity.
+
+    max_delta = max_velocity * dt.
+    """
+    current = np.asarray(current_targets, dtype=np.float32)
+    last = np.asarray(last_targets, dtype=np.float32)
+
+    max_delta = float(max_velocity * dt)
+    delta = np.clip(current - last, -max_delta, max_delta)
+    return (last + delta).astype(np.float32)
+
+
+def compute_rewards(
+    base_lin_vel: np.ndarray,
+    cmd_lin_vel: np.ndarray,
+    base_ang_vel: np.ndarray,
+    cmd_ang_vel: Union[float, np.ndarray],
+    proj_gravity: np.ndarray,
+    joint_torques: np.ndarray,
+    joint_vel: np.ndarray,
+    foot_contact: np.ndarray,
+    lidar_ranges: Optional[np.ndarray] = None,
+    actions: Optional[np.ndarray] = None,
+    last_actions: Optional[np.ndarray] = None,
+    weights: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    """Compute balanced reward terms and total reward for 42-dim RL training."""
+    if weights is None:
+        weights = _DEFAULT_CFG.REWARD_WEIGHTS
+
+    base_lin = np.asarray(base_lin_vel, dtype=np.float32)
+    cmd_lin = np.asarray(cmd_lin_vel, dtype=np.float32)
+    base_ang = np.asarray(base_ang_vel, dtype=np.float32)
+    grav = np.asarray(proj_gravity, dtype=np.float32)
+    torques = np.asarray(joint_torques, dtype=np.float32)
+    j_vel = np.asarray(joint_vel, dtype=np.float32)
+    f_contact = np.asarray(foot_contact, dtype=np.float32)
+
+    # Target yaw rate
+    if hasattr(cmd_ang_vel, "__len__"):
+        cmd_ang_arr = np.asarray(cmd_ang_vel, dtype=np.float32).ravel()
+        target_yaw = float(cmd_ang_arr[2] if len(cmd_ang_arr) >= 3 else cmd_ang_arr[0])
+    else:
+        target_yaw = float(cmd_ang_vel)
+
+    # 1. Linear velocity tracking in XY plane (exponential kernel)
+    lin_err_sq = float(np.sum(np.square(base_lin[:2] - cmd_lin[:2])))
+    r_track_lin_vel = float(np.exp(-lin_err_sq / 0.25))
+
+    # 2. Angular velocity tracking around Z axis
+    ang_err_sq = float(np.square(base_ang[2] - target_yaw))
+    r_track_ang_vel = float(np.exp(-ang_err_sq / 0.25))
+
+    # 3. Upright posture reward (gravity projection along body Z should be -1.0)
+    grav_err_sq = float(
+        np.square(grav[0]) + np.square(grav[1]) + np.square(grav[2] - (-1.0))
+    )
+    r_upright = float(np.exp(-grav_err_sq / 0.2))
+
+    # 4. Energy and torque minimization penalty
+    r_torque_penalty = float(np.sum(np.square(torques)))
+
+    # 5. Joint velocity smoothing penalty
+    r_joint_vel_penalty = float(np.sum(np.square(j_vel)))
+
+    # 6. Action rate penalty (protects MG996R gears against jerky policy outputs)
+    if actions is not None and last_actions is not None:
+        act = np.asarray(actions, dtype=np.float32)
+        last_act = np.asarray(last_actions, dtype=np.float32)
+        r_action_rate_penalty = float(np.sum(np.square(act - last_act)))
+    else:
+        r_action_rate_penalty = 0.0
+
+    # 7. Foot contact reward (encourages stable stance phase)
+    r_foot_contact = float(np.sum(f_contact > 0.0))
+
+    # 8. Obstacle avoidance reward / penalty
+    if lidar_ranges is not None and len(lidar_ranges) > 0:
+        min_dist = float(np.min(lidar_ranges))
+        if min_dist < _DEFAULT_CFG.OBSTACLE_THRESHOLD:
+            # Proximity penalty when closer than 0.35m
+            r_obstacle = float(min_dist - _DEFAULT_CFG.OBSTACLE_THRESHOLD)
+        else:
+            r_obstacle = float(min_dist)
+    else:
+        r_obstacle = 0.0
+
+    total = float(
+        weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
+        + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
+        + weights.get("upright", 1.0) * r_upright
+        + weights.get("torque_penalty", -0.001) * r_torque_penalty
+        + weights.get("joint_vel_penalty", -0.0001) * r_joint_vel_penalty
+        + weights.get("action_rate_penalty", -0.01) * r_action_rate_penalty
+        + weights.get("foot_contact", 0.1) * r_foot_contact
+        + weights.get("obstacle_avoidance", 0.2) * r_obstacle
+    )
+
+    return {
+        "total_reward": total,
+        "tracking_lin_vel": r_track_lin_vel,
+        "tracking_ang_vel": r_track_ang_vel,
+        "upright": r_upright,
+        "torque_penalty": r_torque_penalty,
+        "joint_vel_penalty": r_joint_vel_penalty,
+        "action_rate_penalty": r_action_rate_penalty,
+        "foot_contact": r_foot_contact,
+        "obstacle_avoidance": r_obstacle,
+    }
