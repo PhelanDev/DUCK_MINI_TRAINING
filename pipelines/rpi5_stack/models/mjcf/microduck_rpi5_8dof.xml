@@ -1,0 +1,181 @@
+<mujoco model="microduck_rpi5_8dof">
+  <compiler angle="radian" coordinate="local" inertiafromgeom="true"/>
+
+  <option timestep="0.002" iterations="50" solver="PGS" gravity="0 0 -9.81"/>
+
+  <default>
+    <joint damping="0.15" armature="0.005" limited="true"/>
+    <geom contype="1" conaffinity="1" condim="3"/>
+    <default class="visual">
+      <geom contype="0" conaffinity="0" group="2"/>
+    </default>
+    <default class="collision">
+      <geom contype="1" conaffinity="1" group="3"/>
+    </default>
+    <default class="foot">
+      <geom type="box" size="0.0375 0.0275 0.005" friction="1.2 0.005 0.0001" solref="0.005 1" solimp="0.9 0.95 0.001 0.5 2"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.4 0.6 0.8" rgb2="0.1 0.15 0.2" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1="0.2 0.3 0.4" rgb2="0.1 0.15 0.2"/>
+    <material name="grid_mat" texture="grid" texrepeat="20 20" reflectance="0.2"/>
+    <material name="duck_yellow" rgba="0.95 0.85 0.1 1.0" specular="0.3" shininess="0.5"/>
+    <material name="duck_orange" rgba="1.0 0.5 0.05 1.0" specular="0.3" shininess="0.5"/>
+    <material name="servo_grey" rgba="0.2 0.2 0.22 1.0" specular="0.4" shininess="0.7"/>
+    <material name="rpi5_green" rgba="0.05 0.45 0.15 1.0" specular="0.5" shininess="0.8"/>
+    <material name="white" rgba="0.95 0.95 0.95 1.0"/>
+    <material name="black" rgba="0.05 0.05 0.05 1.0"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1" material="grid_mat" friction="1.2 0.005 0.0001"/>
+    <light directional="true" pos="0 0 2" dir="0 0 -1" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2"/>
+
+    <body name="base_link" pos="0 0 0.170">
+      <freejoint name="root"/>
+      <site name="imu_site" pos="0 0 0.010" size="0.005" rgba="1 0 0 1"/>
+      <!-- Base chassis + Pi 5 4GB + Active Cooler + Buck 5V/5A + 2S battery pack (~390g total, CoM elevated ~10mm) -->
+      <geom name="base_body" type="box" size="0.055 0.040 0.035" pos="0 0 0" mass="0.250" material="duck_yellow"/>
+      <geom name="rpi5_electronics" type="box" size="0.045 0.030 0.015" pos="0 0 0.028" mass="0.140" material="rpi5_green"/>
+
+      <!-- Head branch: Neck + Head (2 DOF) with Perception Suite -->
+      <body name="neck_link" pos="0.020 0 0.035">
+        <joint name="head_yaw" type="hinge" axis="0 0 1" range="-1.57 1.57"/>
+        <!-- Neck 35 x 35 x 30 mm, mass 30g -->
+        <geom name="neck_geom" type="box" size="0.0175 0.0175 0.015" pos="0 0 0.015" mass="0.030" material="servo_grey"/>
+
+        <body name="head_link" pos="0 0 0.030">
+          <joint name="head_pitch" type="hinge" axis="0 1 0" range="-0.52 0.78"/>
+          <!-- Head 60 x 50 x 45 mm, mass 54g -->
+          <geom name="head_geom" type="box" size="0.030 0.025 0.0225" pos="0.010 0 0.0225" mass="0.054" material="duck_yellow"/>
+          <!-- Beak / Bill mass 4g -->
+          <geom name="beak_geom" type="box" size="0.018 0.018 0.006" pos="0.048 0 0.015" mass="0.004" material="duck_orange"/>
+          <!-- Eyes -->
+          <geom name="left_eye" class="visual" type="sphere" size="0.004" pos="0.032 0.022 0.030" material="black"/>
+          <geom name="right_eye" class="visual" type="sphere" size="0.004" pos="0.032 -0.022 0.030" material="black"/>
+
+          <!-- Camera & Optical Lens -->
+          <site name="camera_site" pos="0.045 0 0.030" size="0.004" rgba="0 1 0 1"/>
+          <camera name="head_camera" pos="0.045 0 0.030" fovy="60" xyaxes="0 -1 0 0 0 1"/>
+          <geom name="cam_lens" class="visual" type="cylinder" size="0.005 0.003" pos="0.043 0 0.030" zaxis="1 0 0" material="black" mass="0.001"/>
+
+          <!-- Microphone: I2S MEMS mic site and visual geom -->
+          <site name="mic_site" pos="0.025 0.020 0.046" size="0.002" rgba="0 1 0 1"/>
+          <geom name="mic_geom" class="visual" type="box" size="0.003 0.003 0.001" pos="0.025 0.020 0.046" material="servo_grey" mass="0.001"/>
+
+          <!-- 5-Ray ToF LiDAR Scanner: horizontal fan [-30°, -15°, 0°, +15°, +30°] -->
+          <site name="site_lidar_m30" pos="0.042 0 0.038" zaxis="0.866025 -0.5 0" size="0.003" rgba="1 0 0 0.8"/>
+          <site name="site_lidar_m15" pos="0.042 0 0.038" zaxis="0.965926 -0.258819 0" size="0.003" rgba="1 0.3 0 0.8"/>
+          <site name="site_lidar_0" pos="0.042 0 0.038" zaxis="1 0 0" size="0.003" rgba="1 1 0 0.8"/>
+          <site name="site_lidar_p15" pos="0.042 0 0.038" zaxis="0.965926 0.258819 0" size="0.003" rgba="0 1 0 0.8"/>
+          <site name="site_lidar_p30" pos="0.042 0 0.038" zaxis="0.866025 0.5 0" size="0.003" rgba="0 0 1 0.8"/>
+        </body>
+      </body>
+
+      <!-- Left Leg branch (3 DOF) -->
+      <body name="left_hip_roll_link" pos="0 0.035 -0.035">
+        <joint name="left_hip_roll" type="hinge" axis="1 0 0" range="-0.44 0.44"/>
+        <!-- Hip roll block 45 x 40 x 40 mm, mass 50g -->
+        <geom name="left_hip_roll_geom" type="box" size="0.0225 0.020 0.020" pos="0 0.010 -0.010" mass="0.050" material="servo_grey"/>
+
+        <body name="left_thigh_link" pos="0 0.015 -0.020">
+          <joint name="left_hip_pitch" type="hinge" axis="0 1 0" range="-0.87 0.87"/>
+          <!-- Thigh L1 = 65mm, mass 65g -->
+          <geom name="left_thigh_geom" type="box" size="0.0175 0.015 0.0325" pos="0 0 -0.0325" mass="0.065" material="duck_yellow"/>
+
+          <body name="left_shin_link" pos="0 0 -0.065">
+            <joint name="left_knee_pitch" type="hinge" axis="0 1 0" range="0.0 1.48"/>
+            <!-- Shin L2 = 65mm, mass 45g -->
+            <geom name="left_shin_geom" type="box" size="0.015 0.0125 0.0325" pos="0 0 -0.0325" mass="0.045" material="servo_grey"/>
+
+            <body name="left_foot_link" pos="0 0 -0.065">
+              <!-- Foot 75 x 55 x 10 mm, mass 30g, high friction -->
+              <geom name="left_foot_geom" class="foot" pos="0.010 0 -0.005" mass="0.030" material="duck_orange"/>
+              <site name="left_foot_touch_site" pos="0.010 0 -0.010" size="0.025 0.020 0.002" type="box" rgba="0 1 1 0.5"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- Right Leg branch (3 DOF) -->
+      <body name="right_hip_roll_link" pos="0 -0.035 -0.035">
+        <joint name="right_hip_roll" type="hinge" axis="1 0 0" range="-0.44 0.44"/>
+        <!-- Hip roll block 45 x 40 x 40 mm, mass 50g -->
+        <geom name="right_hip_roll_geom" type="box" size="0.0225 0.020 0.020" pos="0 -0.010 -0.010" mass="0.050" material="servo_grey"/>
+
+        <body name="right_thigh_link" pos="0 -0.015 -0.020">
+          <joint name="right_hip_pitch" type="hinge" axis="0 1 0" range="-0.87 0.87"/>
+          <!-- Thigh L1 = 65mm, mass 65g -->
+          <geom name="right_thigh_geom" type="box" size="0.0175 0.015 0.0325" pos="0 0 -0.0325" mass="0.065" material="duck_yellow"/>
+
+          <body name="right_shin_link" pos="0 0 -0.065">
+            <joint name="right_knee_pitch" type="hinge" axis="0 1 0" range="0.0 1.48"/>
+            <!-- Shin L2 = 65mm, mass 45g -->
+            <geom name="right_shin_geom" type="box" size="0.015 0.0125 0.0325" pos="0 0 -0.0325" mass="0.045" material="servo_grey"/>
+
+            <body name="right_foot_link" pos="0 0 -0.065">
+              <!-- Foot 75 x 55 x 10 mm, mass 30g, high friction -->
+              <geom name="right_foot_geom" class="foot" pos="0.010 0 -0.005" mass="0.030" material="duck_orange"/>
+              <site name="right_foot_touch_site" pos="0.010 0 -0.010" size="0.025 0.020 0.002" type="box" rgba="0 1 1 0.5"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <contact>
+    <exclude body1="base_link" body2="neck_link"/>
+    <exclude body1="neck_link" body2="head_link"/>
+    <exclude body1="base_link" body2="left_hip_roll_link"/>
+    <exclude body1="left_hip_roll_link" body2="left_thigh_link"/>
+    <exclude body1="left_thigh_link" body2="left_shin_link"/>
+    <exclude body1="left_shin_link" body2="left_foot_link"/>
+    <exclude body1="base_link" body2="right_hip_roll_link"/>
+    <exclude body1="right_hip_roll_link" body2="right_thigh_link"/>
+    <exclude body1="right_thigh_link" body2="right_shin_link"/>
+    <exclude body1="right_shin_link" body2="right_foot_link"/>
+  </contact>
+
+  <actuator>
+    <motor name="head_yaw" joint="head_yaw" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="head_pitch" joint="head_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="left_hip_roll" joint="left_hip_roll" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="left_hip_pitch" joint="left_hip_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="left_knee_pitch" joint="left_knee_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="right_hip_roll" joint="right_hip_roll" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="right_hip_pitch" joint="right_hip_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="right_knee_pitch" joint="right_knee_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+  </actuator>
+
+  <sensor>
+    <accelerometer name="base_accel" site="imu_site"/>
+    <gyro name="base_gyro" site="imu_site"/>
+    <framequat name="base_quat" objtype="site" objname="imu_site"/>
+    <touch name="left_foot_touch" site="left_foot_touch_site"/>
+    <touch name="right_foot_touch" site="right_foot_touch_site"/>
+    <jointpos name="head_yaw_pos" joint="head_yaw"/>
+    <jointpos name="head_pitch_pos" joint="head_pitch"/>
+    <jointpos name="left_hip_roll_pos" joint="left_hip_roll"/>
+    <jointpos name="left_hip_pitch_pos" joint="left_hip_pitch"/>
+    <jointpos name="left_knee_pitch_pos" joint="left_knee_pitch"/>
+    <jointpos name="right_hip_roll_pos" joint="right_hip_roll"/>
+    <jointpos name="right_hip_pitch_pos" joint="right_hip_pitch"/>
+    <jointpos name="right_knee_pitch_pos" joint="right_knee_pitch"/>
+    <jointvel name="head_yaw_vel" joint="head_yaw"/>
+    <jointvel name="head_pitch_vel" joint="head_pitch"/>
+    <jointvel name="left_hip_roll_vel" joint="left_hip_roll"/>
+    <jointvel name="left_hip_pitch_vel" joint="left_hip_pitch"/>
+    <jointvel name="left_knee_pitch_vel" joint="left_knee_pitch"/>
+    <jointvel name="right_hip_roll_vel" joint="right_hip_roll"/>
+    <jointvel name="right_hip_pitch_vel" joint="right_hip_pitch"/>
+    <jointvel name="right_knee_pitch_vel" joint="right_knee_pitch"/>
+    <rangefinder name="lidar_ray_m30" site="site_lidar_m30" cutoff="2.0"/>
+    <rangefinder name="lidar_ray_m15" site="site_lidar_m15" cutoff="2.0"/>
+    <rangefinder name="lidar_ray_0" site="site_lidar_0" cutoff="2.0"/>
+    <rangefinder name="lidar_ray_p15" site="site_lidar_p15" cutoff="2.0"/>
+    <rangefinder name="lidar_ray_p30" site="site_lidar_p30" cutoff="2.0"/>
+  </sensor>
+</mujoco>
