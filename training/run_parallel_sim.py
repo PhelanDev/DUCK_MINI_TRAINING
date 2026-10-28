@@ -260,10 +260,15 @@ class ParallelSimRunner:
             rewards[i] = reward_dict["total_reward"]
             infos.append(reward_dict)
 
-            # Check termination conditions: fall over or excessive tilt
+            # Check termination conditions: fall over, excessive tilt, or numerical divergence
             root_z = float(d.qpos[2])
             grav_z = float(proj_grav[2])
-            if root_z < 0.08 or grav_z > -0.3 or not np.all(np.isfinite(d.qpos)):
+            if (
+                root_z < 0.08
+                or grav_z > -0.3
+                or not np.all(np.isfinite(d.qpos))
+                or not np.all(np.isfinite(d.qvel))
+            ):
                 dones[i] = True
                 self.reset_env(i)
 
@@ -315,7 +320,6 @@ def run_benchmark(
         total_steps = num_envs * steps
         fps = total_steps / elapsed_time if elapsed_time > 0 else 0.0
         # Real-time factor = total simulated environment time / elapsed real time
-        simulated_time = steps * runner.control_dt * num_envs
         real_time_factor = (total_steps * runner.control_dt) / elapsed_time if elapsed_time > 0 else 0.0
 
         metrics = {

@@ -55,7 +55,7 @@
           <geom name="right_eye" class="visual" type="sphere" size="0.004" pos="0.032 -0.022 0.030" material="black"/>
           <!-- Camera site & optical sensor -->
           <site name="camera_site" pos="0.042 0 0.030" size="0.004" rgba="0 1 0 1"/>
-          <camera name="head_camera" pos="0.042 0 0.030" fovy="60"/>
+          <camera name="head_camera" pos="0.042 0 0.030" fovy="60" xyaxes="0 -1 0 0 0 1"/>
         </body>
       </body>
 

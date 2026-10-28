@@ -334,9 +334,9 @@ def run_interactive_viewer(
 
                 apply_pd_control(model, data, targets)
                 mujoco.mj_step(model, data)
-                viewer.sync()
-
                 step_count += 1
+                if step_count % 10 == 0:
+                    viewer.sync()
                 if step_count % 250 == 0:
                     state = get_robot_state(model, data)
                     status_str = "ỔN ĐỊNH" if state["is_stable"] else "MẤT THĂNG BẰNG"
