@@ -57,7 +57,7 @@ def test_rpi5_infer_script_import_and_mock():
         joint_pos=[0.0] * 8,
         joint_vel=[0.0] * 8,
         last_actions=[0.0] * 8,
-        foot_contact=[1.0, 1.0, 1.0, 1.0],
+        foot_contact=[1.0, 1.0, 0.0, 0.0],
         lidar_ranges=[1.0, 1.0, 1.0, 1.0, 1.0],
     )
     assert obs.shape == (42,), f"Expected shape (42,), got {obs.shape}"
@@ -119,7 +119,7 @@ def test_rpi5_infer_onnx_model_execution(tmp_path):
 
 
 def test_rpi5_infer_cli():
-    """Verify CLI flags --mock, --mock-pca, --freq, --steps work properly."""
+    """Verify CLI flags --mock, --mock-pca, --freq, --rate, --model work properly."""
     script_path = REPO_ROOT / "pipelines" / "rpi5_stack" / "deployment" / "infer_rpi5.py"
     assert script_path.exists(), f"Missing script: {script_path}"
 
@@ -128,7 +128,7 @@ def test_rpi5_infer_cli():
             sys.executable,
             str(script_path),
             mock_flag,
-            "--freq",
+            "--rate",
             "50",
             "--steps",
             "5",
@@ -137,6 +137,16 @@ def test_rpi5_infer_cli():
         assert res.returncode == 0, f"CLI with {mock_flag} failed with error: {res.stderr}\nOutput: {res.stdout}"
         assert "Mock PCA9685" in res.stdout or "mock" in res.stdout.lower()
         assert "Step 5" in res.stdout or "completed" in res.stdout.lower()
+
+    # Verify alias --model and --rate
+    res_help = subprocess.run(
+        [sys.executable, str(script_path), "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert res_help.returncode == 0
+    assert "--model" in res_help.stdout
+    assert "--rate" in res_help.stdout
 
 
 def test_rpi5_hardware_spec_doc():

@@ -53,6 +53,10 @@ class MicroDuck8DoFConfig:
     KP: float = 25.0  # Joint position proportional gain (N*m/rad)
     KD: float = 0.8  # Joint velocity derivative gain (N*m*s/rad)
 
+    # Obstacle avoidance parameters
+    OBSTACLE_THRESHOLD: float = 0.35  # meters
+    LIDAR_MAX_RANGE: float = 2.0  # meters
+
     # Balanced reward weights
     REWARD_WEIGHTS: Dict[str, float] = field(
         default_factory=lambda: {
@@ -63,6 +67,7 @@ class MicroDuck8DoFConfig:
             "joint_vel_penalty": -0.0001,
             "action_rate_penalty": -0.01,
             "foot_contact": 0.1,
+            "obstacle_avoidance": 0.2,
         }
     )
 
@@ -190,6 +195,7 @@ def compute_rewards(
     joint_torques: np.ndarray,
     joint_vel: np.ndarray,
     foot_contact: np.ndarray,
+    lidar_ranges: Optional[np.ndarray] = None,
     actions: Optional[np.ndarray] = None,
     last_actions: Optional[np.ndarray] = None,
     weights: Optional[Dict[str, float]] = None,
@@ -262,6 +268,18 @@ def compute_rewards(
     # 7. Foot contact reward (encourages stable stance phase)
     r_foot_contact = np.sum(f_contact > 0.0, axis=-1).astype(np.float32)
 
+    # 8. Obstacle avoidance reward / penalty
+    if lidar_ranges is not None:
+        ranges = np.asarray(lidar_ranges, dtype=np.float32)
+        min_dist = np.min(ranges, axis=-1)
+        r_obstacle = np.where(
+            min_dist < _DEFAULT_CFG.OBSTACLE_THRESHOLD,
+            min_dist - _DEFAULT_CFG.OBSTACLE_THRESHOLD,
+            0.0,
+        ).astype(np.float32)
+    else:
+        r_obstacle = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
     total = (
         weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
         + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
@@ -270,6 +288,7 @@ def compute_rewards(
         + weights.get("joint_vel_penalty", -0.0001) * r_joint_vel_penalty
         + weights.get("action_rate_penalty", -0.01) * r_action_rate_penalty
         + weights.get("foot_contact", 0.1) * r_foot_contact
+        + weights.get("obstacle_avoidance", 0.2) * r_obstacle
     )
 
     if not is_batch:
@@ -282,6 +301,7 @@ def compute_rewards(
             "joint_vel_penalty": float(r_joint_vel_penalty),
             "action_rate_penalty": float(r_action_rate_penalty),
             "foot_contact": float(r_foot_contact),
+            "obstacle_avoidance": float(r_obstacle),
         }
 
     return {
@@ -293,4 +313,5 @@ def compute_rewards(
         "joint_vel_penalty": r_joint_vel_penalty.astype(np.float32),
         "action_rate_penalty": r_action_rate_penalty.astype(np.float32),
         "foot_contact": r_foot_contact.astype(np.float32),
+        "obstacle_avoidance": r_obstacle.astype(np.float32),
     }

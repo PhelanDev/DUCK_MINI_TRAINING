@@ -77,7 +77,10 @@ class ParallelSimRunner:
         )
 
         # Tracking state buffers
-        self.obs_dim = self.cfg.OBS_DIM
+        if len(self.datas[0].sensordata) >= 33 or self.cfg.OBS_DIM == 42:
+            self.obs_dim = 42
+        else:
+            self.obs_dim = self.cfg.OBS_DIM
         self.action_dim = self.cfg.ACTION_DIM
 
         self.last_actions = np.zeros((self.num_envs, self.action_dim), dtype=np.float32)
@@ -143,16 +146,22 @@ class ParallelSimRunner:
         last_act = self.last_actions[env_idx]
 
         # Foot contact sensors: left (10), right (11), padded to 4 dimensions
+        # Binarize normal contact forces (> 0.1 N) to match hardware deployment
         left_touch = float(d.sensordata[10])
         right_touch = float(d.sensordata[11])
-        foot_contact = np.array([left_touch, right_touch, 0.0, 0.0], dtype=np.float32)
-
-        # Optional 5-ray LiDAR rangefinder readings (sensordata indices 28:33)
-        lidar_ranges = (
-            np.array(d.sensordata[28:33], dtype=np.float32)
-            if len(d.sensordata) >= 33
-            else None
+        foot_contact = np.array(
+            [1.0 if left_touch > 0.1 else 0.0, 1.0 if right_touch > 0.1 else 0.0, 0.0, 0.0],
+            dtype=np.float32,
         )
+
+        # 5-ray LiDAR rangefinder readings (sensordata indices 28:33) if available
+        # MuJoCo rangefinder returns -1.0 if no geom is hit within cutoff distance
+        if len(d.sensordata) >= 33:
+            raw_lidar = np.array(d.sensordata[28:33], dtype=np.float32)
+            lidar_max = getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0)
+            lidar_ranges = np.where(raw_lidar < 0.0, lidar_max, raw_lidar)
+        else:
+            lidar_ranges = None
 
         return compute_observations(
             base_ang_vel=base_ang_vel,
@@ -249,6 +258,7 @@ class ParallelSimRunner:
         joint_torques = np.array([d.ctrl[:] for d in self.datas], dtype=np.float32)
         joint_vel = np.array([d.sensordata[20:28] for d in self.datas], dtype=np.float32)
         foot_contact = next_obs[:, 33:37]
+        lidar_ranges = next_obs[:, 37:42] if self.obs_dim == 42 else None
 
         # Vectorized reward computation across all environments
         reward_dict = compute_rewards(
@@ -260,6 +270,7 @@ class ParallelSimRunner:
             joint_torques=joint_torques,
             joint_vel=joint_vel,
             foot_contact=foot_contact,
+            lidar_ranges=lidar_ranges,
             actions=actions,
             last_actions=self.last_actions,
             weights=self.cfg.REWARD_WEIGHTS,

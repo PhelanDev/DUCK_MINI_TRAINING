@@ -161,3 +161,20 @@ def test_parallel_sim_body_frame_velocity_tracking():
         np.testing.assert_allclose(r0, r1, atol=1e-4, err_msg=f"Yaw-invariant rewards must match: {r0} vs {r1}")
     finally:
         runner.close()
+
+
+def test_parallel_sim_foot_contact_binarization():
+    """Verify foot contact in observations is binarized to 0.0/1.0 matching hardware."""
+    runner = ParallelSimRunner(
+        model_path="models/mjcf/microduck_8dof.xml",
+        num_envs=2,
+    )
+    try:
+        obs = runner.reset()
+        foot_contacts = obs[:, 33:37]
+        # Should be strictly 0.0 or 1.0 (binary)
+        assert np.all((foot_contacts == 0.0) | (foot_contacts == 1.0))
+        # Padded elements [35:37] must be 0.0
+        assert np.all(foot_contacts[:, 2:] == 0.0)
+    finally:
+        runner.close()

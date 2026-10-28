@@ -179,8 +179,8 @@ $$R_{\text{total}} = w_v R_{\text{lin\_vel}} + w_\omega R_{\text{ang\_vel}} + w_
 
 - **Bám vận tốc dài trong Body Frame ($R_{\text{lin\_vel}}$):** Vận tốc thế giới $\mathbf{v}_{\text{world}}$ bắt buộc phải được chuyển đổi về hệ thân qua phép quay nghịch đảo quaternion $q^{-1}$ (`quat_rotate_inverse`) trước khi so khớp với lệnh $v_{xy}^{\text{cmd}}$:
   $$R_{\text{lin\_vel}} = \exp\left(-\frac{\|v_{xy}^{\text{body}} - v_{xy}^{\text{cmd}}\|^2}{0.25}\right)$$
-- **Né chướng ngại vật ($R_{\text{obstacle\_avoidance}}$):** Khi khoảng cách đo được từ bất kỳ tia LiDAR nào nhỏ hơn khoảng cách an toàn ($d_{\min} < 0.35\text{ m}$), thuật toán phạt nặng hành vi tiếp tục tiến tới và thưởng khi robot quay đầu hoặc lùi xa vật cản:
-  $$R_{\text{obstacle\_avoidance}} = \sum_{i=1}^{5} \min(0.0, \ln(d_i / 0.35))$$
+- **Né chướng ngại vật ($R_{\text{obstacle\_avoidance}}$):** Khi khoảng cách đo được từ bất kỳ tia LiDAR nào nhỏ hơn cự ly an toàn ($d_{\min} < d_{\text{safe}} = 0.35\text{ m}$), thuật toán phạt tuyến tính theo mức độ vi phạm để robot tránh va chạm. Khi đường đi thông thoáng ($d_{\min} \ge 0.35\text{ m}$), giá trị thưởng bằng $0.0$ (loại bỏ hoàn toàn lỗ hổng Reward Hacking khiến robot đứng yên nhìn vào khoảng trống):
+  $$R_{\text{obstacle\_avoidance}} = \min(0.0, d_{\min} - 0.35)$$
 - **Giữ thân thẳng đứng ($R_{\text{upright}}$):** Giữ thành phần trọng trường chiếu $g_z \to -1$.
 
 ### 5.4. Cảnh Báo Phần Cứng Thực Tế: Sim-to-Real Với Servo RC PWM MG996R

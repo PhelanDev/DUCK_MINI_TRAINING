@@ -152,9 +152,13 @@ class ParallelSimRunner:
         last_act = self.last_actions[env_idx]
 
         # Foot contact sensors: left (10), right (11), padded to 4 dimensions
+        # Binarize normal contact forces (> 0.1 N) to match hardware deployment
         left_touch = float(d.sensordata[10])
         right_touch = float(d.sensordata[11])
-        foot_contact = np.array([left_touch, right_touch, 0.0, 0.0], dtype=np.float32)
+        foot_contact = np.array(
+            [1.0 if left_touch > 0.1 else 0.0, 1.0 if right_touch > 0.1 else 0.0, 0.0, 0.0],
+            dtype=np.float32,
+        )
 
         # 5-ray LiDAR rangefinder readings (indices 28:33)
         # MuJoCo rangefinder returns -1.0 if no geom is hit within cutoff distance

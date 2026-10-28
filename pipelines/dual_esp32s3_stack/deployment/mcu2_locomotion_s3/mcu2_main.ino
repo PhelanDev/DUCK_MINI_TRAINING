@@ -274,11 +274,11 @@ void assemble_observation(float *obs_out) {
         obs_out[25 + i] = g_last_targets[i];
     }
 
-    // [33..36]: Feet contact sensors (4)
-    obs_out[33] = 1.0f; // Left heel
-    obs_out[34] = 1.0f; // Left toe
-    obs_out[35] = 1.0f; // Right heel
-    obs_out[36] = 1.0f; // Right toe
+    // [33..36]: Feet contact sensors (4) - [Left, Right, Padded, Padded] to match training
+    obs_out[33] = 1.0f; // Left foot contact
+    obs_out[34] = 1.0f; // Right foot contact
+    obs_out[35] = 0.0f; // Padded (zeroed in training)
+    obs_out[36] = 0.0f; // Padded (zeroed in training)
 
     // [37..41]: 5-Ray ToF LiDAR rangefinder distances from MCU 1 (5)
     for (int i = 0; i < 5; ++i) {

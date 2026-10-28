@@ -248,7 +248,7 @@ class RPi5InferenceEngine:
         base_ang_vel = [0.0, 0.0, 0.0]
         proj_grav = [0.0, 0.0, -1.0]
         commands = [0.2, 0.0, 0.0]  # Walk forward 0.2 m/s
-        foot_contact = [1.0, 1.0, 1.0, 1.0]
+        foot_contact = [1.0, 1.0, 0.0, 0.0]  # Matches simulation [Left, Right, Padded, Padded]
         lidar_ranges = [1.5, 1.5, 1.5, 1.5, 1.5]
 
         try:
@@ -292,10 +292,22 @@ def main():
     parser = argparse.ArgumentParser(
         description="Raspberry Pi 5 Locomotion Inference Engine for MicroDuck 8-DOF"
     )
-    parser.add_argument("--model_path", type=str, default=None, help="Path to Float32 ONNX policy model")
+    parser.add_argument(
+        "--model_path",
+        "--model",
+        type=str,
+        default=None,
+        help="Path to Float32 ONNX policy model",
+    )
     parser.add_argument("--i2c_bus", type=int, default=1, help="I2C bus number for PCA9685 (default: 1)")
     parser.add_argument("--mock", "--mock-pca", dest="mock", action="store_true", help="Run in mock mode without I2C hardware")
-    parser.add_argument("--freq", type=float, default=50.0, help="Control loop frequency in Hz (default: 50.0)")
+    parser.add_argument(
+        "--freq",
+        "--rate",
+        type=float,
+        default=50.0,
+        help="Control loop frequency in Hz (default: 50.0)",
+    )
     parser.add_argument("--steps", type=int, default=None, help="Number of steps to execute (default: continuous)")
     args = parser.parse_args()
 

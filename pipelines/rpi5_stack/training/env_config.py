@@ -275,7 +275,7 @@ def compute_rewards(
         r_obstacle = np.where(
             min_dist < _DEFAULT_CFG.OBSTACLE_THRESHOLD,
             min_dist - _DEFAULT_CFG.OBSTACLE_THRESHOLD,
-            min_dist,
+            0.0,
         ).astype(np.float32)
     else:
         r_obstacle = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0

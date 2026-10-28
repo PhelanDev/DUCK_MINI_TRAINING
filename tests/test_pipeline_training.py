@@ -45,8 +45,11 @@ from pipelines.dual_esp32s3_stack.training.env_config import (
     clip_action_rates as esp32_clip_action_rates,
     compute_rewards as esp32_compute_rewards,
     quantize_obs_int8,
+    dequantize_obs_int8,
     dequantize_act_int8,
     generate_esp32_quant_header,
+    DEFAULT_OBS_BOUNDS,
+    DEFAULT_OBS_SCALES,
 )
 from pipelines.dual_esp32s3_stack.training.run_parallel_sim import (
     ParallelSimRunner as ESP32ParallelSimRunner,
@@ -161,7 +164,7 @@ def test_obstacle_avoidance_rewards():
     )
 
     assert "obstacle_avoidance" in r_clear
-    assert r_clear["obstacle_avoidance"] >= 0.35, "Clear path should have positive clearance reward"
+    assert r_clear["obstacle_avoidance"] == 0.0, "Clear path (d >= 0.35m) must have zero penalty to prevent reward hacking"
 
     # 2. Obstacle detected in close proximity (< 0.35m threshold)
     blocked_lidar = np.array([0.15, 0.20, 0.10, 0.30, 0.50], dtype=np.float32)
@@ -199,7 +202,35 @@ def test_esp32_int8_quantization_helpers():
     assert batch_int8.shape == (10, 42)
     assert batch_int8.dtype == np.int8
 
-    # 3. Action dequantization (int8 -> float32)
+    # 3. Verify physical normalization prevents clipping distortion / saturation
+    # e.g., joint_vel=3.0 rad/s vs 6.0 rad/s should not both saturate to 127
+    raw_obs_mid = np.zeros(42, dtype=np.float32)
+    raw_obs_max = np.zeros(42, dtype=np.float32)
+    raw_obs_mid[17] = 3.0  # joint_vel halfway to max 6.0
+    raw_obs_max[17] = 6.0  # joint_vel at max 6.0
+    raw_obs_mid[37] = 1.0  # LiDAR ray halfway to max 2.0m
+    raw_obs_max[37] = 2.0  # LiDAR ray at max 2.0m
+
+    q_mid = quantize_obs_int8(raw_obs_mid)
+    q_max = quantize_obs_int8(raw_obs_max)
+
+    # Without normalization, both 3.0 and 6.0 would be clipped to 127!
+    # With normalization, 3.0 rad/s maps to ~64 and 6.0 rad/s maps to ~127
+    assert q_mid[17] < q_max[17], f"Expected q_mid[17] < q_max[17], got {q_mid[17]} vs {q_max[17]}"
+    assert 60 <= q_mid[17] <= 66
+    assert 125 <= q_max[17] <= 127
+
+    # LiDAR 1.0m vs 2.0m
+    assert q_mid[37] < q_max[37], f"Expected q_mid[37] < q_max[37], got {q_mid[37]} vs {q_max[37]}"
+    assert 60 <= q_mid[37] <= 66
+    assert 125 <= q_max[37] <= 127
+
+    # 4. Dequantization of observation
+    recovered_mid = dequantize_obs_int8(q_mid)
+    assert pytest.approx(recovered_mid[17], abs=0.1) == 3.0
+    assert pytest.approx(recovered_mid[37], abs=0.1) == 1.0
+
+    # 5. Action dequantization (int8 -> float32)
     int8_actions = np.array([-127, -64, 0, 64, 127, 32, -32, 0], dtype=np.int8)
     float_actions = dequantize_act_int8(int8_actions, scale=127.0)
 
@@ -209,13 +240,15 @@ def test_esp32_int8_quantization_helpers():
     assert pytest.approx(float_actions[2], abs=0.01) == 0.0
     assert pytest.approx(float_actions[4], abs=0.01) == 1.0
 
-    # 4. C header generation
+    # 6. C header generation
     header_str = generate_esp32_quant_header(scale_obs=127.0, scale_act=127.0)
     assert "#ifndef ESP32_QUANT_CONFIG_H" in header_str
     assert "#define OBS_DIM 42" in header_str
     assert "#define ACTION_DIM 8" in header_str
     assert "#define OBS_SCALE 127.0" in header_str
     assert "#define ACT_SCALE 127.0" in header_str
+    assert "OBS_MAX_BOUNDS" in header_str
+    assert "OBS_CHANNEL_SCALES" in header_str
 
     with tempfile.NamedTemporaryFile(suffix=".h", delete=False) as tmp:
         tmp_path = tmp.name
@@ -223,6 +256,7 @@ def test_esp32_int8_quantization_helpers():
         generate_esp32_quant_header(output_path=tmp_path)
         content = Path(tmp_path).read_text(encoding="utf-8")
         assert "#define OBS_DIM 42" in content
+        assert "OBS_MAX_BOUNDS" in content
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -243,6 +277,9 @@ def test_rpi5_parallel_sim_runner():
         obs = runner.reset()
         assert obs.shape == (4, 42)
         assert np.all(np.isfinite(obs))
+        # Ensure foot contacts are binarized (0.0 / 1.0) and padded indices are 0.0
+        assert np.all((obs[:, 33:37] == 0.0) | (obs[:, 33:37] == 1.0))
+        assert np.all(obs[:, 35:37] == 0.0)
         # Ensure LiDAR readings are positive distances (cutoff=2.0)
         assert np.all(obs[:, 37:42] >= 0.0)
 
@@ -276,6 +313,8 @@ def test_esp32_parallel_sim_runner():
         obs = runner.reset()
         assert obs.shape == (4, 42)
         assert np.all(np.isfinite(obs))
+        assert np.all((obs[:, 33:37] == 0.0) | (obs[:, 33:37] == 1.0))
+        assert np.all(obs[:, 35:37] == 0.0)
         assert np.all(obs[:, 37:42] >= 0.0)
 
         actions = np.random.uniform(-0.5, 0.5, size=(4, 8)).astype(np.float32)
