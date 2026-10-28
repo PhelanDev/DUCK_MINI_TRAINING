@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from training.env_config import MicroDuck8DoFConfig, _DEFAULT_CFG
 from training.run_parallel_sim import ParallelSimRunner
+from training.terrain_curriculum import STAGES, apply_stage, next_stage
 
 DEFAULT_MODEL_PATH = (
     REPO_ROOT / "pipelines" / "rpi5_stack" / "models" / "mjcf" / "microduck_rpi5_8dof.xml"
@@ -229,6 +230,8 @@ def train_ppo(
     dry_run: bool = False,
     device: Optional[str] = None,
     verbose: bool = True,
+    start_stage: int = 0,
+    hold_iters: int = 10,
 ) -> Dict[str, Any]:
     """Execute PPO training pipeline using ParallelSimRunner."""
     if device is None:
@@ -236,6 +239,9 @@ def train_ppo(
     else:
         device_str = device
     dev = torch.device(device_str)
+
+    current_stage = int(start_stage)
+    hold_count = 0
 
     # In dry-run mode, configure fast 1-iteration lightweight execution
     if dry_run:
@@ -263,6 +269,7 @@ def train_ppo(
         model_path=sim_model_path,
         num_envs=num_envs,
         decimation=10,
+        stage=current_stage,
     )
 
     obs_dim = runner.obs_dim
@@ -307,6 +314,7 @@ def train_ppo(
             # Phase 1: Rollout Collection
             # ------------------------------------------------------------------
             model.eval()
+            step_lin_vels: List[float] = []
             for step in range(rollout_steps):
                 with torch.no_grad():
                     actions, log_probs, _, values = model.get_action_and_value(current_obs)
@@ -316,6 +324,7 @@ def train_ppo(
                 actions_clamped = np.clip(actions_np, -1.0, 1.0)
 
                 next_obs_np, rewards_np, dones_np, infos = runner.step(actions_clamped)
+                step_lin_vels.append(float(np.mean([info.get("tracking_lin_vel", 0.0) for info in infos])))
 
                 # Time-limit value bootstrapping: add gamma * V(s_terminal) for truncated envs
                 step_rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
@@ -436,12 +445,31 @@ def train_ppo(
                     + value_loss_coef * metrics["value_loss"]
                     - entropy_coef * metrics["entropy"]
                 )
+            # Evaluate terrain & obstacle curriculum progression
+            mean_ep_len = float(runner.episode_steps.mean())
+            rew_lin_vel_ratio = float(np.mean(step_lin_vels)) if step_lin_vels else 0.0
+            new_stage, hold_count = next_stage(
+                stage=current_stage,
+                ep_len_mean=mean_ep_len,
+                rew_lin_vel_ratio=rew_lin_vel_ratio,
+                hold_count=hold_count,
+                hold_iters=hold_iters,
+            )
+            if new_stage != current_stage:
+                current_stage = new_stage
+                runner.set_stage(current_stage)
+                if verbose:
+                    print(f"[Curriculum] Advanced to Stage {current_stage}: {STAGES[current_stage].description}")
+
             metrics["mean_reward"] = float(rewards_buffer.mean().item())
+            metrics["stage"] = current_stage
+            metrics["hold_count"] = hold_count
 
             iter_fps = batch_size / max(1e-6, (time.perf_counter() - iter_start))
             if verbose and (iteration % max(1, max_iterations // 10) == 0 or iteration == 1):
                 print(
                     f"[Iteration {iteration:03d}/{max_iterations}] "
+                    f"Stage: {current_stage} | "
                     f"Reward: {metrics['mean_reward']:+.3f} | "
                     f"PiLoss: {metrics['policy_loss']:.4f} | "
                     f"ValLoss: {metrics['value_loss']:.4f} | "
@@ -461,6 +489,7 @@ def train_ppo(
             "action_dim": action_dim,
             "hidden_dim": hidden_dim,
             "iterations": max_iterations,
+            "stage": current_stage,
             "total_timesteps": total_timesteps,
             "elapsed_seconds": elapsed_total,
             "metrics": metrics,
@@ -496,6 +525,7 @@ def main():
     parser.add_argument("--value-loss-coef", type=float, default=0.5, help="Value loss weight (default: 0.5)")
     parser.add_argument("--dry-run", action="store_true", help="Run 1 quick iteration for CI/CD testing")
     parser.add_argument("--device", type=str, default=None, help="Device to run on ('cpu', 'cuda')")
+    parser.add_argument("--start-stage", type=int, default=0, help="Initial terrain curriculum stage (0 to 3)")
 
     args = parser.parse_args()
 
@@ -514,6 +544,7 @@ def main():
         dry_run=args.dry_run,
         device=args.device,
         verbose=True,
+        start_stage=args.start_stage,
     )
 
 

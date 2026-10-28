@@ -91,3 +91,19 @@ def test_mjcf_obstacles():
         assert geom.attrib.get("type") == "cylinder"
         assert geom.attrib.get("contype") == "1"
         assert geom.attrib.get("conaffinity") == "1"
+
+
+def test_mjcf_hurdles():
+    xml_path = os.path.join(os.path.dirname(__file__), "..", "models", "mjcf", "microduck_8dof.xml")
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    worldbody = root.find("worldbody")
+    assert worldbody is not None
+    hurdle_names = {"hurdle_1", "hurdle_2", "hurdle_back"}
+    geoms = {g.attrib.get("name"): g for g in worldbody.findall("geom")}
+    for name in hurdle_names:
+        assert name in geoms, f"Missing {name} hurdle in worldbody"
+        geom = geoms[name]
+        assert geom.attrib.get("type") == "box"
+        assert geom.attrib.get("contype") == "1"
+        assert geom.attrib.get("conaffinity") == "1"

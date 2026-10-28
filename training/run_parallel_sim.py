@@ -29,6 +29,7 @@ from training.env_config import (
     quat_rotate_inverse,
     scale_actions,
 )
+from training.terrain_curriculum import apply_stage
 
 
 class ParallelSimRunner:
@@ -44,6 +45,7 @@ class ParallelSimRunner:
         kp: Optional[float] = None,
         kd: Optional[float] = None,
         max_episode_steps: int = 500,
+        stage: int = 0,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -112,8 +114,17 @@ class ParallelSimRunner:
         self.left_foot_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_foot_link")
         self.right_foot_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_foot_link")
 
+        # Curriculum stage
+        self.curriculum_stage = int(stage)
+        self.set_stage(self.curriculum_stage)
+
         # Initialize environments
         self.reset()
+
+    def set_stage(self, stage: int) -> None:
+        """Update terrain and obstacle curriculum stage."""
+        self.curriculum_stage = int(stage)
+        apply_stage(self.model, self.curriculum_stage)
 
     def _extract_foot_dynamics(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Extract foot heights, horizontal velocities, and 3D contact forces in world frame.
