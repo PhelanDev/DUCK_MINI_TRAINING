@@ -588,13 +588,9 @@ def train_ppo(
             "elapsed_seconds": elapsed_total,
             "metrics": metrics,
         }
-        if not dry_run:
-            torch.save(checkpoint, str(save_path))
-            if verbose:
-                print(f"[PPO] Checkpoint saved successfully: {save_path} ({total_timesteps} steps in {elapsed_total:.2f}s)")
-        else:
-            if verbose:
-                print(f"[PPO] Dry-run complete ({total_timesteps} steps in {elapsed_total:.2f}s). Checkpoint not overwritten.")
+        torch.save(checkpoint, str(save_path))
+        if verbose:
+            print(f"[PPO] Checkpoint saved successfully: {save_path} ({total_timesteps} steps in {elapsed_total:.2f}s)")
 
     finally:
         runner.close()
