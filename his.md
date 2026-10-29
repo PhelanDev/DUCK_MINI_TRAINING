@@ -606,3 +606,125 @@ Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to
 - **Kết quả kiểm thử:**
   - Toàn bộ **129/129 bài kiểm thử** của toàn dự án vượt qua thành công $100\%$ ($0$ lỗi, $0$ thất bại).
   - Mô phỏng 3D tương tác chạy mượt mà, ổn định ở cả 4 cấp độ địa hình (Stage 0 $\to$ 3).
+
+
+---
+
+## 📌 Phiên Làm Việc: 2026-10-29 14:50:00+07:00 - Nâng Cấp Hệ Thống Địa Hình Phức Hợp: Cọc Slalom 3 Lớp & Cầu Thang Bục Đích (Slalom Pillars & Staircase Terrain)
+
+**Đặc tả kỹ thuật:** `docs/specs/2026-10-29-slalom-pillars-staircase-terrain-design.md`  
+**Kế hoạch thực thi:** `.superpowers/sdd/slalom-pillars-staircase-terrain/`
+
+### 1. Hệ Thống 6 Cọc Slalom 3 Lớp & Dải Cầu Thang 3 Bậc + 1 Bục Đích Trong Mô Hình MuJoCo MJCF
+- **Tệp ảnh hưởng:**
+  - `models/mjcf/microduck_8dof.xml`
+  - `pipelines/rpi5_stack/models/mjcf/microduck_rpi5_8dof.xml`
+  - `pipelines/dual_esp32s3_stack/models/mjcf/microduck_esp32_8dof.xml`
+  - `tests/test_mjcf_model.py`
+- **Hiện tượng & Bối cảnh:**
+  - Môi trường huấn luyện trước đây chỉ gồm 4 cột chướng ngại vật đối xứng tĩnh (`obstacle_front`, `obstacle_left`, `obstacle_right`, `obstacle_back`) và gờ cản bước thấp, chưa tạo đủ thử thách vận động phức hợp liên hoàn (vừa đánh lái zic-zac luồn lách qua khe hẹp, vừa co gối leo bậc cao và đáp xuống bục an toàn).
+- **Giải pháp & Kiến trúc hình học:**
+  - **Phân khu Rừng cọc né tránh 3 lớp (3-Layer Slalom Pillars):**
+    * *Lớp 1 (Cổng vào mở rộng):* `pillar_l1_left` ($[+0.45, +0.35, 0.15]$, $r=0.06\text{ m}$) và `pillar_l1_right` ($[+0.45, -0.35, 0.15]$, $r=0.06\text{ m}$).
+    * *Lớp 2 (Cọc trung tâm so le / Slalom Pivot):* `pillar_l2_center` ($[+0.80, +0.08, 0.15]$, $r=0.07\text{ m}$, lệch trái $8\text{ cm}$ buộc robot chuyển hướng lượn lách).
+    * *Lớp 3 (Cổng hẹp định hướng / Bottleneck Gate):* `pillar_l3_left` ($[+1.15, +0.25, 0.15]$, $r=0.06\text{ m}$) và `pillar_l3_right` ($[+1.15, -0.25, 0.15]$, $r=0.06\text{ m}$).
+    * *Cọc chắn an toàn phía sau:* `pillar_back` ($[-0.75, 0.0, 0.15]$, $r=0.08\text{ m}$).
+  - **Phân khu Dải cầu thang 3 bậc + 1 bục đích (Stairs & Landing Platform):**
+    * Toàn bộ dải bậc có nửa bề rộng trục $Y$ là $0.40\text{ m}$ (bề rộng thực $0.80\text{ m}$), màu `rgba="0.4 0.6 0.7 1.0"`, `contype="1" conaffinity="1"`:
+      - `stair_step_1`: $x = 1.40\text{ m}$, sâu $120\text{ mm}$, cao $15\text{ mm}$ ($z_{\text{top}} = +0.015\text{ m}$).
+      - `stair_step_2`: $x = 1.52\text{ m}$, sâu $120\text{ mm}$, cao $30\text{ mm}$ ($z_{\text{top}} = +0.030\text{ m}$).
+      - `stair_step_3`: $x = 1.64\text{ m}$, sâu $120\text{ mm}$, cao $45\text{ mm}$ ($z_{\text{top}} = +0.045\text{ m}$).
+      - `stair_platform`: $x = 1.86\text{ m}$, sâu $320\text{ mm}$, cao $45\text{ mm}$ ($z_{\text{top}} = +0.045\text{ m}$).
+  - Bảo toàn tính năng lọc tiếp xúc `exclude` tránh xung đột va chạm nội tại của các mắt xích cơ khí.
+
+---
+
+### 2. Cơ Chế Điều Phối Độ Khó 4 Cấp Độ In-Place Trong `terrain_curriculum.py`
+- **Tệp ảnh hưởng:**
+  - `training/terrain_curriculum.py`
+  - `tests/test_terrain_curriculum.py`
+- **Hiện tượng & Bối cảnh:**
+  - Cấu trúc curriculum cũ gắn chặt với gờ đất `hurdle_z`. Khi chuyển sang địa hình phức hợp, cần cơ chế phối hợp song song giữa độ rộng khe cọc slalom và độ cao bậc thang cầu thang.
+- **Giải pháp & Kiến trúc:**
+  - Thiết kế dataclass `Stage(stage_id, pillar_scale, stair_step_h, description)` tinh gọn theo nguyên tắc Ponytail (Zero Over-engineering):
+    * **Stage 0 (Khởi động & Bước cơ bản):** `pillar_scale = 1.80` (khe cọc siêu rộng $> 0.9\text{ m}$), `stair_step_h = -0.020\text{ m}` (toàn bộ bậc thang và bục đích chìm hoàn toàn dưới sàn $z_{\text{top}} \le 0.0$).
+    * **Stage 1 (Nhập môn Bậc thấp):** `pillar_scale = 1.35`, `stair_step_h = 0.005\text{ m}` (bậc nhô cao nhẹ $+5\text{ mm}$, $+10\text{ mm}$, bục $+15\text{ mm}$).
+    * **Stage 2 (Thử thách Nâng cao):** `pillar_scale = 1.10`, `stair_step_h = 0.010\text{ m}` (cọc hẹp, bậc nhô $+10\text{ mm}$, $+20\text{ mm}$, bục $+30\text{ mm}$).
+    * **Stage 3 (Chinh phục Toàn diện):** `pillar_scale = 1.00` (khoảng cách cọc chuẩn thiết kế), `stair_step_h = 0.015\text{ m}` (bậc cao chuẩn $+15\text{ mm}$, $+30\text{ mm}$, bục $+45\text{ mm}$).
+  - Hàm `apply_stage(model, stage)` thao tác đột biến trực tiếp `model.geom_pos` in-place trong bộ nhớ chia sẻ, bảo đảm tính Idempotent, không cấp phát thêm bộ nhớ động và đạt hiệu năng tối đa khi chạy song song 64 luồng.
+  - Hàm `next_stage()` đánh giá thăng cấp một chiều nghiêm ngặt (Strictly Non-regressive): đòi hỏi robot duy trì `ep_len_mean >= 400.0` và `rew_lin_vel_ratio >= 0.70` liên tục qua `hold_iters = 10` chu kỳ đánh giá.
+
+---
+
+### 3. Tối Ưu Hóa Tính Toán Khoảng Cách Đa Bán Kính & Bổ Sung Hàm Thưởng Leo Bậc `stair_ascent`
+- **Tệp ảnh hưởng:**
+  - `training/run_parallel_sim.py`
+  - `training/env_config.py`
+  - `tests/test_obstacle_rewards.py`
+  - `tests/test_stair_climbing.py`
+- **Hiện tượng & Bối cảnh:**
+  - Các cọc slalom có bán kính hình học khác nhau ($0.06\text{ m}$, $0.07\text{ m}$, $0.08\text{ m}$). Trước đây tính khoảng cách trừ chung một hằng số bán kính cố định gây sai lệch cự ly né tránh thực tế.
+  - Đồng thời, khi robot tiến vào khu vực cầu thang, robot cần động lực học tăng dần độ cao trọng tâm để bước lên các bậc cao thay vì sợ vấp ngã.
+- **Giải pháp & Công thức:**
+  - **Khoảng cách đa bán kính `_compute_d_min()`:**
+    Trích xuất vector bán kính `obs_radii = model.geom_size[gid, 0]` tương ứng từng cọc, trừ chính xác cho từng cọc trên mặt phẳng $XY$:
+    $$d_{\min} = \max\left(0.0, \min_{k} \left(\| \mathbf{p}_{\text{base}}^{xy} - \mathbf{p}_{\text{pillar}, k}^{xy} \| - r_k\right)\right)$$
+    Hỗ trợ cả chế độ đơn môi trường và tính toán mảng song song đa môi trường (vectorized).
+  - **Hàm thưởng leo bậc `compute_stair_ascent_reward`:**
+    Khi robot vượt qua cửa hẹp slalom và tiến vào khu vực cầu thang ($x_{\text{base}} \ge 1.34\text{ m}$):
+    $$r_{\text{stair}} = w_{\text{stair}} \cdot \text{clip}\left(\frac{z_{\text{base}} - 0.170}{0.045}, 0.0, 1.0\right) \cdot \mathbb{I}(x_{\text{base}} \ge 1.34)$$
+    Với $w_{\text{stair}} = 0.5$, robot được thưởng tuyến tính từ $+0.0 \to +0.5$ khi nâng độ cao thân từ mức sàn $0.170\text{ m}$ lên đỉnh bục đích $0.215\text{ m}$.
+  - **Nhận diện rơi mép cầu thang (`edge_fallen`):**
+    Tự động xác định vùng bậc thang $x \in [1.34, 2.02]\text{ m}$ và nửa bề rộng $Y_{\text{half}} = 0.40\text{ m}$. Khi robot trượt lệch ra khỏi mép ($|y_{\text{base}}| > Y_{\text{half}} + 0.04\text{ m}$), kích hoạt hình phạt rơi tức thời $-5.0$ và đánh cờ ngắt kết thúc episode an toàn.
+
+---
+
+### 4. Đồng Bộ Hoàn Toàn Sang RPi5 & Dual ESP32-S3 Hardware Pipelines
+- **Tệp ảnh hưởng:**
+  - `pipelines/rpi5_stack/models/mjcf/microduck_rpi5_8dof.xml`
+  - `pipelines/rpi5_stack/training/run_parallel_sim.py`
+  - `pipelines/rpi5_stack/training/env_config.py`
+  - `pipelines/dual_esp32s3_stack/models/mjcf/microduck_esp32_8dof.xml`
+  - `pipelines/dual_esp32s3_stack/training/run_parallel_sim.py`
+  - `pipelines/dual_esp32s3_stack/training/env_config.py`
+- **Kết quả đồng bộ:**
+  - Đồng bộ toàn bộ 6 cọc slalom và dải 4 bậc thang + bục đích vào các mô hình phần cứng chuyên biệt.
+  - Tích hợp tính toán khoảng cách `_compute_d_min()`, hàm thưởng `stair_ascent`, và cờ `edge_fallen` trên cả hai nhánh stack.
+  - Bảo toàn 100% kích thước vector quan sát (42 chiều kèm LiDAR ToF, 37 chiều cơ bản) và 8 hành động, giữ nguyên tính tương thích tuyệt đối của mô hình mạng nơ-ron Float32 ONNX cho Raspberry Pi 5 và mô hình lượng tử hóa INT8 cho Dual ESP32-S3.
+
+---
+
+### 5. Tự Thích Ứng Chiều Vector Quan Sát Trên Trình Xem Tương Tác 3D (`scripts/interactive_viewer.py`)
+- **Tệp ảnh hưởng:**
+  - `scripts/interactive_viewer.py`
+  - `tests/test_interactive_viewer.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Khi chạy kiểm thử hoặc chạy trình xem với mô hình mạng nơ-ron Actor-Critic PyTorch lưu sẵn ở 37 chiều quan sát cơ bản, trong khi môi trường mô phỏng vật lý có cảm biến ToF LiDAR sinh vector 42 chiều, hàm `policy_step()` quăng lỗi `RuntimeError: addmm: mat1 and mat2 shapes cannot be multiplied (1x42 and 37x256)`.
+- **Biện pháp xử lý:**
+  - Trong `policy_step()`, tự động phát hiện số chiều đầu vào mong đợi `expected_dim` từ mô hình (qua `get_inputs()` cho ONNX hoặc duyệt module đầu tiên có `in_features` cho PyTorch).
+  - Tự động cắt lát (`obs_arr[:, :expected_dim]`) khi quan sát lớn hơn hoặc đệm hằng số khoảng cách quét tối đa $2.0\text{ m}$ khi quan sát nhỏ hơn.
+
+---
+
+### 6. Kết Quả Kiểm Thử Đối Soát Toàn Diện (Full Project Test Suite Verification)
+- **Lệnh chạy:** `pytest -v`
+- **Kết quả:** **129 / 129 tests PASSED (100% GREEN, zero failures)**
+- **Thời gian chạy:** 33.57 giây trên môi trường Python 3.14.5 Windows.
+- **Danh sách module kiểm thử đối soát thành công:**
+  1. `tests/test_curriculum_ep_len.py`: 3/3 passed.
+  2. `tests/test_deployment_artifacts.py`: 9/9 passed.
+  3. `tests/test_env_config.py`: 11/11 passed.
+  4. `tests/test_esp32_model.py`: 7/7 passed.
+  5. `tests/test_foot_rewards.py`: 6/6 passed.
+  6. `tests/test_interactive_viewer.py`: 16/16 passed.
+  7. `tests/test_mjcf_model.py`: 12/12 passed.
+  8. `tests/test_obstacle_rewards.py`: 8/8 passed.
+  9. `tests/test_parallel_runner.py`: 4/4 passed.
+  10. `tests/test_pipeline_training.py`: 11/11 passed.
+  11. `tests/test_ppo_training.py`: 8/8 passed.
+  12. `tests/test_rpi5_model.py`: 7/7 passed.
+  13. `tests/test_stair_climbing.py`: 5/5 passed.
+  14. `tests/test_terrain_curriculum.py`: 7/7 passed.
+  15. `tests/test_time_limit_bootstrap.py`: 4/4 passed.
+  16. `tests/test_urdf_model.py`: 4/4 passed.
+  17. `tests/test_verify_script.py`: 4/4 passed.
