@@ -29,11 +29,17 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
-    from training.env_config import _DEFAULT_CFG
+    from training.env_config import (
+        _DEFAULT_CFG,
+        compute_observations,
+        scale_actions,
+        clip_action_rates,
+    )
     DEFAULT_KP = _DEFAULT_CFG.KP
     DEFAULT_KD = _DEFAULT_CFG.KD
     DEFAULT_TORQUE_LIMIT = _DEFAULT_CFG.TORQUE_LIMIT
 except Exception:
+    _DEFAULT_CFG = None
     DEFAULT_KP = 25.0
     DEFAULT_KD = 0.8
     DEFAULT_TORQUE_LIMIT = 1.0
@@ -125,6 +131,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.002,
         help="Physics simulation timestep in seconds",
+    )
+    parser.add_argument(
+        "--policy",
+        type=str,
+        default=None,
+        help="Path to trained RL policy checkpoint (.pt or .onnx)",
+    )
+    parser.add_argument(
+        "--cmd-vel",
+        type=float,
+        nargs=3,
+        default=[0.2, 0.0, 0.0],
+        metavar=("VX", "VY", "WZ"),
+        help="Target velocity command [vx (m/s), vy (m/s), wz (rad/s)] for policy",
     )
     return parser
 
@@ -232,11 +252,189 @@ def get_robot_state(model: Any, data: Any) -> Dict[str, Any]:
     }
 
 
+def extract_viewer_observation(
+    model: Any,
+    data: Any,
+    cmd_vel: Union[Tuple[float, float, float], List[float], np.ndarray] = (0.2, 0.0, 0.0),
+    last_actions: Optional[np.ndarray] = None,
+    obs_dim: int = 42,
+) -> np.ndarray:
+    """Extract observation vector (37 or 42 dimensions) from current MuJoCo simulation data.
+
+    Matches the observation specification of MicroDuck 8-DOF RL environment:
+    - Base angular velocity [wx, wy, wz] (3) from gyro sensor (sensordata 3:6)
+    - Projected gravity vector [gx, gy, gz] (3) from orientation quaternion (sensordata 6:10)
+    - Velocity commands [vx, vy, wz] (3)
+    - Joint positions [q1..q8] (8) from encoder sensors (sensordata 12:20)
+    - Joint velocities [dq1..dq8] (8) from encoder velocity sensors (sensordata 20:28)
+    - Previous actions [a1..a8] (8)
+    - Feet contact sensors (4) from touch sensors (sensordata 10, 11, zero padded)
+    - Optional LiDAR ranges (5) from rangefinder sensors (sensordata 28:33, clipped to max range)
+    """
+    if last_actions is None:
+        last_actions = np.zeros(8, dtype=np.float32)
+    else:
+        last_actions = np.asarray(last_actions, dtype=np.float32)
+
+    # 1. Base angular velocity (sensordata 3:6)
+    base_ang_vel = np.array(data.sensordata[3:6], dtype=np.float32)
+
+    # 2. Projected gravity from quaternion (sensordata 6:10)
+    w, x, y, z = data.sensordata[6:10]
+    proj_grav = np.array(
+        [
+            2.0 * (w * y - x * z),
+            -2.0 * (w * x + y * z),
+            2.0 * (x * x + y * y) - 1.0,
+        ],
+        dtype=np.float32,
+    )
+
+    # 3. Target velocity commands [vx, vy, wz]
+    cmd = np.asarray(cmd_vel, dtype=np.float32)
+
+    # 4. Joint positions & velocities (sensordata 12:28)
+    joint_pos = np.array(data.sensordata[12:20], dtype=np.float32)
+    joint_vel = np.array(data.sensordata[20:28], dtype=np.float32)
+
+    # 5. Foot contact sensors: left (10), right (11) binarized > 0.1 N, padded to 4 dims
+    left_touch = float(data.sensordata[10]) if len(data.sensordata) > 10 else 0.0
+    right_touch = float(data.sensordata[11]) if len(data.sensordata) > 11 else 0.0
+    foot_contact = np.array(
+        [1.0 if left_touch > 0.1 else 0.0, 1.0 if right_touch > 0.1 else 0.0, 0.0, 0.0],
+        dtype=np.float32,
+    )
+
+    # 6. LiDAR ranges (sensordata 28:33)
+    if len(data.sensordata) >= 33:
+        raw_lidar = np.array(data.sensordata[28:33], dtype=np.float32)
+        lidar_ranges = np.where(raw_lidar < 0.0, 2.0, raw_lidar)
+    elif obs_dim == 42:
+        lidar_ranges = np.full(5, 2.0, dtype=np.float32)
+    else:
+        lidar_ranges = None
+
+    try:
+        return compute_observations(
+            base_ang_vel=base_ang_vel,
+            proj_grav=proj_grav,
+            commands=cmd,
+            joint_pos=joint_pos,
+            joint_vel=joint_vel,
+            last_actions=last_actions,
+            foot_contact=foot_contact,
+            lidar_ranges=lidar_ranges if obs_dim == 42 else None,
+        )
+    except Exception:
+        parts = [
+            base_ang_vel.ravel(),
+            proj_grav.ravel(),
+            cmd.ravel(),
+            joint_pos.ravel(),
+            joint_vel.ravel(),
+            last_actions.ravel(),
+            foot_contact.ravel(),
+        ]
+        if obs_dim == 42 and lidar_ranges is not None:
+            parts.append(lidar_ranges.ravel())
+        return np.concatenate(parts, axis=-1).astype(np.float32)
+
+
+def load_viewer_policy(
+    policy_path: Union[str, Path],
+    obs_dim: int = 42,
+    action_dim: int = 8,
+) -> Any:
+    """Load trained RL policy from PyTorch (.pt) or ONNX (.onnx) file.
+
+    Returns:
+        torch.nn.Module (eval mode) for PyTorch checkpoints,
+        or onnxruntime.InferenceSession for ONNX models.
+    """
+    p_path = Path(policy_path).resolve()
+    if not p_path.exists():
+        raise FileNotFoundError(f"Policy file not found at {p_path}")
+
+    suffix = p_path.suffix.lower()
+    if suffix == ".onnx":
+        try:
+            import onnxruntime as ort
+        except ImportError as e:
+            raise ImportError(
+                "onnxruntime is required to load .onnx policies. Run: pip install onnxruntime"
+            ) from e
+        session = ort.InferenceSession(str(p_path), providers=["CPUExecutionProvider"])
+        return session
+
+    # Default to PyTorch checkpoint (.pt, .pth, etc.)
+    try:
+        from scripts.export_policy import load_actor_from_checkpoint
+        actor = load_actor_from_checkpoint(
+            p_path, obs_dim=obs_dim, action_dim=action_dim
+        )
+        actor.eval()
+        return actor
+    except Exception:
+        import torch
+        from scripts.train_ppo import ActorCritic
+        ckpt = torch.load(str(p_path), map_location="cpu", weights_only=False)
+        obs_d = ckpt.get("obs_dim", obs_dim) if isinstance(ckpt, dict) else obs_dim
+        act_d = ckpt.get("action_dim", action_dim) if isinstance(ckpt, dict) else action_dim
+        hid_d = ckpt.get("hidden_dim", 256) if isinstance(ckpt, dict) else 256
+        model = ActorCritic(obs_dim=obs_d, action_dim=act_d, hidden_dim=hid_d)
+        if isinstance(ckpt, dict):
+            if "model_state_dict" in ckpt:
+                model.load_state_dict(ckpt["model_state_dict"])
+            elif "actor_state_dict" in ckpt:
+                model.actor.load_state_dict(ckpt["actor_state_dict"])
+            else:
+                model.load_state_dict(ckpt)
+        else:
+            model.load_state_dict(ckpt)
+        model.eval()
+        return model.actor
+
+
+def policy_step(policy: Any, obs: np.ndarray) -> np.ndarray:
+    """Execute single inference forward pass with observation vector.
+
+    Args:
+        policy: Loaded policy (torch.nn.Module or onnxruntime.InferenceSession).
+        obs: Observation vector of shape (obs_dim,) or (1, obs_dim).
+
+    Returns:
+        np.ndarray: Normalized action vector of shape (8,) bounded in [-1.0, 1.0].
+    """
+    obs_arr = np.asarray(obs, dtype=np.float32)
+    if obs_arr.ndim == 1:
+        obs_arr = obs_arr.reshape(1, -1)
+
+    # Check for ONNX Runtime session
+    if hasattr(policy, "run") and hasattr(policy, "get_inputs"):
+        input_name = policy.get_inputs()[0].name
+        output = policy.run(None, {input_name: obs_arr})[0]
+        actions = np.asarray(output, dtype=np.float32).ravel()
+    else:
+        # PyTorch model
+        import torch
+        with torch.no_grad():
+            obs_tensor = torch.from_numpy(obs_arr)
+            if hasattr(policy, "actor"):
+                out = policy.actor(obs_tensor)
+            else:
+                out = policy(obs_tensor)
+            actions = out.cpu().numpy().ravel().astype(np.float32)
+
+    return np.clip(actions, -1.0, 1.0).astype(np.float32)
+
+
 def run_simulation_headless(
     model_path: Union[str, Path] = "models/mjcf/microduck_8dof.xml",
     pose: str = "stand",
     duration: float = 1.0,
     gait_demo: bool = False,
+    policy_path: Optional[Union[str, Path]] = None,
+    cmd_vel: Union[Tuple[float, float, float], List[float], np.ndarray] = (0.2, 0.0, 0.0),
     dt: float = 0.002,
     verbose: bool = False,
 ) -> Dict[str, Any]:
@@ -264,8 +462,28 @@ def run_simulation_headless(
     total_steps = int(max(1, duration / dt))
     sim_time = 0.0
 
+    policy = load_viewer_policy(policy_path) if policy_path else None
+    control_dt = 0.02
+    decimation = max(1, int(round(control_dt / dt)))
+    last_actions = np.zeros(8, dtype=np.float32)
+    last_targets = np.array(data.qpos[7:15], dtype=np.float32)
+    targets = target_pose
+
     for step_idx in range(total_steps):
-        if gait_demo:
+        if policy is not None:
+            if step_idx % decimation == 0:
+                obs = extract_viewer_observation(
+                    model, data, cmd_vel=cmd_vel, last_actions=last_actions, obs_dim=42
+                )
+                actions = policy_step(policy, obs)
+                scaled_targets = scale_actions(actions, _DEFAULT_CFG)
+                max_vel = _DEFAULT_CFG.MAX_VELOCITY if _DEFAULT_CFG else 6.0
+                targets = clip_action_rates(
+                    scaled_targets, last_targets, dt=control_dt, max_velocity=max_vel
+                )
+                last_targets = targets
+                last_actions = actions
+        elif gait_demo:
             targets = compute_gait_targets(sim_time)
         else:
             targets = target_pose
@@ -308,6 +526,8 @@ def run_interactive_viewer(
     pose: str = "stand",
     duration: Optional[float] = None,
     gait_demo: bool = False,
+    policy_path: Optional[Union[str, Path]] = None,
+    cmd_vel: Union[Tuple[float, float, float], List[float], np.ndarray] = (0.2, 0.0, 0.0),
     dt: float = 0.002,
 ):
     """Launch passive 3D MuJoCo viewer or fall back to headless/CLI mode."""
@@ -338,7 +558,11 @@ def run_interactive_viewer(
     print("=" * 70)
     print(f"  Mô hình      : {model_path}")
     print(f"  Tư thế gốc   : {pose}")
-    print(f"  Chế độ bước  : {'Gait Demo (chu kỳ đi bộ sinh động)' if gait_demo else 'Static Pose'}")
+    if policy_path:
+        print(f"  Chế độ điều khiển: RL Policy Brain ({policy_path})")
+        print(f"  Lệnh vận tốc     : vx={cmd_vel[0]:.2f} m/s, vy={cmd_vel[1]:.2f} m/s, wz={cmd_vel[2]:.2f} rad/s")
+    else:
+        print(f"  Chế độ bước  : {'Gait Demo (chu kỳ đi bộ sinh động)' if gait_demo else 'Static Pose'}")
     print(f"  Số khớp      : {len(JOINT_NAMES)} (2 đầu, 6 chân)")
     print("  Điều khiển   : PD position control mô phỏng servo MG996R")
     print("=" * 70)
@@ -353,6 +577,13 @@ def run_interactive_viewer(
             start_wall_time = time.time()
             step_count = 0
 
+            policy = load_viewer_policy(policy_path) if policy_path else None
+            control_dt = 0.02
+            decimation = max(1, int(round(control_dt / dt)))
+            last_actions = np.zeros(8, dtype=np.float32)
+            last_targets = np.array(data.qpos[7:15], dtype=np.float32)
+            targets = target_qpos
+
             while viewer.is_running():
                 step_start = time.time()
                 elapsed = time.time() - start_wall_time
@@ -361,7 +592,20 @@ def run_interactive_viewer(
                     print(f"\n[THÔNG BÁO] Đã hoàn thành thời gian chạy mô phỏng ({duration}s).")
                     break
 
-                if gait_demo:
+                if policy is not None:
+                    if step_count % decimation == 0:
+                        obs = extract_viewer_observation(
+                            model, data, cmd_vel=cmd_vel, last_actions=last_actions, obs_dim=42
+                        )
+                        actions = policy_step(policy, obs)
+                        scaled_targets = scale_actions(actions, _DEFAULT_CFG)
+                        max_vel = _DEFAULT_CFG.MAX_VELOCITY if _DEFAULT_CFG else 6.0
+                        targets = clip_action_rates(
+                            scaled_targets, last_targets, dt=control_dt, max_velocity=max_vel
+                        )
+                        last_targets = targets
+                        last_actions = actions
+                elif gait_demo:
                     targets = compute_gait_targets(elapsed)
                 else:
                     targets = target_qpos
@@ -397,6 +641,8 @@ def run_interactive_viewer(
             pose=pose,
             duration=test_duration,
             gait_demo=gait_demo,
+            policy_path=policy_path,
+            cmd_vel=cmd_vel,
             dt=dt,
         )
         print(f"  Tổng bước chạy      : {metrics['completed_steps']}")
@@ -542,6 +788,8 @@ def main() -> int:
             pose=args.pose,
             duration=run_duration,
             gait_demo=args.gait_demo,
+            policy_path=args.policy,
+            cmd_vel=tuple(args.cmd_vel),
             dt=args.dt,
         )
         print("Kết quả mô phỏng:")
@@ -556,6 +804,8 @@ def main() -> int:
             pose=args.pose,
             duration=args.duration,
             gait_demo=args.gait_demo,
+            policy_path=args.policy,
+            cmd_vel=tuple(args.cmd_vel),
             dt=args.dt,
         )
     return 0
