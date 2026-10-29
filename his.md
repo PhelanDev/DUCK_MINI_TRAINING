@@ -282,3 +282,101 @@ Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to
   - Tốc độ huấn luyện PPO đạt: **~1,450 FPS** trên CPU đa luồng với 16 môi trường song song.
   - Điểm thưởng tăng trưởng đều đặn từ $+0.84 \to +1.134$.
   - Xuất mô hình ONNX (`microduck_rpi5_policy.onnx`) và header C/C++ lượng tử hóa INT8 (`esp32_policy_weights.h`, `esp32_quant_config.h`) thành công tuyệt đối.
+
+
+---
+
+## 📌 Phiên Làm Việc: 2026-10-29 10:35:00+07:00
+
+### 1. Khắc Phục Lỗi Logic Chí Mạng Trong Tính Toán `mean_ep_len` Của Terrain Curriculum
+- **Commit:** `01ed0a6` (`fix(curriculum): track completed episode lengths in sliding window for stage advancement`)
+- **Tệp ảnh hưởng:**
+  - `training/run_parallel_sim.py`
+  - `scripts/train_ppo.py`
+  - `tests/test_curriculum_ep_len.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Biến `runner.episode_steps` chỉ là bộ đếm số bước hiện tại của các môi trường đang chạy dở dang trong batch rollout ($32$ bước/iteration).
+  - Cứ khi môi trường chạm mốc $500$ bước (timeout), hàm `reset_env` lập tức xóa bộ đếm về $0$.
+  - Khi toàn bộ 64 môi trường đều sống thọ $500$ bước, `runner.episode_steps.mean()` sẽ chạm đỉnh ở vòng lặp thứ 15 (~$480$), nhưng sang vòng lặp thứ 16 (sau khi chạm $500$ và bị reset), giá trị trung bình tụt dốc thê thảm về ~$12.0$.
+  - Kết quả là `ep_len_mean < 400.0`, hàm `next_stage()` xóa sạch `hold_count` về $0$. Theo toán học, robot vĩnh viễn không thể duy trì $10$ iterations liên tiếp trên $400$ bước để lên Stage 1.
+- **Biện pháp xử lý:**
+  - Khởi tạo hàng đợi trượt `self.completed_ep_lens = deque(maxlen=100)` trong `DuckParallelSim` / `ParallelSimRunner`.
+  - Mỗi khi môi trường kết thúc tập (`dones[i] == True` do ngã hoặc chạm giới hạn bước $500$), đẩy ngay số bước thực tế `int(self.episode_steps[i])` vào hàng đợi và lưu vào `infos[i]["episode_length"]` trước khi reset.
+  - Cung cấp phương thức `get_mean_episode_length(default=0.0)` và cập nhật dòng đánh giá curriculum trong `train_ppo.py`:
+    ```python
+    mean_ep_len = runner.get_mean_episode_length(default=float(runner.episode_steps.mean()))
+    ```
+  - Viết 3 unit test trong `tests/test_curriculum_ep_len.py` xác thực tính chính xác của cửa sổ trượt và khả năng giữ vững `hold_iters = 10` để nhảy Stage.
+
+---
+
+### 2. Đồng Bộ Hóa Gờ Đất `hurdle_*` Vào Toàn Bộ Stack Phần Cứng (`rpi5_stack` & `dual_esp32s3_stack`)
+- **Commit:** `4f49b45` (`feat(models): sync terrain hurdle geoms to rpi5 and esp32 mjcf models`)
+- **Tệp ảnh hưởng:**
+  - `pipelines/rpi5_stack/models/mjcf/microduck_rpi5_8dof.xml`
+  - `pipelines/dual_esp32s3_stack/models/mjcf/microduck_esp32_8dof.xml`
+  - `tests/test_rpi5_model.py`
+  - `tests/test_esp32_model.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Lệnh chạy huấn luyện mặc định `python scripts/train_ppo.py` sử dụng mô hình `DEFAULT_MODEL_PATH = pipelines/rpi5_stack/models/mjcf/microduck_rpi5_8dof.xml`.
+  - Tuy nhiên, 3 thanh gờ đất `hurdle_1`, `hurdle_2`, `hurdle_back` ban đầu chỉ được khai báo trong `models/mjcf/microduck_8dof.xml`, hoàn toàn vắng bóng trong `rpi5_stack` và `dual_esp32s3_stack`.
+  - Khi huấn luyện với stack mặc định, hàm `apply_stage()` không tìm thấy geom gờ đất, khiến curriculum địa hình bị tê liệt ngầm mà không hề báo lỗi.
+- **Biện pháp xử lý:**
+  - Đồng bộ chuẩn xác 3 geom gờ đất ngập dưới sàn vào cả hai mô hình phần cứng:
+    ```xml
+    <geom name="hurdle_1" type="box" size="0.02 0.60 0.015" pos="0.30 0.0 -0.02" rgba="0.6 0.4 0.2 1.0" contype="1" conaffinity="1" group="3"/>
+    <geom name="hurdle_2" type="box" size="0.02 0.60 0.020" pos="0.55 0.0 -0.025" rgba="0.6 0.4 0.2 1.0" contype="1" conaffinity="1" group="3"/>
+    <geom name="hurdle_back" type="box" size="0.02 0.60 0.015" pos="-0.35 0.0 -0.02" rgba="0.6 0.4 0.2 1.0" contype="1" conaffinity="1" group="3"/>
+    ```
+  - Bổ sung các bài kiểm tra DOM tĩnh và kiểm thử động với MuJoCo runtime `apply_stage()` trong `test_rpi5_model.py` và `test_esp32_model.py`.
+
+---
+
+### 3. Chuẩn Hóa Cảm Biến LiDAR Cho Hàm Phạt Né Cột (Khắc Phục Vi Phạm POMDP)
+- **Commit:** `ff652ab` (`fix(rewards): align obstacle d_min with forward lidar perception for POMDP consistency`)
+- **Tệp ảnh hưởng:**
+  - `training/run_parallel_sim.py`
+  - `tests/test_obstacle_rewards.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Phương thức `_compute_d_min()` tính khoảng cách Euclid toàn cục 360 độ tới toàn bộ 4 cột trong `self.obstacle_geom_ids`, bao gồm cả `obstacle_back` ở toạ độ $(x = -0.75\text{ m}, y = 0.0\text{ m})$ nằm ngay sau lưng robot.
+  - Trong khi đó, hệ thống 5 tia LiDAR chỉ quét hướng về phía trước trong hình nón $[-30^\circ, +30^\circ]$ với tầm quét tối đa $2.0\text{ m}$.
+  - Kết quả: Khi robot đứng yên tại vạch xuất phát, phía trước hoàn toàn quang đãng ($d_{\text{lidar}} = 2.0\text{ m}$), nhưng hàm `_compute_d_min` trả về $0.67\text{ m}$ (khoảng cách tới cột sau lưng). Robot bị phạt né cột và bị hàm `ang_vel_mask` triệt tiêu lệnh quay yaw dựa trên một vật cản mà mắt nó không thể nhìn thấy — vi phạm nghiêm trọng tính quan sát của bài toán POMDP (Partially Observable Markov Decision Process).
+- **Biện pháp xử lý:**
+  - Trong `training/run_parallel_sim.py`, chuẩn hóa việc tính `curr_d_min` theo đúng không gian quan sát của agent:
+    ```python
+    if lidar_ranges is not None:
+        curr_d_min = np.min(lidar_ranges, axis=-1)
+    else:
+        curr_d_min = self._compute_d_min()
+    ```
+  - Áp dụng đồng bộ cho cả `step()` và `reset_env()`.
+  - Thêm test `test_lidar_pomdp_d_min_ignores_rear_obstacle` trong `tests/test_obstacle_rewards.py`, xác nhận robot ở vị trí ban đầu ghi nhận khoảng cách $2.0\text{ m}$, hoàn toàn bỏ qua cột sau lưng $0.67\text{ m}$.
+
+---
+
+### 4. Cấu Hình Camera Mặc Định Cho Interactive Viewer & Khắc Phục Đen Màn Hình Trên Hybrid GPU
+- **Commit:** `5f083d3` (`fix(viewer): set explicit camera orientation to prevent black screen on hybrid gpus`)
+- **Tệp ảnh hưởng:**
+  - `scripts/interactive_viewer.py`
+  - `tests/test_interactive_viewer.py`
+  - `README.md` (mục 9.1)
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Khi khởi chạy `scripts/interactive_viewer.py` qua `mujoco.viewer.launch_passive` trên các dòng máy tính xách tay đồ họa kép (Hybrid GPU như Lenovo Legion AMD Ryzen APU + NVIDIA RTX 3070), ma trận chiếu OpenGL của camera đôi khi không được khởi tạo giá trị hợp lệ hoặc hướng ra vùng chân trời trống rỗng. Người dùng chỉ thấy màn hình đen thui kèm các thanh panel giao diện.
+- **Biện pháp xử lý:**
+  - Triển khai hàm `configure_viewer_camera` định hình góc nhìn isometric trực diện:
+    * `lookat = [0.0, 0.0, 0.15]` (khớp vị trí trọng tâm thân vịt ở độ cao 15cm)
+    * `distance = 1.2` (khoảng cách quan sát toàn cảnh robot và gờ đất)
+    * `azimuth = 135.0` (góc xoay 3D nhìn xéo)
+    * `elevation = -20.0` (góc nâng nhìn từ trên xuống)
+  - Gọi ngay `configure_viewer_camera(viewer.cam)` và `viewer.sync()` ngay sau khi mở context manager viewer.
+  - Thêm unit test `test_configure_viewer_camera` trong `tests/test_interactive_viewer.py` bao phủ cả dummy camera và `mujoco.MjvCamera`.
+  - Cập nhật mục **9.1. Khắc Phục Sự Cố Đen Màn Hình Trên Laptop Hybrid GPU** trong `README.md` hướng dẫn chi tiết cách cấu hình NVIDIA Control Panel và Lenovo Vantage.
+
+---
+
+### 5. Nghiệm Thu & Đánh Giá Toàn Diện (Task 5)
+- **Báo cáo chi tiết:** `plans/261029-1005-curriculum-lidar-viewer-fixes/reports/curriculum_viewer_fixes_report.md`
+- **Kết quả kiểm thử tự động:**
+  - **111 / 111 bài test PASSED (100%)** trong `28.86s` (0 failures, 0 errors).
+  - Khả năng huấn luyện PPO: Đạt tốc độ ổn định **>800 FPS** trên CPU đa luồng, chuyển cấp Stage trơn tru khi `ep_len_mean >= 400`.
+  - Mã nguồn tuân thủ triệt để nguyên tắc **Ponytail** (Zero Over-engineering, sửa tận gốc), **TDD** và **Zero-Trust Git Policy**.
