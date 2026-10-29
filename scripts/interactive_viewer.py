@@ -462,6 +462,30 @@ def policy_step(policy: Any, obs: np.ndarray) -> np.ndarray:
     if obs_arr.ndim == 1:
         obs_arr = obs_arr.reshape(1, -1)
 
+    # Auto-adapt observation vector dimension (e.g. 37 vs 42 channels)
+    expected_dim = None
+    if hasattr(policy, "get_inputs"):
+        try:
+            shape = policy.get_inputs()[0].shape
+            if shape and isinstance(shape[-1], int):
+                expected_dim = shape[-1]
+        except Exception:
+            expected_dim = None
+    elif hasattr(policy, "modules"):
+        for m in policy.modules():
+            if hasattr(m, "in_features"):
+                expected_dim = m.in_features
+                break
+
+    if expected_dim is not None and expected_dim > 0:
+        if obs_arr.shape[-1] > expected_dim:
+            obs_arr = obs_arr[:, :expected_dim]
+        elif obs_arr.shape[-1] < expected_dim:
+            pad_width = expected_dim - obs_arr.shape[-1]
+            obs_arr = np.pad(
+                obs_arr, ((0, 0), (0, pad_width)), mode="constant", constant_values=2.0
+            )
+
     # Check for ONNX Runtime session
     if hasattr(policy, "run") and hasattr(policy, "get_inputs"):
         input_name = policy.get_inputs()[0].name
