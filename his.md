@@ -728,3 +728,64 @@ Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to
   15. `tests/test_time_limit_bootstrap.py`: 4/4 passed.
   16. `tests/test_urdf_model.py`: 4/4 passed.
   17. `tests/test_verify_script.py`: 4/4 passed.
+
+---
+
+## 📌 Phiên Làm Việc: 2026-10-29 22:55:00+07:00
+
+### Khắc Phục Triệt Để Hiện Tượng Robot Hai Chân MicroDuck 8-DOF Ngã Sau ~1 Giây (~50 Steps) Khi Train PPO
+
+#### 1. Bổ Sung `alive_bonus` và `fall_penalty` Vào Hệ Thống Tính Thưởng
+- **Tệp ảnh hưởng:**
+  - `training/env_config.py` (dòng 100–120, 290–305)
+  - `training/run_parallel_sim.py` (dòng 345–355)
+  - `pipelines/rpi5_stack/training/env_config.py`
+  - `pipelines/rpi5_stack/training/run_parallel_sim.py`
+  - `pipelines/dual_esp32s3_stack/training/env_config.py`
+  - `pipelines/dual_esp32s3_stack/training/run_parallel_sim.py`
+- **Nguyên nhân gốc rễ:**
+  - Trước đây, khi robot đứng yên trên mặt sàn phẳng không có vật cản, nếu policy chọn cách ngã sấp về phía trước thì nó vừa không bị trừ điểm phạt ngã (vì phạt rơi -5.0 chỉ đặt trong logic trượt bậc thang `edge_fallen`), vừa có thể ăn điểm vận động giả nếu thân lao về phía trước. Đồng thời, không có `alive_bonus` để khuyến khích robot duy trì sự sống càng lâu càng tốt.
+- **Biện pháp xử lý:**
+  - Bổ sung `"alive_bonus": 0.5` và `"fall_penalty": -5.0` vào `MicroDuck8DoFConfig.REWARD_WEIGHTS`.
+  - Tích hợp số hạng `r_alive = alive_bonus` vào hàm tính thưởng `compute_rewards()`.
+  - Trong `ParallelSimRunner.step()`, khi cờ `fallen` kích hoạt do nghiêng quá mức hoặc chiều cao thân rớt dưới ngưỡng, áp dụng trực tiếp `rewards[fallen] += fall_penalty` và lưu trạng thái `infos[i]["fallen"] = True`.
+
+#### 2. Đồng Bộ Tư Thế Đứng Danh Định (Nominal Stance) Khi Reset & Triệt Tiêu Cú Giật Gối $42.4^\circ$
+- **Tệp ảnh hưởng:**
+  - `training/env_config.py`
+  - `training/run_parallel_sim.py`
+  - `pipelines/rpi5_stack/training/env_config.py`
+  - `pipelines/rpi5_stack/training/run_parallel_sim.py`
+  - `pipelines/dual_esp32s3_stack/training/env_config.py`
+  - `pipelines/dual_esp32s3_stack/training/run_parallel_sim.py`
+- **Nguyên nhân gốc rễ:**
+  - Giới hạn khớp gối MG996R là `[0.0, 1.48]\text{ rad}`. Với ánh xạ tuyến tính chuẩn $a \in [-1, 1] \to [q_{\min}, q_{\max}]$, hành động mặc định $a = 0.0$ tương ứng với điểm giữa $0.74\text{ rad} \approx 42.4^\circ$.
+  - Trong khi đó, `reset_env()` ban đầu khởi tạo tất cả góc khớp bằng $0.0\text{ rad}$ (chân đứng thẳng đơ $180^\circ$).
+  - Ngay tại bước điều khiển đầu tiên ($t = 0.02\text{ s}$), động cơ servo buộc phải giật mạnh từ $0.0\text{ rad} \to 0.74\text{ rad}$, tạo xung lực văng thân robot về phía trước và ngã nhào lập tức.
+- **Biện pháp xử lý:**
+  - Cấu hình vector góc danh định chùng gối tự nhiên `NOMINAL_JOINT_POS`:
+    * Khớp gối `knee_pitch = 0.35 rad` ($\approx 20^\circ$)
+    * Khớp hông `hip_pitch = -0.15 rad` ($\approx -8.6^\circ$)
+    * Độ cao trọng tâm danh định $z_{\text{base}} = 0.165\text{ m}$.
+  - Cập nhật hàm `scale_actions()` hỗ trợ định tâm quanh `nominal_qpos`.
+  - Trong `reset_env()`, khởi tạo góc khớp xung quanh tư thế danh định với nhiễu nhẹ $\pm 0.02\text{ rad}$, triệt tiêu hoàn toàn cú giật góc ban đầu.
+
+#### 3. Triển Khai Velocity Command Curriculum (`--stand-first`)
+- **Tệp ảnh hưởng:**
+  - `training/run_parallel_sim.py`
+  - `pipelines/rpi5_stack/training/run_parallel_sim.py`
+  - `pipelines/dual_esp32s3_stack/training/run_parallel_sim.py`
+  - `scripts/train_ppo.py`
+- **Nguyên nhân gốc rễ:**
+  - Việc yêu cầu robot bipedal chưa biết đứng vững phải ngay lập tức chạy tới với vận tốc lệnh $v_x = [0.0, 0.25]\text{ m/s}$ khiến mạng nơ-ron bị quá tải, học lệch theo hướng ngã nhào để bám vận tốc tức thời.
+- **Biện pháp xử lý:**
+  - Bổ sung thuộc tính `stand_still` và phương thức `set_stand_still()` cho `ParallelSimRunner`.
+  - Bổ sung cờ CLI `--stand-first` trong `scripts/train_ppo.py`.
+  - Khi bắt đầu huấn luyện, các lệnh vận tốc $[v_x, v_y, w_z]$ được ghim bằng $0.0$. Khi robot đạt độ ổn định đứng vững (`mean_episode_length >= 350` steps hoặc qua giai đoạn warm-up), hệ thống tự động mở khóa dải lệnh vận tốc bước đi $v_x$.
+
+#### 4. Đo Đạc Baseline Độ Ổn Định & Kiểm Thử Toàn Diện
+- **Kết quả sống sót (Survival Benchmarking):**
+  - Trước khi sửa: robot ngã ở step 50 (~1 giây).
+  - Sau khi sửa: robot đứng vững liên tục trung bình **473 steps** (~9.46 giây) ngay cả trong chế độ open-loop chỉ giữ tư thế danh định!
+- **Kiểm thử toàn diện:**
+  - **135 / 135 tests PASSED (100% GREEN, zero failures)** trên toàn bộ 17 tệp test.
