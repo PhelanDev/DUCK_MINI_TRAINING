@@ -215,7 +215,7 @@ def apply_timeout_bootstrap(
 def train_ppo(
     model_path: Union[str, Path] = DEFAULT_MODEL_PATH,
     num_envs: int = 64,
-    rollout_steps: int = 32,
+    rollout_steps: int = 128,
     max_iterations: int = 100,
     learning_rate: float = 3e-4,
     gamma: float = 0.99,
@@ -232,6 +232,8 @@ def train_ppo(
     verbose: bool = True,
     start_stage: int = 0,
     hold_iters: int = 10,
+    resume: bool = False,
+    load_checkpoint: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """Execute PPO training pipeline using ParallelSimRunner."""
     if device is None:
@@ -284,6 +286,39 @@ def train_ppo(
     # Instantiate ActorCritic network & Adam optimizer
     model = ActorCritic(obs_dim=obs_dim, action_dim=action_dim, hidden_dim=hidden_dim).to(dev)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, eps=1e-5)
+
+    # Resume from checkpoint if requested or exists
+    ckpt_to_load = None
+    if load_checkpoint is not None:
+        ckpt_to_load = Path(load_checkpoint).resolve()
+    elif resume and save_path.exists():
+        ckpt_to_load = save_path
+
+    total_timesteps = 0
+    if ckpt_to_load is not None:
+        if ckpt_to_load.exists():
+            ckpt = torch.load(str(ckpt_to_load), map_location=dev, weights_only=False)
+            if "model_state_dict" in ckpt:
+                model.load_state_dict(ckpt["model_state_dict"])
+            elif "actor_state_dict" in ckpt:
+                model.actor.load_state_dict(ckpt["actor_state_dict"])
+                if "critic_state_dict" in ckpt:
+                    model.critic.load_state_dict(ckpt["critic_state_dict"])
+            if "optimizer_state_dict" in ckpt:
+                try:
+                    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                except Exception:
+                    pass
+            loaded_stage = ckpt.get("stage", current_stage)
+            if loaded_stage > current_stage:
+                current_stage = loaded_stage
+                runner.set_stage(current_stage)
+            total_timesteps = ckpt.get("total_timesteps", 0)
+            if verbose:
+                print(f"[PPO] Resumed training from checkpoint: {ckpt_to_load} (Stage {current_stage}, {total_timesteps} previous timesteps)")
+        else:
+            if verbose:
+                print(f"[PPO] Checkpoint {ckpt_to_load} not found. Starting training from scratch.")
 
     batch_size = num_envs * rollout_steps
     if mini_batch_size is None or mini_batch_size > batch_size:
@@ -384,6 +419,7 @@ def train_ppo(
             b_log_probs = log_probs_buffer.reshape(-1)
             b_advantages = advantages.reshape(-1)
             b_returns = returns.reshape(-1)
+            b_values = values_buffer.reshape(-1)
 
             # Normalize advantages
             b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
@@ -419,9 +455,13 @@ def train_ppo(
                     surr2 = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * mb_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
 
-                    # Value Function Loss
+                    # Value Function Loss with Clipping (prevents explosion on bootstrap)
                     mb_ret = b_returns[mb_inds]
-                    value_loss = 0.5 * ((new_values - mb_ret) ** 2).mean()
+                    mb_val = b_values[mb_inds]
+                    v_loss_unclipped = (new_values - mb_ret) ** 2
+                    v_clipped = mb_val + torch.clamp(new_values - mb_val, -clip_epsilon, clip_epsilon)
+                    v_loss_clipped = (v_clipped - mb_ret) ** 2
+                    value_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
                     # Total Loss with Entropy Regularization
                     entropy_mean = entropy.mean()
@@ -520,7 +560,7 @@ def main():
     parser.add_argument("--model-path", type=str, default=str(DEFAULT_MODEL_PATH), help="Path to MuJoCo MJCF model")
     parser.add_argument("--save-path", type=str, default=str(DEFAULT_SAVE_PATH), help="Path to save PyTorch checkpoint")
     parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel MuJoCo environments (default: 64)")
-    parser.add_argument("--rollout-steps", type=int, default=32, help="Rollout steps per iteration (default: 32)")
+    parser.add_argument("--rollout-steps", type=int, default=128, help="Rollout steps per iteration (default: 128)")
     parser.add_argument("--max-iterations", type=int, default=100, help="Maximum PPO training iterations (default: 100)")
     parser.add_argument("--learning-rate", type=float, default=3e-4, help="Adam optimizer learning rate (default: 3e-4)")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor (default: 0.99)")
@@ -531,6 +571,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Run 1 quick iteration for CI/CD testing")
     parser.add_argument("--device", type=str, default=None, help="Device to run on ('cpu', 'cuda')")
     parser.add_argument("--start-stage", type=int, default=0, help="Initial terrain curriculum stage (0 to 3)")
+    parser.add_argument("--resume", action="store_true", help="Resume training from existing save-path checkpoint")
+    parser.add_argument("--load-checkpoint", type=str, default=None, help="Path to checkpoint file to resume from")
 
     args = parser.parse_args()
 
@@ -550,6 +592,8 @@ def main():
         device=args.device,
         verbose=True,
         start_stage=args.start_stage,
+        resume=args.resume,
+        load_checkpoint=args.load_checkpoint,
     )
 
 

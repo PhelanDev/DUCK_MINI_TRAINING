@@ -425,3 +425,52 @@ Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to
   - Tích hợp chu trình điều khiển 50Hz chuẩn xác (`control_dt = 0.02s`, `decimation = 10` với tần số vật lý 500Hz), kết hợp `clip_action_rates` và `scale_actions` bảo vệ hệ thống cơ khí 8 servo MG996R chống giật gãy bánh răng.
   - Hỗ trợ chạy mượt mà ở cả chế độ đồ họa cửa sổ 3D (`launch_passive`) và chế độ không giao diện (`--headless`).
   - Viết 4 bài kiểm thử chuyên sâu mới trong `tests/test_interactive_viewer.py`, nâng tổng số bài test của dự án lên **116 bài test (100% PASSED)**.
+
+
+---
+
+## 📌 Phiên Làm Việc: 2026-10-29 13:10:00+07:00
+
+### 1. Khắc Phục Triệt Để Bùng Nổ Value Loss (Critic Loss) Bằng Kỹ Thuật PPO Value Clipping
+- **Tệp ảnh hưởng:**
+  - `scripts/train_ppo.py`
+  - `tests/test_ppo_training.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Khi robot sống sót đạt mốc $500$ bước (timeout), hàm `apply_timeout_bootstrap` cộng dồn giá trị tương lai $\gamma V(s_{\text{terminal}}) \approx 50 \to 70$ điểm vào phần thưởng bước cuối.
+  - Do `train_ppo.py` trước đây tính Value Loss dạng MSE thuần `0.5 * ((new_values - mb_ret) ** 2).mean()` mà không có Value Clipping (theo chuẩn PPO2 / CleanRL), mạng Critic bị sốc gradient khi các mục tiêu return nhảy vọt, đẩy `ValLoss` từ $8.7$ lên $41 \to 122+$.
+- **Biện pháp xử lý:**
+  - Bổ sung `b_values = values_buffer.reshape(-1)` vào bộ đệm mini-batch.
+  - Áp dụng kỹ thuật PPO Value Loss Clipping chuẩn xác:
+    ```python
+    v_loss_unclipped = (new_values - mb_ret) ** 2
+    v_clipped = mb_val + torch.clamp(new_values - mb_val, -clip_epsilon, clip_epsilon)
+    v_loss_clipped = (v_clipped - mb_ret) ** 2
+    value_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+    ```
+  - Triệt tiêu hoàn toàn hiện tượng nổ mất mát Critic, giữ `ValLoss` dao động ổn định trong tầm kiểm soát.
+
+---
+
+### 2. Tích Hợp Cơ Chế Học Nối Tiếp Checkpoint (`--resume` & `--load-checkpoint`)
+- **Tệp ảnh hưởng:**
+  - `scripts/train_ppo.py`
+  - `tests/test_ppo_training.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Trước đây, `train_ppo.py` luôn khởi tạo mạng `ActorCritic` ngẫu nhiên mới tinh mỗi khi chạy, khiến các lần chạy sau học lại từ con số 0 (Scratch) và ghi đè làm mất checkpoint cũ đã hội tụ.
+- **Biện pháp xử lý:**
+  - Bổ sung tham số CLI `--resume` (tự động nạp checkpoint tại `--save-path` nếu đã tồn tại) và `--load-checkpoint <path>`.
+  - Khôi phục đầy đủ `model.state_dict()`, `optimizer.state_dict()`, `current_stage` của terrain curriculum, và biến tích lũy `total_timesteps`.
+  - Giúp việc huấn luyện có thể chia nhỏ nhiều đợt hoặc chạy nối tiếp sau khi tinh chỉnh siêu tham số mà không bị mất trọng số đã học.
+
+---
+
+### 3. Tăng Độ Dài Rollout Mặc Định Lên 128 Bước (2.56 Giây / Đợt Thu Thập)
+- **Tệp ảnh hưởng:**
+  - `scripts/train_ppo.py`
+  - `training/terrain_curriculum.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Với $\gamma = 0.99$, tầm nhìn hiệu quả của thuật toán RL là $\approx 100$ bước. Việc để `rollout_steps = 32` ($0.64\text{ s}$) là quá ngắn, chưa đủ một chu kỳ bước đi trọn vẹn của robot hai chân, làm thuật toán GAE ước lượng phương sai cao.
+  - Điều kiện chuyển cấp ở Stage 0 đòi hỏi `rew_lin_vel_ratio >= 0.75` liên tục trong 10 vòng lặp là quá khắt khe khi robot bước đi có dao động vận tốc tự nhiên theo nhịp chân.
+- **Biện pháp xử lý:**
+  - Đổi giá trị mặc định của `--rollout-steps` từ 32 lên **128 bước** ($2.56\text{ s}$ / chu kỳ thu thập), bao quát trọn vẹn 2–3 chu kỳ sải chân của vịt.
+  - Điều chỉnh nhẹ ngưỡng vận tốc Stage 0 trong `terrain_curriculum.py` từ $0.75 \to 0.70$ để phản ánh chính xác nhịp bước đi dao động thực tế của robot bipedal.

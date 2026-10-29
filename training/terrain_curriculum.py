@@ -103,8 +103,8 @@ def next_stage(
 
     condition_met = False
     if stage == 0:
-        # Stage 0 -> 1: ep_len_mean >= 400 and linear velocity reward >= 75% of max
-        condition_met = (ep_len_mean >= 400.0) and (rew_lin_vel_ratio >= 0.75)
+        # Stage 0 -> 1: ep_len_mean >= 400 and linear velocity reward >= 70% of max
+        condition_met = (ep_len_mean >= 400.0) and (rew_lin_vel_ratio >= 0.70)
     elif stage == 1:
         # Stage 1 -> 2: sustained walking proficiency
         condition_met = ep_len_mean >= 420.0
