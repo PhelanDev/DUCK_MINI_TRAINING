@@ -122,3 +122,36 @@ def test_parallel_sim_tracks_d_min_and_d_min_dot():
     assert sim.d_min.shape == (2,)
     assert sim.d_min_dot.shape == (2,)
 
+
+def test_lidar_pomdp_d_min_ignores_rear_obstacle():
+    """Verify that when LiDAR is active, d_min is derived from LiDAR perception rather than rear obstacles."""
+    import mujoco
+
+    model_path = REPO_ROOT / "pipelines" / "rpi5_stack" / "models" / "mjcf" / "microduck_rpi5_8dof.xml"
+    sim = DuckParallelSim(
+        model_path=str(model_path),
+        num_envs=1,
+        decimation=1,
+        stage=2,
+    )
+    # Move front/left/right obstacles far away (> 5m), keeping obstacle_back at x = -0.75m
+    for name in ["obstacle_front", "obstacle_left", "obstacle_right"]:
+        gid = mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, name)
+        if gid != -1:
+            sim.model.geom_pos[gid, 0] = 10.0
+            sim.model.geom_pos[gid, 1] = 10.0
+
+    obs = sim.reset()
+    # At reset: rear obstacle is at distance ~0.67m, but LiDAR facing forward sees nothing closer than 2.0m
+    # sim.d_min must reflect LiDAR range (2.0m) and NOT rear obstacle distance (~0.67m)
+    assert sim.obs_dim == 42
+    assert sim.d_min[0] > 1.5, f"d_min was {sim.d_min[0]}, should ignore rear obstacle at 0.67m"
+    assert pytest.approx(float(sim.d_min[0]), abs=0.05) == 2.0
+
+    # Step simulation with zero actions
+    actions = np.zeros((1, 8), dtype=np.float32)
+    next_obs, rewards, dones, infos = sim.step(actions)
+    assert sim.d_min[0] > 1.5, f"d_min after step was {sim.d_min[0]}, should ignore rear obstacle"
+    assert pytest.approx(float(sim.d_min[0]), abs=0.05) == 2.0
+
+

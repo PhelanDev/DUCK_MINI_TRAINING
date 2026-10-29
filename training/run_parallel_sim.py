@@ -225,12 +225,16 @@ class ParallelSimRunner:
         self.last_actions[env_idx] = 0.0
         self.last_targets[env_idx] = d.qpos[7:15].astype(np.float32)
         self.episode_steps[env_idx] = 0
-        d_init = self._compute_d_min(env_idx)
+        obs = self._extract_obs(env_idx)
+        if self.obs_dim == 42 and len(obs) >= 42:
+            d_init = float(np.min(obs[37:42]))
+        else:
+            d_init = self._compute_d_min(env_idx)
         if d_init is not None:
             self.prev_d_min[env_idx] = d_init
             self.d_min[env_idx] = d_init
             self.d_min_dot[env_idx] = 0.0
-        return self._extract_obs(env_idx)
+        return obs
 
     def reset(self, env_ids: Optional[Union[List[int], np.ndarray]] = None) -> np.ndarray:
         """Reset specified environments or all if None. Returns array of observations."""
@@ -386,7 +390,11 @@ class ParallelSimRunner:
         lidar_ranges = next_obs[:, 37:42] if self.obs_dim == 42 else None
 
         # Compute obstacle distances and approach velocity
-        curr_d_min = self._compute_d_min()
+        if lidar_ranges is not None:
+            curr_d_min = np.min(lidar_ranges, axis=-1)
+        else:
+            curr_d_min = self._compute_d_min()
+
         if curr_d_min is not None:
             self.d_min[:] = curr_d_min
             self.d_min_dot[:] = (curr_d_min - self.prev_d_min) / self.control_dt
