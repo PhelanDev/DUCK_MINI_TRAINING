@@ -380,3 +380,16 @@ Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to
   - **111 / 111 bài test PASSED (100%)** trong `28.86s` (0 failures, 0 errors).
   - Khả năng huấn luyện PPO: Đạt tốc độ ổn định **>800 FPS** trên CPU đa luồng, chuyển cấp Stage trơn tru khi `ep_len_mean >= 400`.
   - Mã nguồn tuân thủ triệt để nguyên tắc **Ponytail** (Zero Over-engineering, sửa tận gốc), **TDD** và **Zero-Trust Git Policy**.
+
+
+---
+
+### 6. Tự Động Fallback CPU Khi PyTorch Môi Trường Không Có CUDA
+- **Commit:** `58d1a11` (`fix(training): safely fallback to cpu when cuda is requested but torch is cpu-only`)
+- **Tệp ảnh hưởng:**
+  - `scripts/train_ppo.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Môi trường cài đặt `Python 3.14` với bản PyTorch CPU (`2.15.0+cpu`). Khi người dùng hoặc script truyền `--device cuda`, hàm `model.to("cuda")` văng ngoại lệ `AssertionError: Torch not compiled with CUDA enabled`.
+- **Biện pháp xử lý:**
+  - Thêm cơ chế kiểm tra phòng vệ `if device.startswith("cuda") and not torch.cuda.is_available():`.
+  - Tự động in cảnh báo an toàn và fallback về `cpu`, giúp pipeline huấn luyện luôn chạy thông suốt trên mọi máy mà không bị dừng đột ngột.
