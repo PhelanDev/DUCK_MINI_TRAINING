@@ -45,6 +45,12 @@ except Exception:
     DEFAULT_TORQUE_LIMIT = 1.0
 
 try:
+    from training.terrain_curriculum import apply_stage, STAGES
+except Exception:
+    apply_stage = None
+    STAGES = []
+
+try:
     import mujoco
     import mujoco.viewer
     _MUJOCO_AVAILABLE = True
@@ -145,6 +151,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=[0.2, 0.0, 0.0],
         metavar=("VX", "VY", "WZ"),
         help="Target velocity command [vx (m/s), vy (m/s), wz (rad/s)] for policy",
+    )
+    parser.add_argument(
+        "--stage",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3],
+        help="Terrain curriculum stage (0=flat/wide, 1=low hurdles, 2=med hurdles, 3=high hurdles)",
     )
     return parser
 
@@ -437,6 +450,7 @@ def run_simulation_headless(
     cmd_vel: Union[Tuple[float, float, float], List[float], np.ndarray] = (0.2, 0.0, 0.0),
     dt: float = 0.002,
     verbose: bool = False,
+    stage: int = 0,
 ) -> Dict[str, Any]:
     """Execute a headless simulation without GUI window for verification and testing."""
     if not _MUJOCO_AVAILABLE:
@@ -448,6 +462,8 @@ def run_simulation_headless(
 
     model = mujoco.MjModel.from_xml_path(model_path)
     model.opt.timestep = dt
+    if apply_stage is not None and stage > 0:
+        apply_stage(model, stage)
     data = mujoco.MjData(model)
 
     # Initialize nominal standing pose
@@ -529,6 +545,7 @@ def run_interactive_viewer(
     policy_path: Optional[Union[str, Path]] = None,
     cmd_vel: Union[Tuple[float, float, float], List[float], np.ndarray] = (0.2, 0.0, 0.0),
     dt: float = 0.002,
+    stage: int = 0,
 ):
     """Launch passive 3D MuJoCo viewer or fall back to headless/CLI mode."""
     if not _MUJOCO_AVAILABLE:
@@ -542,6 +559,8 @@ def run_interactive_viewer(
 
     model = mujoco.MjModel.from_xml_path(model_path)
     model.opt.timestep = dt
+    if apply_stage is not None and stage > 0:
+        apply_stage(model, stage)
     data = mujoco.MjData(model)
 
     # Reset to nominal standing pose
@@ -558,6 +577,10 @@ def run_interactive_viewer(
     print("=" * 70)
     print(f"  Mô hình      : {model_path}")
     print(f"  Tư thế gốc   : {pose}")
+    if stage > 0 and STAGES and stage < len(STAGES):
+        print(f"  Curriculum   : {STAGES[stage].description}")
+    elif stage > 0:
+        print(f"  Curriculum   : Stage {stage}")
     if policy_path:
         print(f"  Chế độ điều khiển: RL Policy Brain ({policy_path})")
         print(f"  Lệnh vận tốc     : vx={cmd_vel[0]:.2f} m/s, vy={cmd_vel[1]:.2f} m/s, wz={cmd_vel[2]:.2f} rad/s")
@@ -572,6 +595,9 @@ def run_interactive_viewer(
         with mujoco.viewer.launch_passive(model, data) as viewer:
             # Set explicit camera orientation to prevent black screen / uninitialized view on hybrid GPUs
             configure_viewer_camera(viewer.cam)
+            # Ensure geom groups 0, 1, 2, 3 are all active for rendering
+            for g_idx in range(4):
+                viewer.opt.geomgroup[g_idx] = 1
             viewer.sync()
 
             start_wall_time = time.time()
@@ -791,6 +817,7 @@ def main() -> int:
             policy_path=args.policy,
             cmd_vel=tuple(args.cmd_vel),
             dt=args.dt,
+            stage=args.stage,
         )
         print("Kết quả mô phỏng:")
         print(f"  - Tổng số bước      : {metrics['completed_steps']}")
@@ -807,6 +834,7 @@ def main() -> int:
             policy_path=args.policy,
             cmd_vel=tuple(args.cmd_vel),
             dt=args.dt,
+            stage=args.stage,
         )
     return 0
 
