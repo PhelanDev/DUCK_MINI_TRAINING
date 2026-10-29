@@ -474,3 +474,41 @@ Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to
 - **Biện pháp xử lý:**
   - Đổi giá trị mặc định của `--rollout-steps` từ 32 lên **128 bước** ($2.56\text{ s}$ / chu kỳ thu thập), bao quát trọn vẹn 2–3 chu kỳ sải chân của vịt.
   - Điều chỉnh nhẹ ngưỡng vận tốc Stage 0 trong `terrain_curriculum.py` từ $0.75 \to 0.70$ để phản ánh chính xác nhịp bước đi dao động thực tế của robot bipedal.
+
+---
+
+### 4. Khắc Phục Hiện Tượng Ẩn Gờ Đất (Hurdles) Trên 3D Viewer & Hỗ Trợ Cờ `--stage`
+- **Tệp ảnh hưởng:**
+  - `scripts/interactive_viewer.py`
+  - `models/mjcf/microduck_8dof.xml`
+  - `pipelines/rpi5_stack/models/mjcf/microduck_rpi5_8dof.xml`
+  - `pipelines/dual_esp32s3_stack/models/mjcf/microduck_esp32_8dof.xml`
+  - `tests/test_interactive_viewer.py`
+- **Hiện tượng & Nguyên nhân gốc rễ:**
+  - Người dùng thắc mắc vì sao khi tiến lên Stage 2 / Stage 3 trong quá trình train, mở viewer lên chỉ thấy 4 cột trụ thu hẹp lại mà không thấy các gờ đất nhô lên.
+  - **Nguyên nhân cốt lõi**:
+    1. Các gờ đất `hurdle_*` được gán thuộc tính `group="3"`.
+    2. Trong chuẩn MuJoCo, cấu hình hiển thị mặc định `MjvOption.geomgroup` chỉ kích hoạt 3 nhóm đầu tiên `[1, 1, 1, 0, 0, 0]` (nhóm 3 bị tắt mặc định). Do đó mô phỏng va chạm vật lý vẫn diễn ra bình thường nhưng renderer không vẽ lên màn hình.
+    3. Trước đó, `interactive_viewer.py` chưa có tham số để người dùng chỉ định xem trước trạng thái địa hình của các giai đoạn trong giáo trình (Curriculum Stage 0..3).
+- **Biện pháp xử lý:**
+  - Trong `scripts/interactive_viewer.py`: Bổ sung kích hoạt hiển thị toàn bộ `viewer.opt.geomgroup[0..3] = 1`.
+  - Bổ sung tham số dòng lệnh `--stage <0|1|2|3>` vào `interactive_viewer.py`, gọi trực tiếp `apply_stage(model, stage)` khi khởi động để người dùng có thể mở 3D Viewer soi trực tiếp địa hình và chướng ngại vật của bất kỳ Stage nào.
+  - Bổ sung unit test `test_viewer_stage_argument_and_hurdle_elevation` xác nhận hoạt động chuẩn xác của cờ `--stage 2` và độ cao gờ đất $+15\text{mm}$.
+
+---
+
+### 5. Chẩn Đoán Trạng Thái Card Rời RTX 3070 & PyTorch CUDA
+- **Hiện tượng:**
+  - Task Manager hiển thị GPU 0 (iGPU) 1%, GPU 1 (RTX 3070 Laptop) 0%, CPU 66% khi chạy lệnh train.
+  - Khi gõ `--device cuda`, hệ thống báo lỗi `AssertionError: Torch not compiled with CUDA enabled`.
+- **Nguyên nhân gốc rễ:**
+  - Hệ thống của người dùng hiện đang chạy môi trường Python **3.14.5**.
+  - Tổ chức PyTorch (`pytorch.org`) tại thời điểm hiện tại chưa phát hành bản build nhị phân CUDA chính thức cho Python 3.14 trên Windows (chỉ có bản build rút gọn `torch 2.15.0+cpu` trên PyPI).
+  - Phần cứng máy tính của người dùng sở hữu GPU rời **NVIDIA GeForce RTX 3070 Laptop (8GB VRAM)** rất mạnh, driver phiên bản 617.42 hỗ trợ tối đa CUDA 13.4.
+- **Biện pháp & Khuyến nghị:**
+  - Trong mã nguồn `scripts/train_ppo.py`, đã cài sẵn cơ chế phòng vệ tự động fallback về `cpu` an toàn kèm cảnh báo rõ ràng khi người dùng vô tình truyền `--device cuda` trên môi trường PyTorch CPU.
+  - Do kiến trúc mạng MLP của bài toán vịt MicroDuck rất nhỏ gọn ($42 \to 256 \to 128 \to 8$), việc chạy mô phỏng 64 môi trường song song trên CPU đa nhân diễn ra rất nhanh và ổn định mà không bị nghẽn (CPU 66%).
+  - Nếu người dùng muốn tận dụng 100% sức mạnh card RTX 3070 cho PPO: Chỉ cần cài thêm môi trường **Python 3.12** (`winget install Python.Python.3.12`) và cài PyTorch CUDA qua lệnh:
+    ```powershell
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+    ```
