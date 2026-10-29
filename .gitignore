@@ -1,8 +1,12 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.superpowers/sdd/
+.superpowers/
+plans/
+docs/superpowers/
+tests/
 .env
 .env.*
 *.local
+
 
