@@ -45,16 +45,18 @@ class MicroDuck8DoFConfig:
     )
 
     # Nominal standing joint angles (radians) for natural balanced posture
+    # Note: MicroDuck 8-DOF has no active ankles; foot is fixed perpendicular to shin.
+    # Therefore hip_pitch + knee_pitch MUST equal 0.0 (-0.15 + 0.15 = 0.0) so feet rest perfectly flat on floor!
     NOMINAL_JOINT_POS: Dict[str, float] = field(
         default_factory=lambda: {
             "head_yaw": 0.0,
             "head_pitch": 0.0,
             "left_hip_roll": 0.0,
             "left_hip_pitch": -0.15,
-            "left_knee_pitch": 0.35,
+            "left_knee_pitch": 0.15,
             "right_hip_roll": 0.0,
             "right_hip_pitch": -0.15,
-            "right_knee_pitch": 0.35,
+            "right_knee_pitch": 0.15,
         }
     )
 
@@ -115,10 +117,10 @@ DEFAULT_NOMINAL_JOINT_POS: Dict[str, float] = {
     "head_pitch": 0.0,
     "left_hip_roll": 0.0,
     "left_hip_pitch": -0.15,
-    "left_knee_pitch": 0.35,
+    "left_knee_pitch": 0.15,
     "right_hip_roll": 0.0,
     "right_hip_pitch": -0.15,
-    "right_knee_pitch": 0.35,
+    "right_knee_pitch": 0.15,
 }
 
 DEFAULT_NOMINAL_QPOS: np.ndarray = _DEFAULT_CFG.nominal_qpos

@@ -327,11 +327,11 @@ def test_parallel_sim_reset_nominal_stance():
     try:
         runner.reset()
         qpos_joints = runner.datas[0].qpos[7:15]
-        assert 0.25 <= qpos_joints[4] <= 0.45, f"Left knee expected ~0.35, got {qpos_joints[4]}"
-        assert 0.25 <= qpos_joints[7] <= 0.45, f"Right knee expected ~0.35, got {qpos_joints[7]}"
+        assert 0.05 <= qpos_joints[4] <= 0.25, f"Left knee expected ~0.15, got {qpos_joints[4]}"
+        assert 0.05 <= qpos_joints[7] <= 0.25, f"Right knee expected ~0.15, got {qpos_joints[7]}"
         assert -0.25 <= qpos_joints[3] <= -0.05, f"Left hip expected ~-0.15, got {qpos_joints[3]}"
         assert -0.25 <= qpos_joints[6] <= -0.05, f"Right hip expected ~-0.15, got {qpos_joints[6]}"
-        assert 0.155 <= runner.datas[0].qpos[2] <= 0.170, f"CoM z expected ~0.165, got {runner.datas[0].qpos[2]}"
+        assert 0.185 <= runner.datas[0].qpos[2] <= 0.200, f"CoM z expected ~0.194, got {runner.datas[0].qpos[2]}"
     finally:
         runner.close()
 

@@ -158,7 +158,7 @@ class ParallelSimRunner:
         d = self.datas[env_idx]
         mujoco.mj_resetData(self.model, d)
 
-        d.qpos[0:3] = [0.0, 0.0, 0.165]
+        d.qpos[0:3] = [0.0, 0.0, 0.194]
         d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
         # Khởi tạo góc khớp ban đầu quanh tư thế danh định đứng cân bằng (chùng gối nhẹ)
         nominal = getattr(self.cfg, "nominal_qpos", DEFAULT_NOMINAL_QPOS)
@@ -299,8 +299,8 @@ class ParallelSimRunner:
             self.action_dim,
         ), f"Expected action shape ({self.num_envs}, {self.action_dim}), got {actions.shape}"
 
-        # 1. Scale actions to joint limits (vectorized)
-        scaled_targets = scale_actions(actions, self.cfg)
+        # 1. Scale actions to joint limits around nominal stance (vectorized)
+        scaled_targets = scale_actions(actions, self.cfg, nominal_centered=True)
 
         # 2. Rate-limit target joint changes (vectorized)
         target_positions = clip_action_rates(
