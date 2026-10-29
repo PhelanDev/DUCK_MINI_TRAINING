@@ -6,6 +6,7 @@ Extracts 42-dimensional perception observations (including 5 LiDAR rangefinder r
 and benchmarks stepping throughput for Reinforcement Learning training.
 """
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import argparse
@@ -98,10 +99,38 @@ class ParallelSimRunner:
 
         self.max_episode_steps = int(max_episode_steps)
         self.episode_steps = np.zeros(self.num_envs, dtype=np.int32)
+        self.completed_ep_lens: deque = deque(maxlen=100)
         self.rng = np.random.default_rng(seed=42)
+
+        # Obstacle avoidance and approach-velocity tracking state
+        self.obstacle_geom_ids: List[int] = []
+        for name in ["obstacle_front", "obstacle_left", "obstacle_right", "obstacle_back"]:
+            gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            if gid != -1:
+                self.obstacle_geom_ids.append(gid)
+
+        self.prev_d_min = np.zeros(self.num_envs, dtype=np.float32)
+        self.d_min = np.zeros(self.num_envs, dtype=np.float32)
+        self.d_min_dot = np.zeros(self.num_envs, dtype=np.float32)
 
         # Initialize environments
         self.reset()
+
+    def _compute_d_min(self, env_idx: Optional[int] = None) -> Optional[Union[float, np.ndarray]]:
+        """Compute minimum distance to obstacle cylinders (minus cylinder radius 0.08m)."""
+        if not self.obstacle_geom_ids:
+            return None
+        obs_xy = np.array([self.model.geom_pos[gid, :2] for gid in self.obstacle_geom_ids], dtype=np.float32)
+        if env_idx is not None:
+            base_xy = np.array(self.datas[env_idx].qpos[0:2], dtype=np.float32)
+            diff = base_xy - obs_xy
+            dist = np.linalg.norm(diff, axis=-1) - 0.08
+            return float(np.clip(np.min(dist), 0.0, None))
+        else:
+            base_xy = np.array([d.qpos[0:2] for d in self.datas], dtype=np.float32)
+            diff = base_xy[:, None, :] - obs_xy[None, :, :]
+            dist = np.linalg.norm(diff, axis=-1) - 0.08
+            return np.clip(np.min(dist, axis=-1), 0.0, None).astype(np.float32)
 
     def reset_env(self, env_idx: int) -> np.ndarray:
         """Reset a single environment with domain randomization and random velocity commands."""
@@ -126,7 +155,16 @@ class ParallelSimRunner:
         self.last_actions[env_idx] = 0.0
         self.last_targets[env_idx] = d.qpos[7:15].astype(np.float32)
         self.episode_steps[env_idx] = 0
-        return self._extract_obs(env_idx)
+        obs = self._extract_obs(env_idx)
+        if self.obs_dim == 42 and len(obs) >= 42:
+            d_init = float(np.min(obs[37:42]))
+        else:
+            d_init = self._compute_d_min(env_idx)
+        if d_init is not None:
+            self.prev_d_min[env_idx] = d_init
+            self.d_min[env_idx] = d_init
+            self.d_min_dot[env_idx] = 0.0
+        return obs
 
     def reset(self, env_ids: Optional[Union[List[int], np.ndarray]] = None) -> np.ndarray:
         """Reset specified environments or all if None. Returns array of observations."""
@@ -273,7 +311,18 @@ class ParallelSimRunner:
         joint_torques = np.array([d.ctrl[:] for d in self.datas], dtype=np.float32)
         joint_vel = np.array([d.sensordata[20:28] for d in self.datas], dtype=np.float32)
         foot_contact = next_obs[:, 33:37]
-        lidar_ranges = next_obs[:, 37:42]
+        lidar_ranges = next_obs[:, 37:42] if self.obs_dim == 42 else None
+
+        # Obstacle avoidance tracking: compute distance and approach velocity
+        if lidar_ranges is not None:
+            curr_d_min = np.min(lidar_ranges, axis=-1)
+        else:
+            curr_d_min = self._compute_d_min()
+
+        if curr_d_min is not None:
+            self.d_min[:] = curr_d_min
+            self.d_min_dot[:] = (curr_d_min - self.prev_d_min) / self.control_dt
+            self.prev_d_min[:] = curr_d_min
 
         # Vectorized reward computation across all environments
         reward_dict = compute_rewards(
@@ -315,9 +364,18 @@ class ParallelSimRunner:
         self.last_actions[:] = actions
         if np.any(dones):
             for i in np.where(dones)[0]:
+                self.completed_ep_lens.append(int(self.episode_steps[i]))
+                infos[i]["episode_length"] = int(self.episode_steps[i])
+                infos[i]["terminal_obs"] = next_obs[i].copy()
                 next_obs[i] = self.reset_env(i)
 
         return next_obs, rewards, dones, infos
+
+    def get_mean_episode_length(self, default: float = 0.0) -> float:
+        """Return average episode length from completed episodes window."""
+        if len(self.completed_ep_lens) == 0:
+            return float(default)
+        return float(np.mean(self.completed_ep_lens))
 
     def close(self):
         """Clean up thread executor resources."""
