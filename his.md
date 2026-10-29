@@ -512,3 +512,17 @@ Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to
     ```powershell
     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
     ```
+
+---
+
+### 6. Nghiệm Thu Đợt Huấn Luyện 1000 Vòng (2.048.000 Bước) & Hội Tụ Stage 3
+- **Hiện tượng & Kết quả thực tế:**
+  - Người dùng thực hiện huấn luyện 1000 iterations PPO (`2.048.000` bước mô phỏng trong `1110.30s` ~ 18.5 phút, tốc độ ~2000 FPS).
+  - Vượt qua trọn vẹn cả 4 cấp độ giáo trình (Stage 0 $\rightarrow$ 1 $\rightarrow$ 2 $\rightarrow$ 3 - Full challenge với gờ đất cao $+25\text{mm}$).
+  - Điểm thưởng tăng trưởng bền vững: từ $+1.071 \rightarrow +2.631$ (đỉnh $+2.695$).
+  - Mất mát Value Loss (Critic) hội tụ hoàn hảo: từ đỉnh $167.8 \rightarrow 4.64$ (giảm sâu hơn 36 lần).
+  - Xuất thành công các tệp nhị phân triển khai thực tế:
+    * `models/microduck_rpi5_policy.onnx` (Float32 ONNX cho Raspberry Pi 5).
+    * `pipelines/dual_esp32s3_stack/deployment/esp32_policy_weights.h` (INT8 weights cho Dual ESP32-S3).
+    * `pipelines/dual_esp32s3_stack/deployment/esp32_quant_config.h` (Cấu hình lượng tử hóa).
+  - Đã kiểm thử xác nhận trực tiếp bằng `scripts/interactive_viewer.py --headless`: Mô hình ONNX và Checkpoint PyTorch điều khiển robot bước đi vững vàng 1000 bước mô phỏng ở Stage 3, độ cao CoM duy trì ổn định ở $0.1986\text{m}$.
