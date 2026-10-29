@@ -121,3 +121,4 @@ def test_parallel_sim_tracks_d_min_and_d_min_dot():
     assert hasattr(sim, "d_min_dot")
     assert sim.d_min.shape == (2,)
     assert sim.d_min_dot.shape == (2,)
+

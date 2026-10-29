@@ -91,3 +91,4 @@ def test_next_stage_never_regresses():
     stage, hold = next_stage(stage, ep_len_mean=150.0, rew_lin_vel_ratio=0.2, hold_count=hold, hold_iters=10)
     assert stage == 2
     assert hold == 0  # Hold count resets, but stage never decreases
+

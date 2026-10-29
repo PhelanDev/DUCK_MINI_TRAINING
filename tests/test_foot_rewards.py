@@ -124,3 +124,4 @@ def test_parallel_sim_extracts_foot_dynamics():
     for info in infos:
         assert "rew_foot_clearance" in info
         assert "pen_stumble" in info
+
