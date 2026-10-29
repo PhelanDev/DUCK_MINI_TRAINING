@@ -248,3 +248,55 @@ def test_esp32_mjcf_obstacles():
         assert geom.attrib.get("type") == "cylinder"
         assert geom.attrib.get("contype") == "1"
         assert geom.attrib.get("conaffinity") == "1"
+
+
+def test_esp32_mjcf_terrain_hurdles():
+    assert os.path.exists(MJCF_PATH), f"MJCF model not found: {MJCF_PATH}"
+    tree = ET.parse(MJCF_PATH)
+    root = tree.getroot()
+    worldbody = root.find("worldbody")
+    assert worldbody is not None
+
+    hurdle_names = ["hurdle_1", "hurdle_2", "hurdle_back"]
+    geoms = {g.attrib.get("name"): g for g in worldbody.findall("geom")}
+    for name in hurdle_names:
+        assert name in geoms, f"Missing {name} hurdle in worldbody"
+        geom = geoms[name]
+        assert geom.attrib.get("type") == "box"
+        assert geom.attrib.get("contype") == "1"
+        assert geom.attrib.get("conaffinity") == "1"
+        assert geom.attrib.get("group") == "3"
+
+    try:
+        import mujoco
+    except ImportError:
+        pytest.skip("MuJoCo python package not available")
+
+    import sys
+    from pathlib import Path
+
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+    from training.terrain_curriculum import apply_stage, STAGES
+
+    model = mujoco.MjModel.from_xml_path(MJCF_PATH)
+    for h_name in hurdle_names:
+        gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, h_name)
+        assert gid != -1, f"Geom {h_name} not found in compiled model"
+
+    # Verify stage 0 submerged
+    apply_stage(model, stage=0)
+    for h_name in hurdle_names:
+        gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, h_name)
+        expected_z = -0.025 if h_name == "hurdle_2" else -0.020
+        assert pytest.approx(model.geom_pos[gid, 2], abs=1e-4) == expected_z
+        assert model.geom_pos[gid, 2] + model.geom_size[gid, 2] <= 0.0
+
+    # Verify stage 3 elevated
+    apply_stage(model, stage=3)
+    for h_name in hurdle_names:
+        gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, h_name)
+        assert pytest.approx(model.geom_pos[gid, 2], abs=1e-4) == STAGES[3].hurdle_z
+
