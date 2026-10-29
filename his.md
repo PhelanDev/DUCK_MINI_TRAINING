@@ -526,3 +526,21 @@ Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to
     * `pipelines/dual_esp32s3_stack/deployment/esp32_policy_weights.h` (INT8 weights cho Dual ESP32-S3).
     * `pipelines/dual_esp32s3_stack/deployment/esp32_quant_config.h` (Cấu hình lượng tử hóa).
   - Đã kiểm thử xác nhận trực tiếp bằng `scripts/interactive_viewer.py --headless`: Mô hình ONNX và Checkpoint PyTorch điều khiển robot bước đi vững vàng 1000 bước mô phỏng ở Stage 3, độ cao CoM duy trì ổn định ở $0.1986\text{m}$.
+
+---
+
+### 7. Khắc Phục Hiện Tượng Thu Nhỏ Khung Hình Góc Dưới (DPI Viewport Squeezing) Trên Windows Laptop
+- **Tệp ảnh hưởng:**
+  - `scripts/interactive_viewer.py`
+  - `tests/test_interactive_viewer.py`
+- **Hiện tượng:**
+  - Khi người dùng mở `scripts/interactive_viewer.py`, cửa sổ đồ họa MuJoCo bị đen kịt phần lớn diện tích, chỉ có một khung hình chữ nhật nhỏ khoảng $276 \times 95$ pixel bị co cụm méo mó ở góc dưới cùng bên trái hiển thị 3 cột chướng ngại vật màu đỏ, không nhìn thấy con vịt và sàn nhà.
+- **Nguyên nhân gốc rễ:**
+  - Máy tính xách tay Lenovo Legion có màn hình độ phân giải cao kết hợp tính năng Windows Display Scaling ($125\%$ hoặc $150\%$) trên đồ họa lai AMD Radeon + NVIDIA RTX.
+  - Khi thư viện đồ họa GLFW/OpenGL của MuJoCo tạo cửa sổ mà tiến trình Python chưa được bật cờ nhận diện DPI (DPI Awareness), tọa độ framebuffer và kích thước viewport OpenGL bị co cụm về góc `(0, 0)`.
+  - Hai panel UI bên trái và bên phải mặc định của MuJoCo passive viewer chiếm chỗ và làm biến dạng khung hình 3D.
+  - Đồng thời, camera góc nhìn tĩnh `(0, 0, 0.15)` không bám theo vịt khi vịt bước đi về phía trước ($> 2.8\text{m}$ sau 14 giây), khiến robot trôi ra khỏi tầm mắt.
+- **Biện pháp xử lý:**
+  - Gọi trực tiếp hàm Windows API `ctypes.windll.shcore.SetProcessDpiAwareness(2)` (Per-Monitor DPI Aware) ngay khi nạp module trên Windows.
+  - Ẩn các thanh UI mặc định gây nhiễu (`show_left_ui=False, show_right_ui=False`) để giải phóng $100\%$ diện tích cửa sổ hiển thị đồ họa 3D chuẩn xác ($1706 \times 1066$).
+  - Bật chế độ camera tự động bám theo thân robot (`viewer.cam.type = mjCAMERA_TRACKING`, `trackbodyid = base_link`, `distance = 1.4m`), giữ con vịt luôn ở trung tâm tầm nhìn khi di chuyển.
