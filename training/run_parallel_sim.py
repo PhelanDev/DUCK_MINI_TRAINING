@@ -6,6 +6,7 @@ Integrates with training.env_config for observation packing, action scaling,
 rate limiting, and reward computation.
 """
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import argparse
@@ -94,6 +95,7 @@ class ParallelSimRunner:
 
         self.max_episode_steps = int(max_episode_steps)
         self.episode_steps = np.zeros(self.num_envs, dtype=np.int32)
+        self.completed_ep_lens: deque = deque(maxlen=100)
         self.rng = np.random.default_rng(seed=42)
 
         # Obstacle avoidance and approach-velocity tracking state
@@ -445,10 +447,18 @@ class ParallelSimRunner:
         self.last_actions[:] = actions
         if np.any(dones):
             for i in np.where(dones)[0]:
+                self.completed_ep_lens.append(int(self.episode_steps[i]))
+                infos[i]["episode_length"] = int(self.episode_steps[i])
                 infos[i]["terminal_obs"] = next_obs[i].copy()
                 next_obs[i] = self.reset_env(i)
 
         return next_obs, rewards, dones, infos
+
+    def get_mean_episode_length(self) -> float:
+        """Return average episode length from completed episodes window (or current steps if empty)."""
+        if len(self.completed_ep_lens) > 0:
+            return float(np.mean(self.completed_ep_lens))
+        return float(self.episode_steps.mean())
 
     def close(self):
         """Clean up thread executor resources."""

@@ -446,7 +446,7 @@ def train_ppo(
                     - entropy_coef * metrics["entropy"]
                 )
             # Evaluate terrain & obstacle curriculum progression
-            mean_ep_len = float(runner.episode_steps.mean())
+            mean_ep_len = runner.get_mean_episode_length()
             rew_lin_vel_ratio = float(np.mean(step_lin_vels)) if step_lin_vels else 0.0
             new_stage, hold_count = next_stage(
                 stage=current_stage,
