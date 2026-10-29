@@ -52,6 +52,20 @@ class MicroDuck8DoFConfig:
         }
     )
 
+    # Nominal standing joint angles (radians) for natural balanced posture
+    NOMINAL_JOINT_POS: Dict[str, float] = field(
+        default_factory=lambda: {
+            "head_yaw": 0.0,
+            "head_pitch": 0.0,
+            "left_hip_roll": 0.0,
+            "left_hip_pitch": -0.15,
+            "left_knee_pitch": 0.35,
+            "right_hip_roll": 0.0,
+            "right_hip_pitch": -0.15,
+            "right_knee_pitch": 0.35,
+        }
+    )
+
     # MG996R specifications
     TORQUE_LIMIT: float = 1.0  # N.m (stall torque rating)
     MAX_VELOCITY: float = 6.0  # rad/s (~344 deg/s)
@@ -87,10 +101,27 @@ class MicroDuck8DoFConfig:
             [self.JOINT_LIMITS[name][1] for name in self.JOINT_NAMES],
             dtype=np.float32,
         )
+        self.nominal_qpos = np.array(
+            [self.NOMINAL_JOINT_POS.get(name, 0.0) for name in self.JOINT_NAMES],
+            dtype=np.float32,
+        )
 
 
 # Module-level cached configuration for simulation steps
 _DEFAULT_CFG = MicroDuck8DoFConfig()
+
+DEFAULT_NOMINAL_JOINT_POS: Dict[str, float] = {
+    "head_yaw": 0.0,
+    "head_pitch": 0.0,
+    "left_hip_roll": 0.0,
+    "left_hip_pitch": -0.15,
+    "left_knee_pitch": 0.35,
+    "right_hip_roll": 0.0,
+    "right_hip_pitch": -0.15,
+    "right_knee_pitch": 0.35,
+}
+
+DEFAULT_NOMINAL_QPOS: np.ndarray = _DEFAULT_CFG.nominal_qpos
 
 
 def compute_observations(
@@ -137,9 +168,12 @@ def compute_observations(
 def scale_actions(
     raw_actions: np.ndarray,
     cfg: Optional[MicroDuck8DoFConfig] = None,
+    nominal_centered: bool = False,
 ) -> np.ndarray:
     """Scale raw normalized actions [-1, 1] into physical joint target angles.
 
+    If nominal_centered=True, action 0.0 corresponds to nominal_qpos.
+    If nominal_centered=False (default), linear mapping: -1.0 -> low_limit, +1.0 -> high_limit.
     Safely clips outputs to respect the hardware limits of each MG996R joint.
     """
     if cfg is None:
@@ -148,10 +182,18 @@ def scale_actions(
     actions = np.asarray(raw_actions, dtype=np.float32)
     clipped_actions = np.clip(actions, -1.0, 1.0)
 
-    # Linear mapping: raw -1.0 -> low_limit, +1.0 -> high_limit
-    scaled = cfg.low_limits + (clipped_actions + 1.0) * 0.5 * (
-        cfg.high_limits - cfg.low_limits
-    )
+    if not nominal_centered:
+        # Linear mapping: raw -1.0 -> low_limit, +1.0 -> high_limit
+        scaled = cfg.low_limits + (clipped_actions + 1.0) * 0.5 * (
+            cfg.high_limits - cfg.low_limits
+        )
+    else:
+        nom = cfg.nominal_qpos
+        scaled = np.where(
+            clipped_actions >= 0.0,
+            nom + clipped_actions * (cfg.high_limits - nom),
+            nom + clipped_actions * (nom - cfg.low_limits),
+        )
     return np.clip(scaled, cfg.low_limits, cfg.high_limits).astype(np.float32)
 
 

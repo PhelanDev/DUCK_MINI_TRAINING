@@ -25,6 +25,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from pipelines.rpi5_stack.training.env_config import (
     MicroDuck8DoFConfig,
     _DEFAULT_CFG,
+    DEFAULT_NOMINAL_QPOS,
     clip_action_rates,
     compute_observations,
     compute_rewards,
@@ -143,12 +144,21 @@ class ParallelSimRunner:
         d = self.datas[env_idx]
         mujoco.mj_resetData(self.model, d)
 
-        d.qpos[0:3] = [0.0, 0.0, 0.170]
+        d.qpos[0:3] = [0.0, 0.0, 0.165]
         d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-        # Thêm nhiễu nhỏ vào góc khớp ban đầu để đa dạng hóa trạng thái xuất phát
-        d.qpos[7:15] = self.rng.uniform(-0.03, 0.03, size=self.action_dim)
-        d.qpos[11] = max(0.0, d.qpos[11])  # left_knee_pitch >= 0
-        d.qpos[14] = max(0.0, d.qpos[14])  # right_knee_pitch >= 0
+        # Khởi tạo góc khớp ban đầu quanh tư thế danh định đứng cân bằng (chùng gối nhẹ)
+        nominal = getattr(self.cfg, "nominal_qpos", DEFAULT_NOMINAL_QPOS)
+        d.qpos[7:15] = nominal + self.rng.uniform(-0.02, 0.02, size=self.action_dim)
+        d.qpos[11] = np.clip(
+            d.qpos[11],
+            self.cfg.JOINT_LIMITS["left_knee_pitch"][0],
+            self.cfg.JOINT_LIMITS["left_knee_pitch"][1],
+        )
+        d.qpos[14] = np.clip(
+            d.qpos[14],
+            self.cfg.JOINT_LIMITS["right_knee_pitch"][0],
+            self.cfg.JOINT_LIMITS["right_knee_pitch"][1],
+        )
         d.qvel[:] = 0.0
 
         # Ngẫu nhiên hóa lệnh vận tốc mục tiêu [vx, vy, wz]

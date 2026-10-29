@@ -225,11 +225,11 @@ def test_parallel_sim_domain_randomization_and_velocity_commands():
         assert np.all(cmds[:, 1] >= -0.08) and np.all(cmds[:, 1] <= 0.08)
         assert np.all(cmds[:, 2] >= -0.50) and np.all(cmds[:, 2] <= 0.50)
 
-        # Check joint perturbation in qpos[7:15] within [-0.03, 0.03]
+        # Check joint perturbation in qpos[7:15] around nominal within [-0.03, 0.03]
         for d in runner.datas:
             joint_angles = d.qpos[7:15]
-            assert np.all(joint_angles >= -0.03 - 1e-6)
-            assert np.all(joint_angles <= 0.03 + 1e-6)
+            diff = joint_angles - runner.cfg.nominal_qpos
+            assert np.all(np.abs(diff) <= 0.03 + 1e-6)
             # Knees must be >= 0 (left_knee_pitch: index 11, right_knee_pitch: index 14)
             assert d.qpos[11] >= 0.0
             assert d.qpos[14] >= 0.0
@@ -316,4 +316,23 @@ def test_parallel_sim_fall_penalty_applied():
         assert rewards[0] < -3.0
     finally:
         runner.close()
+
+
+def test_parallel_sim_reset_nominal_stance():
+    """Verify reset_env initializes qpos around NOMINAL_JOINT_POS with knee bent and within limits."""
+    runner = ParallelSimRunner(
+        model_path="models/mjcf/microduck_8dof.xml",
+        num_envs=1,
+    )
+    try:
+        runner.reset()
+        qpos_joints = runner.datas[0].qpos[7:15]
+        assert 0.25 <= qpos_joints[4] <= 0.45, f"Left knee expected ~0.35, got {qpos_joints[4]}"
+        assert 0.25 <= qpos_joints[7] <= 0.45, f"Right knee expected ~0.35, got {qpos_joints[7]}"
+        assert -0.25 <= qpos_joints[3] <= -0.05, f"Left hip expected ~-0.15, got {qpos_joints[3]}"
+        assert -0.25 <= qpos_joints[6] <= -0.05, f"Right hip expected ~-0.15, got {qpos_joints[6]}"
+        assert 0.155 <= runner.datas[0].qpos[2] <= 0.170, f"CoM z expected ~0.165, got {runner.datas[0].qpos[2]}"
+    finally:
+        runner.close()
+
 
