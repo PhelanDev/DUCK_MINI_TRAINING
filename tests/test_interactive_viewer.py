@@ -238,3 +238,48 @@ def test_interactive_viewer_cli_simulation(monkeypatch):
     # Should run and exit without raising an exception
     run_interactive_cli(model_path="models/mjcf/microduck_8dof.xml", dt=0.005)
 
+
+def test_configure_viewer_camera():
+    """Verify configure_viewer_camera sets default camera orientation to avoid black screen on hybrid GPUs."""
+    from scripts.interactive_viewer import configure_viewer_camera
+
+    class DummyCamera:
+        def __init__(self):
+            self.lookat = [0.0, 0.0, 0.0]
+            self.distance = 0.0
+            self.azimuth = 0.0
+            self.elevation = 0.0
+
+    cam = DummyCamera()
+    configure_viewer_camera(cam)
+    assert cam.lookat == [0.0, 0.0, 0.15]
+    assert cam.distance == 1.2
+    assert cam.azimuth == 135.0
+    assert cam.elevation == -20.0
+
+    # Verify custom parameters
+    configure_viewer_camera(
+        cam,
+        lookat=(0.1, 0.2, 0.3),
+        distance=2.0,
+        azimuth=90.0,
+        elevation=-30.0,
+    )
+    assert cam.lookat == [0.1, 0.2, 0.3]
+    assert cam.distance == 2.0
+    assert cam.azimuth == 90.0
+    assert cam.elevation == -30.0
+
+    # If MuJoCo is installed, test with real mujoco.MjvCamera instance
+    try:
+        import mujoco
+        real_cam = mujoco.MjvCamera()
+        configure_viewer_camera(real_cam)
+        np.testing.assert_allclose(real_cam.lookat, [0.0, 0.0, 0.15], atol=1e-5)
+        assert real_cam.distance == pytest.approx(1.2)
+        assert real_cam.azimuth == pytest.approx(135.0)
+        assert real_cam.elevation == pytest.approx(-20.0)
+    except ImportError:
+        pass
+
+

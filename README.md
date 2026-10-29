@@ -322,6 +322,28 @@ python scripts/interactive_viewer.py --interactive
 python scripts/interactive_viewer.py --headless --duration 3.0 --gait-demo
 ```
 
+### 9.1. Khắc Phục Sự Cố Đen Màn Hình Trên Laptop Hybrid GPU (Lenovo Legion AMD Ryzen + NVIDIA RTX 3070)
+
+Trên các dòng laptop sử dụng kiến trúc đồ họa kép (Hybrid / Optimus GPU như **Lenovo Legion AMD Ryzen + NVIDIA GeForce RTX 3070**), cửa sổ MuJoCo Passive Viewer đôi khi khởi tạo trước khi ma trận chiếu của OpenGL đồng bộ với driver đồ họa rời, dẫn đến hiện tượng **màn hình render 3D bị đen** hoặc camera đặt ngoài vùng hiển thị của robot.
+
+**Cơ chế giải quyết tự động:**
+- Script `scripts/interactive_viewer.py` tự động kích hoạt hàm `configure_viewer_camera(viewer.cam)` và `viewer.sync()` ngay sau khi mở context viewer:
+  - Tọa độ tâm quan sát: `lookat = [0.0, 0.0, 0.15]` (tập trung vào thân robot).
+  - Khoảng cách camera: `distance = 1.2` m.
+  - Góc phương vị & nâng: `azimuth = 135.0°`, `elevation = -20.0°`.
+  - Đồng bộ khung hình khởi tạo: `viewer.sync()`.
+
+**Khắc phục thủ công trên Windows (nếu vẫn gặp lỗi hiển thị):**
+1. **Thiết lập NVIDIA Control Panel:**
+   - Mở *NVIDIA Control Panel* $\rightarrow$ *Manage 3D Settings* $\rightarrow$ *Program Settings*.
+   - Thêm đường dẫn `python.exe` của môi trường đang chạy.
+   - Chọn bộ xử lý đồ họa ưu tiên: *High-performance NVIDIA processor*.
+2. **Kích hoạt dGPU Mode (MUX Switch) trên Lenovo Legion:**
+   - Trong ứng dụng *Lenovo Vantage*, chuyển từ *Hybrid Mode* sang *dGPU Mode* (chỉ sử dụng card rời RTX 3070) và khởi động lại máy.
+3. **Chế độ Headless:**
+   - Nếu chạy trong môi trường không có màn hình hoặc lỗi driver GUI OpenGL, luôn có thể dùng cờ `--headless` để kiểm thử vật lý mà không cần hiển thị cửa sổ.
+
+
 ---
 
 ## 10. Bộ Mô Phỏng Song Song & Đo Hiệu Năng FPS (ParallelSimRunner & Benchmark)

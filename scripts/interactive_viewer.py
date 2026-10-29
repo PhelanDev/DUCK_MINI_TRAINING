@@ -286,6 +286,23 @@ def run_simulation_headless(
     }
 
 
+def configure_viewer_camera(
+    viewer_cam: Any,
+    lookat: Tuple[float, float, float] = (0.0, 0.0, 0.15),
+    distance: float = 1.2,
+    azimuth: float = 135.0,
+    elevation: float = -20.0,
+) -> None:
+    """Configure default viewer camera view angles to prevent black screen on hybrid GPUs.
+
+    Explicitly sets focus point, distance, azimuth, and elevation for MuJoCo passive viewer.
+    """
+    viewer_cam.lookat[:] = list(lookat)
+    viewer_cam.distance = distance
+    viewer_cam.azimuth = azimuth
+    viewer_cam.elevation = elevation
+
+
 def run_interactive_viewer(
     model_path: Union[str, Path] = "models/mjcf/microduck_8dof.xml",
     pose: str = "stand",
@@ -329,6 +346,10 @@ def run_interactive_viewer(
     # Attempt to launch passive GUI viewer
     try:
         with mujoco.viewer.launch_passive(model, data) as viewer:
+            # Set explicit camera orientation to prevent black screen / uninitialized view on hybrid GPUs
+            configure_viewer_camera(viewer.cam)
+            viewer.sync()
+
             start_wall_time = time.time()
             step_count = 0
 
