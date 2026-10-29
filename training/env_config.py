@@ -73,6 +73,8 @@ class MicroDuck8DoFConfig:
             "stumble": 0.5,
             "w_centering": 1.5,
             "stair_ascent": 1.5,
+            "alive_bonus": 0.5,
+            "fall_penalty": -5.0,
         }
     )
 
@@ -404,6 +406,8 @@ def compute_rewards(
     else:
         r_stair_ascent = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
+    r_alive = np.ones(base_lin.shape[0], dtype=np.float32) if is_batch else 1.0
+
     total = (
         weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
         + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
@@ -417,6 +421,7 @@ def compute_rewards(
         + weights.get("stumble", 0.5) * r_stumble
         + (weights.get("w_centering", 1.5) * r_centering if terrain_mode == "stairs" else 0.0)
         + weights.get("stair_ascent", 0.0) * r_stair_ascent
+        + weights.get("alive_bonus", 0.0) * r_alive
     )
 
     if not is_batch:
@@ -435,6 +440,7 @@ def compute_rewards(
             "stumble": float(r_stumble),
             "pen_stumble": float(r_stumble),
             "stair_ascent": float(r_stair_ascent),
+            "alive_bonus": float(weights.get("alive_bonus", 0.0) * r_alive),
         }
 
     return {
@@ -452,4 +458,5 @@ def compute_rewards(
         "stumble": r_stumble.astype(np.float32),
         "pen_stumble": r_stumble.astype(np.float32),
         "stair_ascent": r_stair_ascent.astype(np.float32),
+        "alive_bonus": (weights.get("alive_bonus", 0.0) * r_alive).astype(np.float32),
     }

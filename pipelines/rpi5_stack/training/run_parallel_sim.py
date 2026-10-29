@@ -361,13 +361,23 @@ class ParallelSimRunner:
 
         self.episode_steps += 1
         timeouts = self.episode_steps >= self.max_episode_steps
-        dones = (root_z < 0.08) | (grav_z > -0.3) | diverged | timeouts
+        fallen = (root_z < 0.08) | (grav_z > -0.3) | diverged
+        fall_penalty = float(self.cfg.REWARD_WEIGHTS.get("fall_penalty", -5.0))
+        if np.any(fallen):
+            rewards = rewards.copy()
+            rewards[fallen] += fall_penalty
+
+        dones = fallen | timeouts
 
         # Maintain per-env info dictionary list for diagnostic logging / evaluation
         infos: List[Dict[str, Any]] = [
             {k: float(v[i]) for k, v in reward_dict.items()}
             for i in range(self.num_envs)
         ]
+        for i in range(self.num_envs):
+            infos[i]["timeout"] = bool(timeouts[i])
+            infos[i]["time_outs"] = bool(timeouts[i] and not fallen[i])
+            infos[i]["fallen"] = bool(fallen[i])
         for i in range(self.num_envs):
             infos[i]["timeout"] = bool(timeouts[i])
 

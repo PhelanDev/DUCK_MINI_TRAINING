@@ -74,6 +74,8 @@ class MicroDuck8DoFConfig:
             "foot_contact": 0.1,
             "obstacle_avoidance": 0.2,
             "stair_ascent": 1.5,
+            "alive_bonus": 0.5,
+            "fall_penalty": -5.0,
         }
     )
 
@@ -301,6 +303,8 @@ def compute_rewards(
     else:
         r_stair_ascent = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
+    r_alive = np.ones(base_lin.shape[0], dtype=np.float32) if is_batch else 1.0
+
     total = (
         weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
         + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
@@ -311,6 +315,7 @@ def compute_rewards(
         + weights.get("foot_contact", 0.1) * r_foot_contact
         + weights.get("obstacle_avoidance", 0.2) * r_obstacle
         + weights.get("stair_ascent", 0.0) * r_stair_ascent
+        + weights.get("alive_bonus", 0.0) * r_alive
     )
 
     if not is_batch:
@@ -325,6 +330,7 @@ def compute_rewards(
             "foot_contact": float(r_foot_contact),
             "obstacle_avoidance": float(r_obstacle),
             "stair_ascent": float(r_stair_ascent),
+            "alive_bonus": float(weights.get("alive_bonus", 0.0) * r_alive),
         }
 
     return {
@@ -338,6 +344,7 @@ def compute_rewards(
         "foot_contact": r_foot_contact.astype(np.float32),
         "obstacle_avoidance": r_obstacle.astype(np.float32),
         "stair_ascent": r_stair_ascent.astype(np.float32),
+        "alive_bonus": (weights.get("alive_bonus", 0.0) * r_alive).astype(np.float32),
     }
 
 
@@ -426,10 +433,14 @@ def generate_esp32_quant_header(
     scale_obs: float = 127.0,
     scale_act: float = 127.0,
     output_path: Optional[Union[str, Path]] = None,
+    obs_dim: Optional[int] = None,
 ) -> str:
     """Generate C/C++ header for ESP32-S3 firmware with dimensions and quantization scales."""
-    bounds_formatted = ", ".join(f"{b:.2f}f" for b in DEFAULT_OBS_BOUNDS)
-    scales_formatted = ", ".join(f"{s:.4f}f" for s in (float(scale_obs) / DEFAULT_OBS_BOUNDS))
+    actual_obs_dim = int(obs_dim) if obs_dim is not None else len(DEFAULT_OBS_BOUNDS)
+    bounds = DEFAULT_OBS_BOUNDS[:actual_obs_dim]
+    bounds_formatted = ", ".join(f"{b:.2f}f" for b in bounds)
+    scales_formatted = ", ".join(f"{s:.4f}f" for s in (float(scale_obs) / bounds))
+    lidar_rays = max(0, actual_obs_dim - 37)
     header_content = f"""#ifndef ESP32_QUANT_CONFIG_H
 #define ESP32_QUANT_CONFIG_H
 
@@ -438,16 +449,16 @@ def generate_esp32_quant_header(
  * Automatically generated for Xtensa LX7 PIE Vector Accelerator.
  */
 
-#define OBS_DIM 42
+#define OBS_DIM {actual_obs_dim}
 #define ACTION_DIM 8
-#define LIDAR_RAYS 5
+#define LIDAR_RAYS {lidar_rays}
 
 #define OBS_SCALE {float(scale_obs):.1f}f
 #define ACT_SCALE {float(scale_act):.1f}f
 #define OBS_INV_SCALE (1.0f / {float(scale_obs):.1f}f)
 #define ACT_INV_SCALE (1.0f / {float(scale_act):.1f}f)
 
-// Physical maximum normalization bounds for 42 observation dimensions
+// Physical maximum normalization bounds for {actual_obs_dim} observation dimensions
 static const float OBS_MAX_BOUNDS[OBS_DIM] = {{
     {bounds_formatted}
 }};

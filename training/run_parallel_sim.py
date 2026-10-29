@@ -487,9 +487,11 @@ class ParallelSimRunner:
             in_stair_x = (root_x >= min_x) & (root_x <= max_x)
             edge_fallen = in_stair_x & (np.abs(root_y) > (half_w + 0.04))
             fallen = fallen | edge_fallen
-            if np.any(edge_fallen):
-                rewards = rewards.copy()
-                rewards[edge_fallen] -= 5.0
+
+        fall_penalty = float(self.cfg.REWARD_WEIGHTS.get("fall_penalty", -5.0))
+        if np.any(fallen):
+            rewards = rewards.copy()
+            rewards[fallen] += fall_penalty
 
         dones = fallen | timeouts
 
@@ -502,6 +504,7 @@ class ParallelSimRunner:
             infos[i]["timeout"] = bool(timeouts[i])
             infos[i]["time_outs"] = bool(timeouts[i] and not fallen[i])
             infos[i]["edge_fallen"] = bool(edge_fallen[i])
+            infos[i]["fallen"] = bool(fallen[i])
 
         self.last_actions[:] = actions
         if np.any(dones):

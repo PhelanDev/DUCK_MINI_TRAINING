@@ -297,3 +297,23 @@ def test_parallel_sim_aligned_next_obs_on_done():
         np.testing.assert_allclose(next_obs[0], expected_reset_obs, atol=1e-5)
     finally:
         runner.close()
+
+
+def test_parallel_sim_fall_penalty_applied():
+    """Verify that fall_penalty is applied to environments where the robot falls."""
+    runner = ParallelSimRunner(
+        model_path="models/mjcf/microduck_8dof.xml",
+        num_envs=1,
+    )
+    try:
+        runner.reset()
+        runner.datas[0].qpos[3:7] = [0.0, 1.0, 0.0, 0.0]
+        runner.datas[0].qpos[2] = 0.05
+        actions = np.zeros((1, 8), dtype=np.float32)
+        next_obs, rewards, dones, infos = runner.step(actions)
+        assert dones[0] == True
+        assert infos[0]["fallen"] == True
+        assert rewards[0] < -3.0
+    finally:
+        runner.close()
+
