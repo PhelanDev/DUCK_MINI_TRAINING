@@ -22,6 +22,16 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
+    # Set Windows High-DPI awareness (prevents shrunken/corrupted OpenGL viewport on laptop displays)
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 import numpy as np
 
@@ -592,9 +602,20 @@ def run_interactive_viewer(
 
     # Attempt to launch passive GUI viewer
     try:
-        with mujoco.viewer.launch_passive(model, data) as viewer:
+        with mujoco.viewer.launch_passive(
+            model, data, show_left_ui=False, show_right_ui=False
+        ) as viewer:
             # Set explicit camera orientation to prevent black screen / uninitialized view on hybrid GPUs
             configure_viewer_camera(viewer.cam)
+            # Track the robot base so the duck stays centered in view as it moves
+            duck_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
+            if duck_body_id != -1:
+                viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                viewer.cam.trackbodyid = duck_body_id
+                viewer.cam.distance = 1.4
+                viewer.cam.elevation = -20.0
+                viewer.cam.azimuth = 135.0
+
             # Ensure geom groups 0, 1, 2, 3 are all active for rendering
             for g_idx in range(4):
                 viewer.opt.geomgroup[g_idx] = 1
