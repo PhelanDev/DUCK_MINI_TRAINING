@@ -49,6 +49,7 @@ class ParallelSimRunner:
         max_episode_steps: int = 500,
         stage: int = 0,
         terrain_mode: str = "hurdles",
+        stand_still: bool = False,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -93,8 +94,10 @@ class ParallelSimRunner:
         self.last_actions = np.zeros((self.num_envs, self.action_dim), dtype=np.float32)
         self.last_targets = np.zeros((self.num_envs, self.action_dim), dtype=np.float32)
         self.commands = np.zeros((self.num_envs, 3), dtype=np.float32)
-        # Default forward velocity command [vx=0.5, vy=0.0, wz=0.0]
-        self.commands[:, 0] = 0.5
+        self.stand_still = bool(stand_still)
+        if not self.stand_still:
+            # Default forward velocity command [vx=0.5, vy=0.0, wz=0.0]
+            self.commands[:, 0] = 0.5
 
         self.max_episode_steps = int(max_episode_steps)
         self.episode_steps = np.zeros(self.num_envs, dtype=np.int32)
@@ -149,6 +152,12 @@ class ParallelSimRunner:
 
         # Initialize environments
         self.reset()
+
+    def set_stand_still(self, stand_still: bool) -> None:
+        """Toggle stationary standing mode (zero velocity commands)."""
+        self.stand_still = bool(stand_still)
+        if self.stand_still:
+            self.commands[:, :] = 0.0
 
     def set_stage(self, stage: int) -> None:
         """Update terrain and obstacle curriculum stage."""
@@ -255,10 +264,13 @@ class ParallelSimRunner:
         )
         d.qvel[:] = 0.0
 
-        # Ngẫu nhiên hóa lệnh vận tốc mục tiêu [vx, vy, wz]
-        self.commands[env_idx, 0] = self.rng.uniform(0.0, 0.25)
-        self.commands[env_idx, 1] = self.rng.uniform(-0.08, 0.08)
-        self.commands[env_idx, 2] = self.rng.uniform(-0.50, 0.50)
+        # Ngẫu nhiên hóa lệnh vận tốc mục tiêu [vx, vy, wz] (hoặc giữ đứng yên nếu stand_still)
+        if self.stand_still:
+            self.commands[env_idx, :] = 0.0
+        else:
+            self.commands[env_idx, 0] = self.rng.uniform(0.0, 0.25)
+            self.commands[env_idx, 1] = self.rng.uniform(-0.08, 0.08)
+            self.commands[env_idx, 2] = self.rng.uniform(-0.50, 0.50)
 
         mujoco.mj_forward(self.model, d)
 

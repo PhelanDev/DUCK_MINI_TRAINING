@@ -336,3 +336,24 @@ def test_parallel_sim_reset_nominal_stance():
         runner.close()
 
 
+def test_parallel_sim_stand_still_mode():
+    """Verify that when stand_still=True, all velocity commands remain zero across resets."""
+    runner = ParallelSimRunner(
+        model_path="models/mjcf/microduck_8dof.xml",
+        num_envs=4,
+        stand_still=True,
+    )
+    try:
+        assert np.all(runner.commands == 0.0)
+        runner.reset()
+        assert np.all(runner.commands == 0.0)
+        # Test toggling stand_still off
+        runner.set_stand_still(False)
+        runner.reset()
+        # When stand_still is False, commands should be randomized
+        assert np.any(runner.commands != 0.0)
+    finally:
+        runner.close()
+
+
+

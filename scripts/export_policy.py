@@ -66,9 +66,18 @@ def load_actor_from_checkpoint(
 
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
 
-    obs_d = ckpt.get("obs_dim", obs_dim)
-    act_d = ckpt.get("action_dim", action_dim)
-    hid_d = ckpt.get("hidden_dim", hidden_dim)
+    obs_d = ckpt.get("obs_dim", obs_dim) if isinstance(ckpt, dict) else obs_dim
+    # Infer observation dimension directly from state_dict weights to be fully resilient
+    if isinstance(ckpt, dict):
+        if "model_state_dict" in ckpt and "actor.0.weight" in ckpt["model_state_dict"]:
+            obs_d = int(ckpt["model_state_dict"]["actor.0.weight"].shape[1])
+        elif "actor_state_dict" in ckpt and "0.weight" in ckpt["actor_state_dict"]:
+            obs_d = int(ckpt["actor_state_dict"]["0.weight"].shape[1])
+        elif "0.weight" in ckpt:
+            obs_d = int(ckpt["0.weight"].shape[1])
+
+    act_d = ckpt.get("action_dim", action_dim) if isinstance(ckpt, dict) else action_dim
+    hid_d = ckpt.get("hidden_dim", hidden_dim) if isinstance(ckpt, dict) else hidden_dim
 
     model = ActorCritic(obs_dim=obs_d, action_dim=act_d, hidden_dim=hid_d)
 
@@ -101,7 +110,14 @@ def export_onnx(
     wrapper = PolicyOnnxWrapper(actor)
     wrapper.eval()
 
-    dummy_input = torch.zeros((1, 42), dtype=torch.float32)
+    # Determine input observation dimension dynamically from actor's first linear layer
+    obs_dim = 42
+    for m in actor.modules():
+        if hasattr(m, "in_features"):
+            obs_dim = int(m.in_features)
+            break
+
+    dummy_input = torch.zeros((1, obs_dim), dtype=torch.float32)
 
     export_kwargs = {
         "export_params": True,
@@ -156,18 +172,12 @@ def export_esp32_headers(
     config_output_path = Path(config_output_path).resolve()
     config_output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # 1. Generate esp32_quant_config.h
-    generate_esp32_quant_header(
-        scale_obs=scale_obs,
-        scale_act=scale_act,
-        output_path=config_output_path,
-    )
-
-    # 2. Extract weights and biases
-    # actor[0]: Linear(42, 256)
+    # 1. Extract weights and biases
+    # actor[0]: Linear(obs_dim, 256)
     # actor[2]: Linear(256, 256)
     # actor[4]: Linear(256, 8)
-    w1 = actor[0].weight.detach().cpu().numpy().astype(np.float32)  # [256, 42]
+    w1 = actor[0].weight.detach().cpu().numpy().astype(np.float32)  # [256, obs_dim]
+    obs_dim = int(w1.shape[1])
     b1 = actor[0].bias.detach().cpu().numpy().astype(np.float32)    # [256]
 
     w2 = actor[2].weight.detach().cpu().numpy().astype(np.float32)  # [256, 256]
@@ -175,6 +185,14 @@ def export_esp32_headers(
 
     w3 = actor[4].weight.detach().cpu().numpy().astype(np.float32)  # [8, 256]
     b3 = actor[4].bias.detach().cpu().numpy().astype(np.float32)    # [8]
+
+    # 2. Generate esp32_quant_config.h with dynamically adapted obs_dim
+    generate_esp32_quant_header(
+        scale_obs=scale_obs,
+        scale_act=scale_act,
+        output_path=config_output_path,
+        obs_dim=obs_dim,
+    )
 
     # Quantize Layer 1
     max_w1 = float(np.max(np.abs(w1)))
@@ -202,7 +220,7 @@ def export_esp32_headers(
 
 /**
  * MicroDuck 8-DOF (Dual ESP32-S3 Stack) - Quantized Policy Weights & Biases
- * Model: Actor MLP [42 -> 256 (ELU) -> 256 (ELU) -> 8]
+ * Model: Actor MLP [{obs_dim} -> 256 (ELU) -> 256 (ELU) -> 8]
  * Quantization: Symmetric INT8 weights, INT32 biases
  * Platform: Xtensa LX7 Dual-Core with PIE Vector Accelerator
  */
@@ -211,7 +229,7 @@ def export_esp32_headers(
 #include <stddef.h>
 #include <math.h>
 
-#define POLICY_LAYER1_IN  42
+#define POLICY_LAYER1_IN  {obs_dim}
 #define POLICY_LAYER1_OUT 256
 #define POLICY_LAYER2_IN  256
 #define POLICY_LAYER2_OUT 256
@@ -234,7 +252,7 @@ static const float POLICY_W3_INV_SCALE = (1.0f / {scale_w3:.6f}f);
 static const float POLICY_B3_SCALE = {scale_b3:.6f}f;
 static const float POLICY_B3_INV_SCALE = (1.0f / {scale_b3:.6f}f);
 
-// Layer 1 Weights [256 * 42]
+// Layer 1 Weights [256 * {obs_dim}]
 static const int8_t POLICY_W1[POLICY_LAYER1_OUT * POLICY_LAYER1_IN] = {{
 {_format_array_c(w1_int8)}
 }};
@@ -271,11 +289,11 @@ extern "C" {{
 /**
  * Fast forward inference evaluating the 8-DOF policy directly in INT8 arithmetic.
  *
- * @param obs_int8    Input observation vector [42], quantized with OBS_CHANNEL_SCALES.
+ * @param obs_int8    Input observation vector [{obs_dim}], quantized with OBS_CHANNEL_SCALES.
  * @param actions_out Output action vector [8], quantized with scale ACT_SCALE (127.0f).
  */
 static inline void evaluate_policy_int8(const int8_t* obs_int8, int8_t* actions_out) {{
-    // Layer 1: [42] -> [256] ELU
+    // Layer 1: [{obs_dim}] -> [256] ELU
     float l1_out[POLICY_LAYER1_OUT];
     for (int i = 0; i < POLICY_LAYER1_OUT; ++i) {{
         int32_t acc = POLICY_B1[i];

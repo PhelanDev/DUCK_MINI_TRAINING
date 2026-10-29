@@ -244,6 +244,7 @@ def train_ppo(
     terrain_mode: str = "hurdles",
     log_interval: int = 50,
     save_interval: int = 250,
+    stand_first: bool = False,
 ) -> Dict[str, Any]:
     """Execute PPO training pipeline using ParallelSimRunner."""
     if device is None:
@@ -288,6 +289,7 @@ def train_ppo(
         decimation=10,
         stage=current_stage,
         terrain_mode=terrain_mode,
+        stand_still=stand_first,
     )
 
     obs_dim = runner.obs_dim
@@ -532,6 +534,16 @@ def train_ppo(
                     if verbose:
                         print(f"[Curriculum] Advanced to Stage {current_stage}: {STAGES[current_stage].description}")
 
+            # Evaluate stationary standing curriculum progression
+            if stand_first and getattr(runner, "stand_still", False):
+                if mean_ep_len >= 350.0 or iteration >= 25:
+                    runner.set_stand_still(False)
+                    if verbose:
+                        print(
+                            f"[Curriculum] Bipedal standing stability achieved (mean_ep_len={mean_ep_len:.1f}). "
+                            "Unlocking walking velocity commands!"
+                        )
+
             metrics["mean_reward"] = float(rewards_buffer.mean().item())
             metrics["stage"] = current_stage
             metrics["hold_count"] = hold_count
@@ -542,6 +554,7 @@ def train_ppo(
                 print(
                     f"[Iteration {iteration:03d}/{max_iterations}] "
                     f"Stage: {current_stage} | "
+                    f"EpLen: {mean_ep_len:5.1f}/500 | "
                     f"Reward: {metrics['mean_reward']:+.3f} | "
                     f"PiLoss: {metrics['policy_loss']:.4f} | "
                     f"ValLoss: {metrics['value_loss']:.4f} | "
@@ -625,6 +638,7 @@ def main():
     parser.add_argument("--terrain", type=str, choices=["hurdles", "stairs"], default="hurdles", help="Terrain mode: 'hurdles' or 'stairs'")
     parser.add_argument("--log-interval", type=int, default=50, help="Print training logs every N iterations (default: 50)")
     parser.add_argument("--save-interval", type=int, default=250, help="Save periodic checkpoint every N iterations (default: 250)")
+    parser.add_argument("--stand-first", action="store_true", help="Start training with zero velocity commands (stand still curriculum) until stable")
 
     args = parser.parse_args()
 
@@ -649,6 +663,7 @@ def main():
         terrain_mode=args.terrain,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
+        stand_first=args.stand_first,
     )
 
 
