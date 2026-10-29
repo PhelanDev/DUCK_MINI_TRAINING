@@ -393,3 +393,35 @@ Chiến dịch khắc phục toàn diện 10 điểm nghẽn kỹ thuật Sim-to
 - **Biện pháp xử lý:**
   - Thêm cơ chế kiểm tra phòng vệ `if device.startswith("cuda") and not torch.cuda.is_available():`.
   - Tự động in cảnh báo an toàn và fallback về `cpu`, giúp pipeline huấn luyện luôn chạy thông suốt trên mọi máy mà không bị dừng đột ngột.
+
+
+---
+
+## 📌 Phiên Làm Việc: 2026-10-29 12:30:00+07:00
+
+### 1. Đồng Bộ Hóa Đầy Đủ Runner Của Cả Hai Stack Phần Cứng (`rpi5_stack` & `dual_esp32s3_stack`)
+- **Commit:** `0a60d50` (`feat(pipelines): sync episode length tracking and lidar pomdp to rpi5 and esp32 runners`)
+- **Tệp ảnh hưởng:**
+  - `pipelines/rpi5_stack/training/run_parallel_sim.py`
+  - `pipelines/dual_esp32s3_stack/training/run_parallel_sim.py`
+  - `tests/test_pipeline_training.py`
+- **Chi tiết thực hiện:**
+  - Bổ sung hàng đợi trượt `self.completed_ep_lens = deque(maxlen=100)` và phương thức `get_mean_episode_length(default=0.0)` vào cả hai runner của Raspberry Pi 5 và Dual ESP32-S3.
+  - Chuẩn hóa việc tính khoảng cách né vật cản `curr_d_min = np.min(lidar_ranges, axis=-1)` trực tiếp từ 5 tia LiDAR trong cả `step()` và `reset_env()`, loại bỏ hoàn toàn vi phạm POMDP.
+  - Bổ sung unit test `test_pipeline_runners_ep_len_and_lidar_pomdp` xác thực 100% tính tương thích trên cả hai stack phần cứng.
+
+---
+
+### 2. Tích Hợp Chạy Trực Tiếp Mô Hình RL Policy Vào Trình Xem 3D (`interactive_viewer.py`)
+- **Commit:** `df00109` (`feat(viewer): support running trained RL policy checkpoints and ONNX in 3D viewer`)
+- **Tệp ảnh hưởng:**
+  - `scripts/interactive_viewer.py`
+  - `tests/test_interactive_viewer.py`
+  - `README.md` (mục 9)
+- **Chi tiết thực hiện:**
+  - Bổ sung cờ `--policy <path>` hỗ trợ nạp cả file checkpoint PyTorch (`.pt`) và mô hình ONNX Runtime (`.onnx`).
+  - Bổ sung cờ `--cmd-vel <vx> <vy> <wz>` cho phép người dùng ra lệnh di chuyển trực tiếp cho vịt trong không gian 3D.
+  - Triển khai hàm `extract_viewer_observation` trích xuất đầy đủ vector quan sát 42 chiều theo thời gian thực (vận tốc góc, trọng lực, góc và vận tốc 8 khớp, cảm biến tiếp xúc bàn chân và 5 tia LiDAR).
+  - Tích hợp chu trình điều khiển 50Hz chuẩn xác (`control_dt = 0.02s`, `decimation = 10` với tần số vật lý 500Hz), kết hợp `clip_action_rates` và `scale_actions` bảo vệ hệ thống cơ khí 8 servo MG996R chống giật gãy bánh răng.
+  - Hỗ trợ chạy mượt mà ở cả chế độ đồ họa cửa sổ 3D (`launch_passive`) và chế độ không giao diện (`--headless`).
+  - Viết 4 bài kiểm thử chuyên sâu mới trong `tests/test_interactive_viewer.py`, nâng tổng số bài test của dự án lên **116 bài test (100% PASSED)**.

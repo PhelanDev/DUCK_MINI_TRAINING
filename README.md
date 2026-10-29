@@ -320,6 +320,16 @@ python scripts/interactive_viewer.py --interactive
 
 # Chế độ không màn hình (Headless Mode dành cho CI/CD và Server từ xa)
 python scripts/interactive_viewer.py --headless --duration 3.0 --gait-demo
+
+# Quan sát robot bước đi trực tiếp bằng mạng nơ-ron AI đã huấn luyện (RL Policy Mode)
+# 1. Nạp checkpoint PyTorch (.pt) vừa huấn luyện:
+python scripts/interactive_viewer.py --policy models/checkpoints/microduck_ppo.pt
+
+# 2. Ra lệnh vận tốc di chuyển (Tiến 0.2 m/s, quay trái 0.1 rad/s):
+python scripts/interactive_viewer.py --policy models/checkpoints/microduck_ppo.pt --cmd-vel 0.2 0.0 0.1
+
+# 3. Nạp mô hình ONNX tối ưu (dành cho Raspberry Pi 5):
+python scripts/interactive_viewer.py --policy models/microduck_rpi5_policy.onnx --cmd-vel 0.25 0.0 0.0
 ```
 
 ### 9.1. Khắc Phục Sự Cố Đen Màn Hình Trên Laptop Hybrid GPU (Lenovo Legion AMD Ryzen + NVIDIA RTX 3070)
