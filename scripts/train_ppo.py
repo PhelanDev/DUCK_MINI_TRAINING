@@ -237,7 +237,12 @@ def train_ppo(
     if device is None:
         device_str = "cuda" if torch.cuda.is_available() else "cpu"
     else:
-        device_str = device
+        if device.startswith("cuda") and not torch.cuda.is_available():
+            if verbose:
+                print("[WARNING] PyTorch is not compiled with CUDA on this environment. Falling back to CPU.")
+            device_str = "cpu"
+        else:
+            device_str = device
     dev = torch.device(device_str)
 
     current_stage = int(start_stage)
