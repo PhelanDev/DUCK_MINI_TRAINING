@@ -73,6 +73,7 @@ class MicroDuck8DoFConfig:
             "action_rate_penalty": -0.01,
             "foot_contact": 0.1,
             "obstacle_avoidance": 0.2,
+            "stair_ascent": 1.5,
         }
     )
 
@@ -200,6 +201,8 @@ def compute_rewards(
     actions: Optional[np.ndarray] = None,
     last_actions: Optional[np.ndarray] = None,
     weights: Optional[Dict[str, float]] = None,
+    root_x: Optional[Union[float, np.ndarray]] = None,
+    root_z: Optional[Union[float, np.ndarray]] = None,
 ) -> Dict[str, Union[float, np.ndarray]]:
     """Compute balanced reward terms and total reward for 42-dim RL training.
 
@@ -288,6 +291,16 @@ def compute_rewards(
     else:
         r_obstacle = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
+    # 9. Stair ascent elevation reward (x >= 1.35m)
+    if root_x is not None and root_z is not None:
+        rx = np.asarray(root_x, dtype=np.float32)
+        rz = np.asarray(root_z, dtype=np.float32)
+        stair_mask = (rx >= 1.35).astype(np.float32)
+        elevation_gain = np.clip(rz - 0.170, 0.0, 0.050)
+        r_stair_ascent = stair_mask * elevation_gain * 10.0
+    else:
+        r_stair_ascent = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
     total = (
         weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
         + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
@@ -297,6 +310,7 @@ def compute_rewards(
         + weights.get("action_rate_penalty", -0.01) * r_action_rate_penalty
         + weights.get("foot_contact", 0.1) * r_foot_contact
         + weights.get("obstacle_avoidance", 0.2) * r_obstacle
+        + weights.get("stair_ascent", 0.0) * r_stair_ascent
     )
 
     if not is_batch:
@@ -310,6 +324,7 @@ def compute_rewards(
             "action_rate_penalty": float(r_action_rate_penalty),
             "foot_contact": float(r_foot_contact),
             "obstacle_avoidance": float(r_obstacle),
+            "stair_ascent": float(r_stair_ascent),
         }
 
     return {
@@ -322,6 +337,7 @@ def compute_rewards(
         "action_rate_penalty": r_action_rate_penalty.astype(np.float32),
         "foot_contact": r_foot_contact.astype(np.float32),
         "obstacle_avoidance": r_obstacle.astype(np.float32),
+        "stair_ascent": r_stair_ascent.astype(np.float32),
     }
 
 

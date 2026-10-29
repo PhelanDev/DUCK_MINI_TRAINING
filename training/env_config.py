@@ -71,6 +71,8 @@ class MicroDuck8DoFConfig:
             "sigma_obs": 0.3,
             "foot_clearance": 2.0,
             "stumble": 0.5,
+            "w_centering": 1.5,
+            "stair_ascent": 1.5,
         }
     )
 
@@ -277,6 +279,10 @@ def compute_rewards(
     foot_z: Optional[np.ndarray] = None,
     foot_vel_xy: Optional[np.ndarray] = None,
     foot_contact_forces: Optional[np.ndarray] = None,
+    root_x: Optional[Union[float, np.ndarray]] = None,
+    root_y: Optional[np.ndarray] = None,
+    root_z: Optional[Union[float, np.ndarray]] = None,
+    terrain_mode: str = "hurdles",
 ) -> Dict[str, Union[float, np.ndarray]]:
     """Compute balanced reward terms and total reward for RL training.
 
@@ -383,6 +389,21 @@ def compute_rewards(
         r_clearance = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
         r_stumble = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
+    r_centering = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+    if terrain_mode == "stairs" and root_y is not None:
+        y_pos = np.asarray(root_y, dtype=np.float32)
+        r_centering = -2.0 * np.abs(y_pos) - 1.0 * np.abs(base_lin[..., 1])
+
+    # 10. Stair ascent elevation reward (x >= 1.35m)
+    if root_x is not None and root_z is not None:
+        rx = np.asarray(root_x, dtype=np.float32)
+        rz = np.asarray(root_z, dtype=np.float32)
+        stair_mask = (rx >= 1.35).astype(np.float32)
+        elevation_gain = np.clip(rz - 0.170, 0.0, 0.050)
+        r_stair_ascent = stair_mask * elevation_gain * 10.0
+    else:
+        r_stair_ascent = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
     total = (
         weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
         + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
@@ -394,6 +415,8 @@ def compute_rewards(
         + weights.get("obstacle_avoidance", 0.2) * r_obstacle
         + weights.get("foot_clearance", 2.0) * r_clearance
         + weights.get("stumble", 0.5) * r_stumble
+        + (weights.get("w_centering", 1.5) * r_centering if terrain_mode == "stairs" else 0.0)
+        + weights.get("stair_ascent", 0.0) * r_stair_ascent
     )
 
     if not is_batch:
@@ -411,6 +434,7 @@ def compute_rewards(
             "rew_foot_clearance": float(r_clearance),
             "stumble": float(r_stumble),
             "pen_stumble": float(r_stumble),
+            "stair_ascent": float(r_stair_ascent),
         }
 
     return {
@@ -427,4 +451,5 @@ def compute_rewards(
         "rew_foot_clearance": r_clearance.astype(np.float32),
         "stumble": r_stumble.astype(np.float32),
         "pen_stumble": r_stumble.astype(np.float32),
+        "stair_ascent": r_stair_ascent.astype(np.float32),
     }

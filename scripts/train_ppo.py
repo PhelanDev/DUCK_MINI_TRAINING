@@ -24,7 +24,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from training.env_config import MicroDuck8DoFConfig, _DEFAULT_CFG
 from training.run_parallel_sim import ParallelSimRunner
-from training.terrain_curriculum import STAGES, apply_stage, next_stage
+from training.terrain_curriculum import (
+    STAGES,
+    STAIR_STAGES,
+    apply_stage,
+    apply_stair_stage,
+    next_stage,
+    next_stair_stage,
+)
 
 DEFAULT_MODEL_PATH = (
     REPO_ROOT / "pipelines" / "rpi5_stack" / "models" / "mjcf" / "microduck_rpi5_8dof.xml"
@@ -234,6 +241,9 @@ def train_ppo(
     hold_iters: int = 10,
     resume: bool = False,
     load_checkpoint: Optional[Union[str, Path]] = None,
+    terrain_mode: str = "hurdles",
+    log_interval: int = 50,
+    save_interval: int = 250,
 ) -> Dict[str, Any]:
     """Execute PPO training pipeline using ParallelSimRunner."""
     if device is None:
@@ -277,6 +287,7 @@ def train_ppo(
         num_envs=num_envs,
         decimation=10,
         stage=current_stage,
+        terrain_mode=terrain_mode,
     )
 
     obs_dim = runner.obs_dim
@@ -493,25 +504,41 @@ def train_ppo(
             # Evaluate terrain & obstacle curriculum progression
             mean_ep_len = runner.get_mean_episode_length()
             rew_lin_vel_ratio = float(np.mean(step_lin_vels)) if step_lin_vels else 0.0
-            new_stage, hold_count = next_stage(
-                stage=current_stage,
-                ep_len_mean=mean_ep_len,
-                rew_lin_vel_ratio=rew_lin_vel_ratio,
-                hold_count=hold_count,
-                hold_iters=hold_iters,
-            )
-            if new_stage != current_stage:
-                current_stage = new_stage
-                runner.set_stage(current_stage)
-                if verbose:
-                    print(f"[Curriculum] Advanced to Stage {current_stage}: {STAGES[current_stage].description}")
+
+            if terrain_mode == "stairs":
+                new_stage, hold_count = next_stair_stage(
+                    stage=current_stage,
+                    ep_len_mean=mean_ep_len,
+                    rew_vx_ratio=rew_lin_vel_ratio,
+                    hold_count=hold_count,
+                    hold_iters=hold_iters,
+                )
+                if new_stage != current_stage:
+                    current_stage = new_stage
+                    runner.set_stage(current_stage)
+                    if verbose:
+                        print(f"[Curriculum] Advanced to Stair Stage {current_stage}: {STAIR_STAGES[current_stage].description}")
+            else:
+                new_stage, hold_count = next_stage(
+                    stage=current_stage,
+                    ep_len_mean=mean_ep_len,
+                    rew_lin_vel_ratio=rew_lin_vel_ratio,
+                    hold_count=hold_count,
+                    hold_iters=hold_iters,
+                )
+                if new_stage != current_stage:
+                    current_stage = new_stage
+                    runner.set_stage(current_stage)
+                    if verbose:
+                        print(f"[Curriculum] Advanced to Stage {current_stage}: {STAGES[current_stage].description}")
 
             metrics["mean_reward"] = float(rewards_buffer.mean().item())
             metrics["stage"] = current_stage
             metrics["hold_count"] = hold_count
 
             iter_fps = batch_size / max(1e-6, (time.perf_counter() - iter_start))
-            if verbose and (iteration % max(1, max_iterations // 10) == 0 or iteration == 1):
+            print_interval = max(1, min(log_interval, max_iterations))
+            if verbose and (iteration % print_interval == 0 or iteration == 1 or iteration == max_iterations):
                 print(
                     f"[Iteration {iteration:03d}/{max_iterations}] "
                     f"Stage: {current_stage} | "
@@ -520,6 +547,28 @@ def train_ppo(
                     f"ValLoss: {metrics['value_loss']:.4f} | "
                     f"FPS: {iter_fps:.0f}"
                 )
+
+            # Periodic checkpoint saving
+            if not dry_run and save_interval > 0 and (iteration % save_interval == 0):
+                elapsed_cur = time.perf_counter() - start_time
+                ckpt = {
+                    "model_state_dict": model.state_dict(),
+                    "actor_state_dict": model.actor.state_dict(),
+                    "critic_state_dict": model.critic.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "obs_dim": obs_dim,
+                    "action_dim": action_dim,
+                    "hidden_dim": hidden_dim,
+                    "iterations": iteration,
+                    "stage": current_stage,
+                    "terrain_mode": terrain_mode,
+                    "total_timesteps": total_timesteps,
+                    "elapsed_seconds": elapsed_cur,
+                    "metrics": metrics,
+                }
+                torch.save(ckpt, str(save_path))
+                if verbose:
+                    print(f"[PPO] Periodic checkpoint saved: {save_path} (iter {iteration})")
 
         # ------------------------------------------------------------------
         # Phase 4: Save Model Checkpoint
@@ -539,9 +588,13 @@ def train_ppo(
             "elapsed_seconds": elapsed_total,
             "metrics": metrics,
         }
-        torch.save(checkpoint, str(save_path))
-        if verbose:
-            print(f"[PPO] Checkpoint saved successfully: {save_path} ({total_timesteps} steps in {elapsed_total:.2f}s)")
+        if not dry_run:
+            torch.save(checkpoint, str(save_path))
+            if verbose:
+                print(f"[PPO] Checkpoint saved successfully: {save_path} ({total_timesteps} steps in {elapsed_total:.2f}s)")
+        else:
+            if verbose:
+                print(f"[PPO] Dry-run complete ({total_timesteps} steps in {elapsed_total:.2f}s). Checkpoint not overwritten.")
 
     finally:
         runner.close()
@@ -573,6 +626,9 @@ def main():
     parser.add_argument("--start-stage", type=int, default=0, help="Initial terrain curriculum stage (0 to 3)")
     parser.add_argument("--resume", action="store_true", help="Resume training from existing save-path checkpoint")
     parser.add_argument("--load-checkpoint", type=str, default=None, help="Path to checkpoint file to resume from")
+    parser.add_argument("--terrain", type=str, choices=["hurdles", "stairs"], default="hurdles", help="Terrain mode: 'hurdles' or 'stairs'")
+    parser.add_argument("--log-interval", type=int, default=50, help="Print training logs every N iterations (default: 50)")
+    parser.add_argument("--save-interval", type=int, default=250, help="Save periodic checkpoint every N iterations (default: 250)")
 
     args = parser.parse_args()
 
@@ -594,6 +650,9 @@ def main():
         start_stage=args.start_stage,
         resume=args.resume,
         load_checkpoint=args.load_checkpoint,
+        terrain_mode=args.terrain,
+        log_interval=args.log_interval,
+        save_interval=args.save_interval,
     )
 
 

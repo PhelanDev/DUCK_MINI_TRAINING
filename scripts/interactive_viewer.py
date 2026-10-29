@@ -55,10 +55,17 @@ except Exception:
     DEFAULT_TORQUE_LIMIT = 1.0
 
 try:
-    from training.terrain_curriculum import apply_stage, STAGES
+    from training.terrain_curriculum import (
+        apply_stage,
+        apply_stair_stage,
+        STAGES,
+        STAIR_STAGES,
+    )
 except Exception:
     apply_stage = None
+    apply_stair_stage = None
     STAGES = []
+    STAIR_STAGES = []
 
 try:
     import mujoco
@@ -66,6 +73,12 @@ try:
     _MUJOCO_AVAILABLE = True
 except ImportError:
     _MUJOCO_AVAILABLE = False
+
+try:
+    import cv2
+    _CV2_AVAILABLE = True
+except ImportError:
+    _CV2_AVAILABLE = False
 
 
 # Joint names matching MuJoCo MJCF and URDF specifications
@@ -168,6 +181,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=0,
         choices=[0, 1, 2, 3],
         help="Terrain curriculum stage (0=flat/wide, 1=low hurdles, 2=med hurdles, 3=high hurdles)",
+    )
+    parser.add_argument(
+        "--stairs",
+        action="store_true",
+        help="Enable two-way bridge staircase terrain mode (no railings)",
+    )
+    parser.add_argument(
+        "--opencv",
+        action="store_true",
+        help="Launch resilient OpenCV-based 3D live viewer window (immune to GPU/GLFW black-screen driver bugs)",
+    )
+    parser.add_argument(
+        "--record",
+        type=str,
+        default=None,
+        metavar="FILE.mp4",
+        help="Record simulation video directly to an MP4 video file",
     )
     return parser
 
@@ -461,6 +491,7 @@ def run_simulation_headless(
     dt: float = 0.002,
     verbose: bool = False,
     stage: int = 0,
+    stairs: bool = False,
 ) -> Dict[str, Any]:
     """Execute a headless simulation without GUI window for verification and testing."""
     if not _MUJOCO_AVAILABLE:
@@ -472,7 +503,9 @@ def run_simulation_headless(
 
     model = mujoco.MjModel.from_xml_path(model_path)
     model.opt.timestep = dt
-    if apply_stage is not None and stage > 0:
+    if stairs and apply_stair_stage is not None:
+        apply_stair_stage(model, stage)
+    elif apply_stage is not None and stage > 0:
         apply_stage(model, stage)
     data = mujoco.MjData(model)
 
@@ -556,6 +589,7 @@ def run_interactive_viewer(
     cmd_vel: Union[Tuple[float, float, float], List[float], np.ndarray] = (0.2, 0.0, 0.0),
     dt: float = 0.002,
     stage: int = 0,
+    stairs: bool = False,
 ):
     """Launch passive 3D MuJoCo viewer or fall back to headless/CLI mode."""
     if not _MUJOCO_AVAILABLE:
@@ -569,7 +603,9 @@ def run_interactive_viewer(
 
     model = mujoco.MjModel.from_xml_path(model_path)
     model.opt.timestep = dt
-    if apply_stage is not None and stage > 0:
+    if stairs and apply_stair_stage is not None:
+        apply_stair_stage(model, stage)
+    elif apply_stage is not None and stage > 0:
         apply_stage(model, stage)
     data = mujoco.MjData(model)
 
@@ -680,8 +716,22 @@ def run_interactive_viewer(
             print("\n[THÔNG BÁO] Đã đóng cửa sổ 3D viewer.")
 
     except Exception as e:
-        print(f"\n[LƯU Ý] Không thể mở giao diện đồ họa 3D ({e}).")
-        print("[CHUYỂN ĐỔI] Tự động chuyển sang chế độ mô phỏng không giao diện (Headless CLI Mode)...")
+        print(f"\n[LƯU Ý] Không thể mở giao diện GLFW/OpenGL ({e}).")
+        print("[CHUYỂN ĐỔI] Tự động chuyển sang chế độ hiển thị 3D OpenCV trực tiếp (OpenCV Direct Viewer)...")
+        if _CV2_AVAILABLE:
+            run_opencv_viewer(
+                model_path=model_path,
+                pose=pose,
+                duration=duration,
+                gait_demo=gait_demo,
+                policy_path=policy_path,
+                cmd_vel=cmd_vel,
+                dt=dt,
+                stage=stage,
+            )
+            return
+
+        print("[CHUYỂN ĐỔI] Chuyển tiếp sang chế độ mô phỏng không giao diện (Headless CLI Mode)...")
         test_duration = duration if duration is not None else 3.0
         metrics = run_simulation_headless(
             model_path=model_path,
@@ -691,12 +741,209 @@ def run_interactive_viewer(
             policy_path=policy_path,
             cmd_vel=cmd_vel,
             dt=dt,
+            stage=stage,
         )
         print(f"  Tổng bước chạy      : {metrics['completed_steps']}")
         print(f"  Thời gian mô phỏng  : {metrics['sim_time']:.2f} s")
         print(f"  Độ cao thân cuối    : {metrics['final_root_z']:.4f} m (mức chuẩn ~0.17m)")
         print(f"  Độ vững vật lý      : {'ĐẠT (Thăng bằng)' if metrics['is_stable'] else 'KHÔNG ĐẠT'}")
         print(f"  Lực tiếp xúc sàn    : Chân trái = {metrics['left_touch']:.2f} N, Chân phải = {metrics['right_touch']:.2f} N")
+
+
+def run_opencv_viewer(
+    model_path: Union[str, Path] = "models/mjcf/microduck_8dof.xml",
+    pose: str = "stand",
+    duration: Optional[float] = None,
+    gait_demo: bool = False,
+    policy_path: Optional[Union[str, Path]] = None,
+    cmd_vel: Union[Tuple[float, float, float], List[float], np.ndarray] = (0.2, 0.0, 0.0),
+    dt: float = 0.002,
+    stage: int = 0,
+    record_path: Optional[Union[str, Path]] = None,
+) -> None:
+    """Launch resilient 3D viewer using MuJoCo offscreen Renderer + OpenCV native window.
+
+    100% immune to Windows High-DPI scaling, GLFW multi-threading,
+    and AMD/Intel hybrid GPU OpenGL driver context bugs.
+    """
+    if not _MUJOCO_AVAILABLE:
+        print("[LỖI] Không tìm thấy thư viện mujoco.")
+        return
+    if not _CV2_AVAILABLE:
+        print("[LỖI] Không tìm thấy thư viện opencv-python (cv2).")
+        return
+
+    model_path = str(model_path)
+    if not os.path.exists(model_path):
+        print(f"[LỖI] Không tìm thấy tệp mô hình: {model_path}")
+        return
+
+    model = mujoco.MjModel.from_xml_path(model_path)
+    model.opt.timestep = dt
+    if apply_stage is not None and stage > 0:
+        apply_stage(model, stage)
+    data = mujoco.MjData(model)
+
+    mujoco.mj_resetData(model, data)
+    data.qpos[0:3] = [0.0, 0.0, 0.170]
+    data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+    target_qpos = np.array(POSE_PRESETS.get(pose, POSE_PRESETS["stand"]), dtype=np.float32)
+    data.qpos[7:15] = target_qpos
+    mujoco.mj_forward(model, data)
+
+    # Tracking camera
+    cam = mujoco.MjvCamera()
+    duck_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
+    if duck_body_id != -1:
+        cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+        cam.trackbodyid = duck_body_id
+        cam.distance = 1.3
+        cam.elevation = -18.0
+        cam.azimuth = 135.0
+    else:
+        cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+        cam.lookat[:] = [0.0, 0.0, 0.15]
+        cam.distance = 1.3
+        cam.elevation = -18.0
+        cam.azimuth = 135.0
+
+    renderer = mujoco.Renderer(model, 480, 640)
+
+    policy = load_viewer_policy(policy_path) if policy_path else None
+    control_dt = 0.02
+    decimation = max(1, int(round(control_dt / dt)))
+    last_actions = np.zeros(8, dtype=np.float32)
+    last_targets = np.array(data.qpos[7:15], dtype=np.float32)
+    targets = target_qpos
+
+    video_writer = None
+    if record_path:
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        video_writer = cv2.VideoWriter(str(record_path), fourcc, 30, (640, 480))
+
+    win_name = "MicroDuck 8-DOF - 3D Live Viewer (OpenCV Engine)"
+    cv2.namedWindow(win_name, cv2.WINDOW_AUTOSIZE)
+
+    print("=" * 70)
+    print("  MICRODUCK 8-DOF - 3D LIVE VIEWER (OPENCV DIRECT ENGINE)")
+    print("=" * 70)
+    print(f"  Mô hình      : {model_path}")
+    print(f"  Curriculum   : Stage {stage}")
+    if policy_path:
+        print(f"  Bộ não RL    : {policy_path}")
+    print("  Phím tắt điều khiển:")
+    print("    [ESC] hoặc [q] : Thoát chương trình")
+    print("    [SPACE]         : Tạm dừng / Tiếp tục mô phỏng")
+    print("    [r]             : Đặt lại trạng thái ban đầu")
+    print("=" * 70)
+
+    start_wall_time = time.time()
+    sim_time = 0.0
+    step_count = 0
+    paused = False
+
+    try:
+        while True:
+            t0 = time.time()
+            elapsed = time.time() - start_wall_time
+
+            if duration is not None and elapsed >= duration:
+                print(f"\n[THÔNG BÁO] Đã hoàn thành thời gian chạy mô phỏng ({duration}s).")
+                break
+
+            if not paused:
+                steps_per_frame = int(round(1.0 / (30.0 * dt)))
+                for _ in range(steps_per_frame):
+                    if policy is not None:
+                        if step_count % decimation == 0:
+                            obs = extract_viewer_observation(
+                                model, data, cmd_vel=cmd_vel, last_actions=last_actions, obs_dim=42
+                            )
+                            actions = policy_step(policy, obs)
+                            scaled_targets = scale_actions(actions, _DEFAULT_CFG)
+                            max_vel = _DEFAULT_CFG.MAX_VELOCITY if _DEFAULT_CFG else 6.0
+                            targets = clip_action_rates(
+                                scaled_targets, last_targets, dt=control_dt, max_velocity=max_vel
+                            )
+                            last_targets = targets
+                            last_actions = actions
+                    elif gait_demo:
+                        targets = compute_gait_targets(sim_time)
+                    else:
+                        targets = target_qpos
+
+                    apply_pd_control(model, data, targets)
+                    mujoco.mj_step(model, data)
+                    sim_time += dt
+                    step_count += 1
+
+            renderer.update_scene(data, cam)
+            rgb_frame = renderer.render()
+            bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+
+            state = get_robot_state(model, data)
+            hud_color = (0, 255, 0) if state["is_stable"] else (0, 0, 255)
+            cv2.putText(
+                bgr_frame,
+                f"MicroDuck 8-DOF (Stage {stage})",
+                (20, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+            )
+            cv2.putText(
+                bgr_frame,
+                f"SimTime: {sim_time:.2f}s | CoM Z: {state['root_pos'][2]:.3f}m | {'STABLE' if state['is_stable'] else 'FALLEN'}",
+                (20, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                hud_color,
+                1,
+            )
+            cv2.putText(
+                bgr_frame,
+                f"Feet: L={state['left_touch']:.1f}N, R={state['right_touch']:.1f}N | Controls: [Space]=Pause, [R]=Reset, [Q]=Quit",
+                (20, 460),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (200, 200, 200),
+                1,
+            )
+
+            if video_writer:
+                video_writer.write(bgr_frame)
+
+            cv2.imshow(win_name, bgr_frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key in [27, ord("q")]:
+                break
+            elif key == ord(" "):
+                paused = not paused
+            elif key == ord("r"):
+                mujoco.mj_resetData(model, data)
+                data.qpos[0:3] = [0.0, 0.0, 0.170]
+                data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+                data.qpos[7:15] = target_qpos
+                last_actions = np.zeros(8, dtype=np.float32)
+                last_targets = np.array(target_qpos, dtype=np.float32)
+                mujoco.mj_forward(model, data)
+                sim_time = 0.0
+
+            if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+                break
+
+            render_took = time.time() - t0
+            time_left = (1.0 / 30.0) - render_took
+            if time_left > 0:
+                time.sleep(time_left)
+
+    finally:
+        if video_writer:
+            video_writer.release()
+            print(f"[OK] Đã lưu video tại: {record_path}")
+        cv2.destroyAllWindows()
+        print("\n[THÔNG BÁO] Đã đóng cửa sổ 3D OpenCV Viewer.")
 
 
 def run_interactive_cli(
@@ -839,6 +1086,7 @@ def main() -> int:
             cmd_vel=tuple(args.cmd_vel),
             dt=args.dt,
             stage=args.stage,
+            stairs=args.stairs,
         )
         print("Kết quả mô phỏng:")
         print(f"  - Tổng số bước      : {metrics['completed_steps']}")
@@ -846,6 +1094,18 @@ def main() -> int:
         print(f"  - Độ cao CoM cuối   : {metrics['final_root_z']:.4f} m")
         print(f"  - Trạng thái vững   : {'ỔN ĐỊNH' if metrics['is_stable'] else 'MẤT CÂN BẰNG'}")
         print(f"  - Lực tiếp xúc chân : Trái={metrics['left_touch']:.2f} N, Phải={metrics['right_touch']:.2f} N")
+    elif args.opencv or args.record:
+        run_opencv_viewer(
+            model_path=args.model,
+            pose=args.pose,
+            duration=args.duration,
+            gait_demo=args.gait_demo,
+            policy_path=args.policy,
+            cmd_vel=tuple(args.cmd_vel),
+            dt=args.dt,
+            stage=args.stage,
+            record_path=args.record,
+        )
     else:
         run_interactive_viewer(
             model_path=args.model,
@@ -856,6 +1116,7 @@ def main() -> int:
             cmd_vel=tuple(args.cmd_vel),
             dt=args.dt,
             stage=args.stage,
+            stairs=args.stairs,
         )
     return 0
 

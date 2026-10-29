@@ -30,7 +30,7 @@ from training.env_config import (
     quat_rotate_inverse,
     scale_actions,
 )
-from training.terrain_curriculum import apply_stage
+from training.terrain_curriculum import apply_stage, apply_stair_stage, STAIR_STAGES
 
 
 class ParallelSimRunner:
@@ -47,11 +47,13 @@ class ParallelSimRunner:
         kd: Optional[float] = None,
         max_episode_steps: int = 500,
         stage: int = 0,
+        terrain_mode: str = "hurdles",
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
             raise FileNotFoundError(f"MuJoCo model not found at {self.model_path}")
 
+        self.terrain_mode = str(terrain_mode)
         self.cfg = cfg if cfg is not None else _DEFAULT_CFG
         self.num_envs = int(num_envs)
         self.decimation = max(1, int(decimation))
@@ -101,7 +103,17 @@ class ParallelSimRunner:
         # Obstacle avoidance and approach-velocity tracking state
         self.control_dt = float(self.model.opt.timestep * self.decimation)
         self.obstacle_geom_ids: List[int] = []
-        for name in ["obstacle_front", "obstacle_left", "obstacle_right", "obstacle_back"]:
+        _SLALOM_PILLAR_NAMES = [
+            "pillar_l1_left", "pillar_l1_right",
+            "pillar_l2_center",
+            "pillar_l3_left", "pillar_l3_right",
+            "pillar_back",
+        ]
+        _LEGACY_OBSTACLE_NAMES = [
+            "obstacle_front", "obstacle_left", "obstacle_right", "obstacle_back",
+        ]
+        obstacle_names = _SLALOM_PILLAR_NAMES + _LEGACY_OBSTACLE_NAMES
+        for name in obstacle_names:
             gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
             if gid != -1:
                 self.obstacle_geom_ids.append(gid)
@@ -120,13 +132,30 @@ class ParallelSimRunner:
         self.curriculum_stage = int(stage)
         self.set_stage(self.curriculum_stage)
 
+        # Determine staircase bounding box for edge-fall detection
+        self.stair_min_x = 0.08
+        self.stair_max_x = 1.10
+        self.stair_half_w = 0.40
+        stair_gids = []
+        for gid in range(self.model.ngeom):
+            gname = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, gid)
+            if gname and ("stair" in gname or "platform" in gname):
+                stair_gids.append(gid)
+        if stair_gids:
+            self.stair_min_x = float(min(self.model.geom_pos[g, 0] - self.model.geom_size[g, 0] for g in stair_gids))
+            self.stair_max_x = float(max(self.model.geom_pos[g, 0] + self.model.geom_size[g, 0] for g in stair_gids))
+            self.stair_half_w = float(min(self.model.geom_size[g, 1] for g in stair_gids))
+
         # Initialize environments
         self.reset()
 
     def set_stage(self, stage: int) -> None:
         """Update terrain and obstacle curriculum stage."""
         self.curriculum_stage = int(stage)
-        apply_stage(self.model, self.curriculum_stage)
+        if self.terrain_mode == "stairs":
+            apply_stair_stage(self.model, self.curriculum_stage)
+        else:
+            apply_stage(self.model, self.curriculum_stage)
 
     def _extract_foot_dynamics(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Extract foot heights, horizontal velocities, and 3D contact forces in world frame.
@@ -187,19 +216,20 @@ class ParallelSimRunner:
         return foot_z, foot_vel_xy, foot_contact_forces
 
     def _compute_d_min(self, env_idx: Optional[int] = None) -> Optional[Union[float, np.ndarray]]:
-        """Compute minimum distance to obstacle cylinders (minus cylinder radius 0.08m)."""
+        """Compute minimum distance to obstacle cylinders (minus individual cylinder radius)."""
         if not self.obstacle_geom_ids:
             return None
         obs_xy = np.array([self.model.geom_pos[gid, :2] for gid in self.obstacle_geom_ids], dtype=np.float32)
+        obs_radii = np.array([self.model.geom_size[gid, 0] for gid in self.obstacle_geom_ids], dtype=np.float32)
         if env_idx is not None:
             base_xy = np.array(self.datas[env_idx].qpos[0:2], dtype=np.float32)
             diff = base_xy - obs_xy
-            dist = np.linalg.norm(diff, axis=-1) - 0.08
+            dist = np.linalg.norm(diff, axis=-1) - obs_radii
             return float(np.clip(np.min(dist), 0.0, None))
         else:
             base_xy = np.array([d.qpos[0:2] for d in self.datas], dtype=np.float32)
             diff = base_xy[:, None, :] - obs_xy[None, :, :]
-            dist = np.linalg.norm(diff, axis=-1) - 0.08
+            dist = np.linalg.norm(diff, axis=-1) - obs_radii[None, :]
             return np.clip(np.min(dist, axis=-1), 0.0, None).astype(np.float32)
 
     def reset_env(self, env_idx: int) -> np.ndarray:
@@ -407,6 +437,9 @@ class ParallelSimRunner:
 
         # Extract foot kinematics and 3D contact forces for clearance and stumble rewards
         foot_z, foot_vel_xy, foot_contact_forces = self._extract_foot_dynamics()
+        root_x = np.array([d.qpos[0] for d in self.datas], dtype=np.float32)
+        root_y = np.array([d.qpos[1] for d in self.datas], dtype=np.float32)
+        root_z = np.array([d.qpos[2] for d in self.datas], dtype=np.float32)
 
         # Vectorized reward computation across all environments
         reward_dict = compute_rewards(
@@ -427,11 +460,14 @@ class ParallelSimRunner:
             foot_z=foot_z,
             foot_vel_xy=foot_vel_xy,
             foot_contact_forces=foot_contact_forces,
+            root_x=root_x,
+            root_y=root_y,
+            root_z=root_z,
+            terrain_mode=self.terrain_mode,
         )
         rewards = reward_dict["total_reward"]
 
         # Vectorized termination check: fall over, excessive tilt, numerical divergence, or timeout
-        root_z = np.array([d.qpos[2] for d in self.datas], dtype=np.float32)
         grav_z = proj_grav[:, 2]
         diverged = np.array([
             (not np.all(np.isfinite(d.qpos))) or (not np.all(np.isfinite(d.qvel)))
@@ -441,6 +477,20 @@ class ParallelSimRunner:
         self.episode_steps += 1
         timeouts = self.episode_steps >= self.max_episode_steps
         fallen = (root_z < 0.08) | (grav_z > -0.3) | diverged
+
+        edge_fallen = np.zeros(self.num_envs, dtype=bool)
+        if self.terrain_mode == "stairs":
+            stair_cfg = STAIR_STAGES[max(0, min(self.curriculum_stage, len(STAIR_STAGES) - 1))]
+            half_w = getattr(self, "stair_half_w", stair_cfg.stair_width / 2.0)
+            min_x = getattr(self, "stair_min_x", 0.08)
+            max_x = getattr(self, "stair_max_x", 1.10)
+            in_stair_x = (root_x >= min_x) & (root_x <= max_x)
+            edge_fallen = in_stair_x & (np.abs(root_y) > (half_w + 0.04))
+            fallen = fallen | edge_fallen
+            if np.any(edge_fallen):
+                rewards = rewards.copy()
+                rewards[edge_fallen] -= 5.0
+
         dones = fallen | timeouts
 
         # Maintain per-env info dictionary list for diagnostic logging / evaluation
@@ -451,6 +501,7 @@ class ParallelSimRunner:
         for i in range(self.num_envs):
             infos[i]["timeout"] = bool(timeouts[i])
             infos[i]["time_outs"] = bool(timeouts[i] and not fallen[i])
+            infos[i]["edge_fallen"] = bool(edge_fallen[i])
 
         self.last_actions[:] = actions
         if np.any(dones):

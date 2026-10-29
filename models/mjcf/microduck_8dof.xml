@@ -91,7 +91,7 @@
             <body name="left_foot_link" pos="0 0 -0.065">
               <!-- Foot 75 x 55 x 10 mm, mass 30g, high friction -->
               <geom name="left_foot_geom" class="foot" pos="0.010 0 -0.005" mass="0.030" material="duck_orange"/>
-              <site name="left_foot_touch_site" pos="0.010 0 -0.010" size="0.025 0.020 0.002" type="box" rgba="0 1 1 0.5"/>
+              <site name="left_foot_touch_site" pos="0.010 0 -0.010" size="0.040 0.030 0.005" type="box" rgba="0 1 1 0.5"/>
             </body>
           </body>
         </body>
@@ -116,7 +116,7 @@
             <body name="right_foot_link" pos="0 0 -0.065">
               <!-- Foot 75 x 55 x 10 mm, mass 30g, high friction -->
               <geom name="right_foot_geom" class="foot" pos="0.010 0 -0.005" mass="0.030" material="duck_orange"/>
-              <site name="right_foot_touch_site" pos="0.010 0 -0.010" size="0.025 0.020 0.002" type="box" rgba="0 1 1 0.5"/>
+              <site name="right_foot_touch_site" pos="0.010 0 -0.010" size="0.040 0.030 0.005" type="box" rgba="0 1 1 0.5"/>
             </body>
           </body>
         </body>

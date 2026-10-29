@@ -45,6 +45,9 @@
     <geom name="stair_step_2" type="box" size="0.06 0.40 0.015" pos="1.52 0.0 0.015" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
     <geom name="stair_step_3" type="box" size="0.06 0.40 0.0225" pos="1.64 0.0 0.0225" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
     <geom name="stair_platform" type="box" size="0.16 0.40 0.0225" pos="1.86 0.0 0.0225" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_dn_1" type="box" size="0.06 0.40 0.015" pos="2.08 0.0 0.015" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_dn_2" type="box" size="0.06 0.40 0.0075" pos="2.20 0.0 0.0075" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
+    <geom name="floor_exit" type="box" size="0.40 0.40 0.005" pos="2.66 0.0 0.005" rgba="0.3 0.5 0.6 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
 
     <body name="base_link" pos="0 0 0.170">
       <freejoint name="root"/>
@@ -106,7 +109,7 @@
             <body name="left_foot_link" pos="0 0 -0.065">
               <!-- Foot 75 x 55 x 10 mm, mass 30g, high friction -->
               <geom name="left_foot_geom" class="foot" pos="0.010 0 -0.005" mass="0.030" material="duck_orange"/>
-              <site name="left_foot_touch_site" pos="0.010 0 -0.010" size="0.025 0.020 0.002" type="box" rgba="0 1 1 0.5"/>
+              <site name="left_foot_touch_site" pos="0.010 0 -0.010" size="0.040 0.030 0.005" type="box" rgba="0 1 1 0.5"/>
             </body>
           </body>
         </body>
@@ -131,7 +134,7 @@
             <body name="right_foot_link" pos="0 0 -0.065">
               <!-- Foot 75 x 55 x 10 mm, mass 30g, high friction -->
               <geom name="right_foot_geom" class="foot" pos="0.010 0 -0.005" mass="0.030" material="duck_orange"/>
-              <site name="right_foot_touch_site" pos="0.010 0 -0.010" size="0.025 0.020 0.002" type="box" rgba="0 1 1 0.5"/>
+              <site name="right_foot_touch_site" pos="0.010 0 -0.010" size="0.040 0.030 0.005" type="box" rgba="0 1 1 0.5"/>
             </body>
           </body>
         </body>

@@ -6,7 +6,7 @@ Controls progression of difficulty by:
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import mujoco
 
 
@@ -79,6 +79,8 @@ def apply_stage(model: mujoco.MjModel, stage: int) -> None:
         "stair_step_2": 2,
         "stair_step_3": 3,
         "stair_platform": 3,
+        "stair_dn_1": 2,
+        "stair_dn_2": 1,
     }
     for s_name, mult in stair_multipliers.items():
         gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, s_name)
@@ -95,9 +97,10 @@ def apply_stage(model: mujoco.MjModel, stage: int) -> None:
 def next_stage(
     stage: int,
     ep_len_mean: float,
-    rew_lin_vel_ratio: float,
-    hold_count: int,
+    rew_lin_vel_ratio: float = 0.0,
+    hold_count: int = 0,
     hold_iters: int = 10,
+    rew_vx_ratio: Optional[float] = None,
 ) -> Tuple[int, int]:
     """Evaluate whether curriculum should advance to the next stage.
 
@@ -107,6 +110,8 @@ def next_stage(
     Returns:
         (new_stage, new_hold_count)
     """
+    if rew_vx_ratio is not None:
+        rew_lin_vel_ratio = rew_vx_ratio
     if stage >= len(STAGES) - 1:
         return stage, hold_count
 
@@ -132,7 +137,29 @@ def next_stage(
 
 # Backward compatibility aliases for training/interactive scripts
 apply_stair_stage = apply_stage
-next_stair_stage = next_stage
+
+
+def next_stair_stage(
+    stage: int,
+    ep_len_mean: float,
+    rew_vx_ratio: Optional[float] = None,
+    hold_count: int = 0,
+    hold_iters: int = 10,
+    rew_lin_vel_ratio: Optional[float] = None,
+) -> Tuple[int, int]:
+    """Progression evaluator for stair curriculum supporting rew_vx_ratio keyword."""
+    vel_ratio = (
+        rew_vx_ratio
+        if rew_vx_ratio is not None
+        else (rew_lin_vel_ratio if rew_lin_vel_ratio is not None else 0.0)
+    )
+    return next_stage(
+        stage=stage,
+        ep_len_mean=ep_len_mean,
+        rew_lin_vel_ratio=vel_ratio,
+        hold_count=hold_count,
+        hold_iters=hold_iters,
+    )
 
 
 @dataclass(frozen=True)

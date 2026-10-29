@@ -148,3 +148,4 @@ Hàm `_compute_d_min()` tính khoảng cách Euclid từ tâm robot đến từn
   * Kiểm tra tính `idempotent` của `apply_stage()`.
 * Cập nhật `tests/test_mjcf_model.py`: Xác thực tất cả các geom mới tồn tại, không bị xung đột va chạm nội tại (`exclude`).
 * Chạy toàn bộ test suite (`pytest`) bảo đảm 118+ bài test xanh 100%.
+
