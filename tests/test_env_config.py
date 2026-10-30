@@ -331,9 +331,9 @@ def test_foot_contact_gait_reward():
     # 1. Moving command (cmd_speed > 0.05)
     cmd_moving = np.array([0.3, 0.0, 0.0], dtype=np.float32)
 
-    # 1 foot in contact -> reward = 1.0
+    # 1 foot in contact while moving forward (vel_x = 0.20 > 0.02) -> reward = 1.0
     r_single = compute_rewards(
-        base_lin_vel=base_lin_vel,
+        base_lin_vel=np.array([0.2, 0.0, 0.0], dtype=np.float32),
         cmd_lin_vel=cmd_moving,
         base_ang_vel=base_ang_vel,
         cmd_ang_vel=0.0,
@@ -343,6 +343,19 @@ def test_foot_contact_gait_reward():
         foot_contact=np.array([1.0, 0.0, 0.0, 0.0]),
     )
     assert r_single["foot_contact"] == 1.0
+
+    # 1 foot in contact while stationary/trampling (vel_x = 0.0 <= 0.02) -> reward = 0.0 (gait lock)
+    r_single_still = compute_rewards(
+        base_lin_vel=base_lin_vel,
+        cmd_lin_vel=cmd_moving,
+        base_ang_vel=base_ang_vel,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_gravity,
+        joint_torques=joint_torques,
+        joint_vel=joint_vel,
+        foot_contact=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    assert r_single_still["foot_contact"] == 0.0
 
     # 2 feet in contact -> reward = 0.0
     r_double = compute_rewards(

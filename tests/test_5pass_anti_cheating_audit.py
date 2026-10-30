@@ -635,3 +635,118 @@ def test_audit_13_four_golden_hoops_anti_vibration():
     )
     assert np.isclose(r_slip["foot_slip_penalty"], 0.10, atol=1e-4)
 
+
+
+def test_audit_14_anti_backward_and_forward_gait_lock():
+    """Audit 14: Anti-Backward Velocity Penalty (-4.0 * vx) & Forward Gait Lock (vx > 0.02).
+    Certifies that:
+    1. Backward movement is penalized 4.0 * vx (twice the forward tracking rate).
+    2. Double support dwell preserves negative backward penalty while zeroing forward reward.
+    3. Gait rewards (foot_contact & feet_air_time) are strictly gated by (vel_x > 0.02).
+    4. MuJoCo XML kinematics confirm +X forward orientation and hip_pitch/knee_pitch sign conventions.
+    """
+    cmd_lin = np.array([0.20, 0.0, 0.0], dtype=np.float32)
+    base_ang = np.zeros(3, dtype=np.float32)
+    proj_grav = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+    torques = np.zeros(8, dtype=np.float32)
+    j_vel = np.zeros(8, dtype=np.float32)
+    one_foot = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+    # 1. Forward vs Backward velocity rewards
+    r_fwd = compute_rewards(
+        base_lin_vel=np.array([0.20, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=one_foot,
+    )
+    assert np.isclose(r_fwd["tracking_lin_vel"], 0.40, atol=1e-5), "Forward vx=0.20 must yield +0.40"
+
+    r_bwd = compute_rewards(
+        base_lin_vel=np.array([-0.20, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=one_foot,
+    )
+    assert np.isclose(r_bwd["tracking_lin_vel"], -0.80, atol=1e-5), "Backward vx=-0.20 must yield -0.80 penalty"
+
+    # 2. Dwell preservation: backward penalty must NOT be wiped by dwell
+    r_bwd_dwell = compute_rewards(
+        base_lin_vel=np.array([-0.20, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        double_support_time=0.25,
+    )
+    assert np.isclose(r_bwd_dwell["tracking_lin_vel"], -0.80, atol=1e-5), "Dwell must preserve backward penalty"
+
+    # 3. Gait lock: vx <= 0.02 locks foot_contact and feet_air_time to 0.0
+    air_t = np.array([0.25, 0.0], dtype=np.float32)
+    td = np.array([True, False], dtype=bool)
+    r_still_gait = compute_rewards(
+        base_lin_vel=np.array([0.01, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=one_foot,
+        feet_air_time=air_t,
+        feet_touchdown=td,
+    )
+    assert r_still_gait["foot_contact"] == 0.0, "vx <= 0.02 must receive 0.0 foot_contact"
+    assert r_still_gait["feet_air_time"] == 0.0, "vx <= 0.02 must receive 0.0 feet_air_time"
+
+    r_fwd_gait = compute_rewards(
+        base_lin_vel=np.array([0.05, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=one_foot,
+        feet_air_time=air_t,
+        feet_touchdown=td,
+    )
+    assert r_fwd_gait["foot_contact"] == 1.0, "vx=0.05 must receive 1.0 foot_contact"
+    assert r_fwd_gait["feet_air_time"] > 0.0, "vx=0.05 must receive >0.0 feet_air_time"
+
+    # 4. Kinematics verification
+    xml_path = Path(__file__).resolve().parent.parent / "models" / "mjcf" / "microduck_8dof.xml"
+    model = mujoco.MjModel.from_xml_path(str(xml_path))
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
+    foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_foot_link")
+    beak_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "beak_geom")
+
+    assert data.geom_xpos[beak_geom_id][0] > data.xpos[base_id][0], "Beak must point along +X"
+
+    hip_jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "left_hip_pitch")
+    knee_jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "left_knee_pitch")
+    hip_qadr = model.jnt_qposadr[hip_jnt_id]
+    knee_qadr = model.jnt_qposadr[knee_jnt_id]
+
+    data.qpos[hip_qadr] = -0.35
+    data.qpos[knee_qadr] = 0.0
+    mujoco.mj_forward(model, data)
+    assert (data.xpos[foot_id][0] - data.xpos[base_id][0]) > 0.03, "Hip pitch < 0 swings foot forward (+X)"
+
+    data.qpos[hip_qadr] = 0.0
+    data.qpos[knee_qadr] = 0.50
+    mujoco.mj_forward(model, data)
+    assert (data.xpos[foot_id][0] - data.xpos[base_id][0]) < -0.02, "Knee pitch > 0 folds foot backward (-X)"

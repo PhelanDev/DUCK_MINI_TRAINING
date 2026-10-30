@@ -36,6 +36,7 @@ from tests.test_5pass_anti_cheating_audit import (
     test_audit_11_self_righting_recovery_lock,
     test_audit_12_voice_intent_crc16_integrity,
     test_audit_13_four_golden_hoops_anti_vibration,
+    test_audit_14_anti_backward_and_forward_gait_lock,
 )
 
 AUDIT_CHECKS: List[Tuple[str, Callable[[], None]]] = [
@@ -90,6 +91,10 @@ AUDIT_CHECKS: List[Tuple[str, Callable[[], None]]] = [
     (
         "Audit 13: 4 Golden Hoops Anti-Vibration & Locomotion Integrity Certification",
         test_audit_13_four_golden_hoops_anti_vibration,
+    ),
+    (
+        "Audit 14: Anti-Backward Velocity Penalty (-4.0*vx) & Forward Gait Lock (vx > 0.02)",
+        test_audit_14_anti_backward_and_forward_gait_lock,
     ),
 ]
 
@@ -166,7 +171,7 @@ def run_5pass_audit_loop(
         print(" 5-PASS ZERO-TOLERANCE AUDIT CERTIFICATION GRANTED: 100% CLEAN")
         print("=" * 80)
         for i, t in enumerate(pass_timings, 1):
-            print(f"   - Pass {i}/{required_passes}: PASSED ({t:.3f}s, 12/12 checks clean)")
+            print(f"   - Pass {i}/{required_passes}: PASSED ({t:.3f}s, 14/14 checks clean)")
         print(f" Total Continuous Audit Time : {total_time:.3f}s")
         print(f" Total Attempts Required     : {attempt_count}")
         print(f" Residual Vulnerabilities    : ZERO (0)")

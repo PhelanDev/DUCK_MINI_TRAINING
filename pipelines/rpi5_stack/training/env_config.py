@@ -253,6 +253,9 @@ def compute_rewards(
     weights: Optional[Dict[str, float]] = None,
     root_x: Optional[Union[float, np.ndarray]] = None,
     root_z: Optional[Union[float, np.ndarray]] = None,
+    cmd_mode: Optional[Union[int, np.ndarray]] = 0,
+    double_support_time: Optional[Union[float, np.ndarray]] = None,
+    last_joint_vel: Optional[np.ndarray] = None,
 ) -> Dict[str, Union[float, np.ndarray]]:
     """Compute balanced reward terms and total reward for 42-dim RL training.
 
@@ -287,9 +290,50 @@ def compute_rewards(
         else:
             target_yaw = float(cmd_ang_vel)
 
-    # 1. Linear velocity tracking in XY plane (exponential kernel)
-    lin_err_sq = np.sum(np.square(base_lin[..., :2] - cmd_lin[..., :2]), axis=-1)
-    r_track_lin_vel = np.exp(-lin_err_sq / 0.25)
+    # Locomotion mode resolution (WALK = 0, SIT = 1, LIE = 2)
+    if cmd_mode is None:
+        cmd_mode = 0
+    if is_batch:
+        mode_arr = np.asarray(cmd_mode, dtype=np.int32)
+        if mode_arr.ndim == 0:
+            is_sit = np.full(base_lin.shape[0], mode_arr == 1, dtype=bool)
+            is_lie = np.full(base_lin.shape[0], mode_arr == 2, dtype=bool)
+        else:
+            is_sit = (mode_arr == 1)
+            is_lie = (mode_arr == 2)
+    else:
+        is_sit = (int(cmd_mode) == 1)
+        is_lie = (int(cmd_mode) == 2)
+
+    # 1. Forward linear velocity tracking with double penalty for backward movement
+    vel_x = base_lin[..., 0]
+    vel_y = base_lin[..., 1]
+    cmd_x = cmd_lin[..., 0]
+    cmd_y = cmd_lin[..., 1]
+    if is_batch:
+        vel_x_eff = np.minimum(vel_x, cmd_x + 0.05)
+        fwd_reward = np.where(vel_x >= 0.0, 2.0 * vel_x_eff, 4.0 * vel_x)
+        r_track_lin_vel = fwd_reward - 0.5 * np.square(vel_y - cmd_y)
+        r_track_lin_vel = np.where(is_sit | is_lie, 0.0, r_track_lin_vel).astype(np.float32)
+    else:
+        vel_x_eff = min(float(vel_x), float(cmd_x) + 0.05)
+        fwd_reward = 2.0 * vel_x_eff if float(vel_x) >= 0.0 else 4.0 * float(vel_x)
+        r_track_lin_vel = fwd_reward - 0.5 * float((vel_y - cmd_y) ** 2)
+        if is_sit or is_lie:
+            r_track_lin_vel = 0.0
+
+    # Double support dwell penalty (> 0.20s): preserve negative backward penalty, zero out forward reward
+    is_walking_cmd = cmd_x > 0.05
+    if double_support_time is not None:
+        if is_batch:
+            dst = np.asarray(double_support_time, dtype=np.float32)
+            is_dwell = (dst > 0.20) & is_walking_cmd & (~is_sit) & (~is_lie)
+            r_track_lin_vel = np.where(is_dwell, np.minimum(0.0, r_track_lin_vel), r_track_lin_vel).astype(np.float32)
+        else:
+            dst = float(double_support_time)
+            is_dwell = (dst > 0.20) and bool(is_walking_cmd) and (not is_sit) and (not is_lie)
+            if is_dwell:
+                r_track_lin_vel = min(0.0, r_track_lin_vel)
 
     # 2. Angular velocity tracking around Z axis
     ang_err_sq = np.square(base_ang[..., 2] - target_yaw)
@@ -319,13 +363,14 @@ def compute_rewards(
             np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
         )
 
-    # 7. Foot contact reward (khuyến khích nhấc chân luân phiên khi di chuyển)
+    # 7. Foot contact reward (khuyến khích nhấc chân luân phiên khi di chuyển TIẾN)
     num_contacts = np.sum(f_contact > 0.0, axis=-1)
     cmd_speed = np.linalg.norm(cmd_lin[..., :2], axis=-1) + np.abs(target_yaw)
     is_moving_cmd = cmd_speed > 0.05
+    forward_gait_gate = (vel_x > 0.02).astype(np.float32)
     r_foot_contact = np.where(
         is_moving_cmd,
-        (num_contacts == 1).astype(np.float32),
+        (num_contacts == 1).astype(np.float32) * forward_gait_gate,
         (num_contacts == 2).astype(np.float32) * 0.5,
     ).astype(np.float32)
 

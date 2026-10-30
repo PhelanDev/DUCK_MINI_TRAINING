@@ -159,9 +159,9 @@ class MicroDuck8DoFConfig:
             "joint_acc_penalty": -0.01,
             "action_rate_penalty": -0.10,
             "foot_slip_penalty": -0.8,
+            "backward_vel_penalty": -2.0,
             "foot_contact": 1.0,
             "double_support_penalty": -0.5,
-            "foot_slip_penalty": -0.8,
             "obstacle_avoidance": 0.2,
             "sigma_obs": 0.3,
             "foot_clearance": 2.0,
@@ -491,11 +491,13 @@ def compute_rewards(
     cmd_y = cmd_lin[..., 1]
     if is_batch:
         vel_x_eff = np.minimum(vel_x, cmd_x + 0.05)
-        r_track_lin_vel = 2.0 * np.maximum(0.0, vel_x_eff) - 0.5 * np.square(vel_y - cmd_y)
+        fwd_reward = np.where(vel_x >= 0.0, 2.0 * vel_x_eff, 4.0 * vel_x)
+        r_track_lin_vel = fwd_reward - 0.5 * np.square(vel_y - cmd_y)
         r_track_lin_vel = np.where(is_sit | is_lie, 0.0, r_track_lin_vel).astype(np.float32)
     else:
         vel_x_eff = min(float(vel_x), float(cmd_x) + 0.05)
-        r_track_lin_vel = 2.0 * max(0.0, vel_x_eff) - 0.5 * float((vel_y - cmd_y) ** 2)
+        fwd_reward = 2.0 * vel_x_eff if float(vel_x) >= 0.0 else 4.0 * float(vel_x)
+        r_track_lin_vel = fwd_reward - 0.5 * float((vel_y - cmd_y) ** 2)
         if is_sit or is_lie:
             r_track_lin_vel = 0.0
 
@@ -509,13 +511,34 @@ def compute_rewards(
     elif is_sit or is_lie:
         r_standstill = 0.0
 
+    # Backward velocity penalty: heavy penalty if agent walks backward while commanded to walk forward
+    if is_batch:
+        is_backward = (vel_x < -0.01) & is_walking_cmd & (~is_sit) & (~is_lie)
+        r_backward_vel = np.where(is_backward, 1.0 + 5.0 * np.abs(vel_x), 0.0).astype(np.float32)
+        active_walk = is_walking_cmd & (~is_sit) & (~is_lie)
+        gate_val = np.where(vel_x < 0.0, 0.0, np.where(vel_x < 0.05, 0.2, 1.0))
+        forward_gate = np.where(active_walk, gate_val, 1.0).astype(np.float32)
+    else:
+        is_backward = (vel_x < -0.01) and bool(is_walking_cmd) and (not is_sit) and (not is_lie)
+        r_backward_vel = float(1.0 + 5.0 * abs(vel_x)) if is_backward else 0.0
+        active_walk = bool(is_walking_cmd) and (not is_sit) and (not is_lie)
+        if active_walk:
+            if vel_x < 0.0:
+                forward_gate = 0.0
+            elif vel_x < 0.05:
+                forward_gate = 0.2
+            else:
+                forward_gate = 1.0
+        else:
+            forward_gate = 1.0
+
     # Double support dwell penalty (> 0.20s): if walking commanded and both feet stick to floor > 0.2s,
     # zero out forward linear velocity reward and apply double_support_penalty (-0.5 per step)
     if is_batch:
         if double_support_time is not None:
             dst = np.asarray(double_support_time, dtype=np.float32)
             is_dwell = (dst > 0.20) & is_walking_cmd & (~is_sit) & (~is_lie)
-            r_track_lin_vel = np.where(is_dwell, 0.0, r_track_lin_vel).astype(np.float32)
+            r_track_lin_vel = np.where(is_dwell, np.minimum(0.0, r_track_lin_vel), r_track_lin_vel).astype(np.float32)
             r_double_support = np.where(is_dwell, 1.0, 0.0).astype(np.float32)
         else:
             r_double_support = np.zeros(base_lin.shape[0], dtype=np.float32)
@@ -524,7 +547,7 @@ def compute_rewards(
             dst = float(double_support_time)
             is_dwell = (dst > 0.20) and bool(is_walking_cmd) and (not is_sit) and (not is_lie)
             if is_dwell:
-                r_track_lin_vel = 0.0
+                r_track_lin_vel = min(0.0, r_track_lin_vel)
                 r_double_support = 1.0
             else:
                 r_double_support = 0.0
@@ -541,10 +564,10 @@ def compute_rewards(
         # Active only when commanded to move and actually moving forward (vel_x >= 0.05)
         cmd_active = (np.linalg.norm(cmd_lin[..., :2], axis=-1) > 0.05).astype(np.float32)
         if is_batch:
-            forward_active = (vel_x >= 0.05).astype(np.float32)
+            forward_active = (vel_x > 0.02).astype(np.float32)
             r_feet_air_time = np.sum(air_reward, axis=-1) * cmd_active * forward_active
         else:
-            forward_active = float(vel_x >= 0.05)
+            forward_active = float(vel_x > 0.02)
             r_feet_air_time = float(np.sum(air_reward) * cmd_active * forward_active)
     else:
         r_feet_air_time = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
@@ -595,15 +618,25 @@ def compute_rewards(
             np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
         )
 
-    # 7. Foot contact reward (khuyến khích nhấc chân luân phiên khi di chuyển)
+    # 7. Foot contact reward (khuyến khích nhấc chân luân phiên khi di chuyển TIẾN)
     num_contacts = np.sum(f_contact > 0.0, axis=-1)
     cmd_speed = np.linalg.norm(cmd_lin[..., :2], axis=-1) + np.abs(target_yaw)
     is_moving_cmd = cmd_speed > 0.05
+    forward_gait_gate = (vel_x > 0.02).astype(np.float32)
     r_foot_contact = np.where(
         is_moving_cmd,
-        (num_contacts == 1).astype(np.float32),
+        (num_contacts == 1).astype(np.float32) * forward_gait_gate,
         (num_contacts == 2).astype(np.float32) * 0.5,
     ).astype(np.float32)
+    if is_batch:
+        r_foot_contact = np.where(
+            is_moving_cmd & (vel_x < -1e-4),
+            0.0,
+            r_foot_contact,
+        ).astype(np.float32)
+    else:
+        if is_moving_cmd and vel_x < -1e-4:
+            r_foot_contact = 0.0
 
     # 8. Obstacle avoidance reward / penalty
     if d_min is not None and d_min_dot is not None:
@@ -771,15 +804,19 @@ def compute_rewards(
 
     total = (
         weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
-        + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
-        + weights.get("upright", 1.5) * r_upright
+        + forward_gate * (
+            weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
+            + weights.get("upright", 1.5) * r_upright
+            + weights.get("foot_contact", 1.0) * r_foot_contact
+            + weights.get("emotion_tracking", 0.5) * r_emotion
+        )
         + weights.get("orientation_penalty", -2.0) * r_orientation_penalty
         + weights.get("head_pos_penalty", -1.0) * r_head_pos_penalty
         + weights.get("torque_penalty", -0.001) * r_torque_penalty
         + weights.get("joint_vel_penalty", -0.0001) * r_joint_vel_penalty
         + weights.get("joint_acc_penalty", -0.01) * r_joint_acc_penalty
         + weights.get("action_rate_penalty", -0.10) * r_action_rate_penalty
-        + weights.get("foot_contact", 1.0) * r_foot_contact
+        + weights.get("backward_vel_penalty", -2.0) * r_backward_vel
         + weights.get("foot_slip_penalty", -0.8) * r_foot_slip
         + weights.get("obstacle_avoidance", 0.2) * r_obstacle
         + weights.get("foot_clearance", 2.0) * r_clearance
@@ -790,7 +827,6 @@ def compute_rewards(
         + weights.get("standstill_penalty", -0.5) * r_standstill
         + weights.get("double_support_penalty", -0.5) * r_double_support
         + weights.get("feet_air_time", 2.0) * r_feet_air_time
-        + weights.get("emotion_tracking", 0.5) * r_emotion
         + weights.get("sitting_pose", 2.0) * r_sit
         + weights.get("lying_pose", 2.0) * r_lie
         + limit_scale * r_joint_limit
@@ -808,6 +844,7 @@ def compute_rewards(
             "joint_vel_penalty": float(r_joint_vel_penalty),
             "joint_acc_penalty": float(r_joint_acc_penalty),
             "action_rate_penalty": float(r_action_rate_penalty),
+            "backward_vel_penalty": float(weights.get("backward_vel_penalty", -2.0) * r_backward_vel),
             "foot_contact": float(r_foot_contact),
             "foot_slip_penalty": float(r_foot_slip),
             "double_support_penalty": float(weights.get("double_support_penalty", -0.5) * r_double_support),
@@ -839,6 +876,7 @@ def compute_rewards(
         "joint_vel_penalty": r_joint_vel_penalty.astype(np.float32),
         "joint_acc_penalty": r_joint_acc_penalty.astype(np.float32),
         "action_rate_penalty": r_action_rate_penalty.astype(np.float32),
+        "backward_vel_penalty": (weights.get("backward_vel_penalty", -2.0) * r_backward_vel).astype(np.float32),
         "foot_contact": r_foot_contact.astype(np.float32),
         "foot_slip_penalty": r_foot_slip.astype(np.float32),
         "double_support_penalty": (weights.get("double_support_penalty", -0.5) * r_double_support).astype(np.float32),
