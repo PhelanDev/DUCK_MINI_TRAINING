@@ -323,5 +323,64 @@ def test_hoop4_floor_friction_and_foot_slip_penalty():
     assert r_swing["foot_slip_penalty"] == 0.0, "Swing foot in air must NOT incur foot slip penalty"
 
 
+def test_hoop5_anti_backward_walking_and_forward_gate():
+    """Vòng Kim Cô 5: Cấm tuyệt đối đi giật lùi ăn điểm dương; khoá thưởng tư thế/nhấc chân khi không tiến."""
+    assert _DEFAULT_CFG.REWARD_WEIGHTS.get("backward_vel_penalty") == -2.0
+
+    cmd_lin = np.array([0.25, 0.0, 0.0], dtype=np.float32)
+    base_ang = np.zeros(3, dtype=np.float32)
+    proj_grav = np.array([0.0, 0.0, -1.0], dtype=np.float32)  # Thẳng lưng tuyệt đối
+    torques = np.zeros(8, dtype=np.float32)
+    j_vel = np.zeros(8, dtype=np.float32)
+    single_foot = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # Nhấc 1 chân chuẩn
+
+    # 1. Đi lùi (vx = -0.12 m/s) dù thẳng lưng + nhấc 1 chân -> total_reward PHẢI ÂM NẶNG (< -1.0)
+    r_backward = compute_rewards(
+        base_lin_vel=np.array([-0.12, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=single_foot,
+    )
+    assert "backward_vel_penalty" in r_backward
+    assert r_backward["backward_vel_penalty"] < -2.0, "Walking backward must trigger heavy backward_vel_penalty"
+    assert r_backward["foot_contact"] == 0.0, "Walking backward must zero out single-support foot_contact reward"
+    assert r_backward["total_reward"] < -1.0, (
+        f"Walking backward (vx=-0.12) must yield negative total_reward (< -1.0), got {r_backward['total_reward']}"
+    )
+
+    # 2. Đứng im tại chỗ (vx = 0.0 m/s) khi có lệnh đi -> total_reward PHẢI <= 0.0
+    r_stand = compute_rewards(
+        base_lin_vel=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32),
+    )
+    assert r_stand["total_reward"] <= 0.0, (
+        f"Standing still under walk command must NOT yield positive total_reward, got {r_stand['total_reward']}"
+    )
+
+    # 3. Bước tiến thực sự (vx = +0.25 m/s) -> Mở khoá toàn bộ phần thưởng (> +2.5)
+    r_forward = compute_rewards(
+        base_lin_vel=np.array([0.25, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=single_foot,
+    )
+    assert r_forward["total_reward"] > 2.5
+
+
+
 
 
