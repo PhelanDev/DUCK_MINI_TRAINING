@@ -453,6 +453,7 @@ def compute_rewards(
         + weights.get("joint_vel_penalty", -0.0001) * r_joint_vel_penalty
         + weights.get("action_rate_penalty", -0.01) * r_action_rate_penalty
         + weights.get("foot_contact", 0.1) * r_foot_contact
+        + weights.get("backward_vel_penalty", -2.0) * r_backward_vel
         + weights.get("feet_air_time", 2.0) * r_feet_air_time
         + weights.get("obstacle_avoidance", 0.2) * r_obstacle
         + weights.get("stair_ascent", 0.0) * r_stair_ascent
@@ -468,6 +469,7 @@ def compute_rewards(
             "torque_penalty": float(r_torque_penalty),
             "joint_vel_penalty": float(r_joint_vel_penalty),
             "action_rate_penalty": float(r_action_rate_penalty),
+            "backward_vel_penalty": float(weights.get("backward_vel_penalty", -2.0) * r_backward_vel),
             "foot_contact": float(r_foot_contact),
             "feet_air_time": float(r_feet_air_time),
             "obstacle_avoidance": float(r_obstacle),
@@ -483,6 +485,7 @@ def compute_rewards(
         "torque_penalty": r_torque_penalty.astype(np.float32),
         "joint_vel_penalty": r_joint_vel_penalty.astype(np.float32),
         "action_rate_penalty": r_action_rate_penalty.astype(np.float32),
+        "backward_vel_penalty": (weights.get("backward_vel_penalty", -2.0) * r_backward_vel).astype(np.float32),
         "foot_contact": r_foot_contact.astype(np.float32),
         "feet_air_time": r_feet_air_time.astype(np.float32),
         "obstacle_avoidance": r_obstacle.astype(np.float32),
