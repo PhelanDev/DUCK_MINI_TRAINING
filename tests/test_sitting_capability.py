@@ -35,7 +35,7 @@ def test_locomotion_mode_enum_and_constants():
     assert hasattr(LocomotionMode, "SIT")
     assert LocomotionMode.WALK == 0
     assert LocomotionMode.SIT == 1
-    assert len(LocomotionMode) == 2
+    assert len(LocomotionMode) >= 2
 
     assert TARGET_SIT_HEIGHT == 0.075
 

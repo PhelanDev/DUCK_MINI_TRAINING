@@ -158,3 +158,53 @@ def test_next_stage_never_regresses():
     stage, hold = next_stage(stage, ep_len_mean=150.0, rew_lin_vel_ratio=0.2, hold_count=hold, hold_iters=10, mean_distance_x=1.8)
     assert stage == 2
     assert hold == 0  # Hold count resets, but stage never decreases
+
+
+def test_stage0_unlock_threshold_0_8m():
+    """Verify that Stage 0 unlocks when mean_distance_x >= 0.8m and ep_len >= 400.
+
+    Ensures that when robot has high ep_len (456.9) but distance is only 0.70m (< 0.8m),
+    it does not advance. Once distance crosses 0.8m, it accumulates hold and advances to Stage 1.
+    """
+    stage = 0
+    hold = 0
+
+    # Under-distance: ep_len is 456.9 but dist is 0.70m -> fails to advance
+    for _ in range(5):
+        stage, hold = next_stage(
+            stage=stage,
+            ep_len_mean=456.9,
+            rew_lin_vel_ratio=0.85,
+            hold_count=hold,
+            hold_iters=5,
+            mean_distance_x=0.70,
+            success_rate=0.80,
+        )
+        assert stage == 0
+        assert hold == 0
+
+    # Over-distance: ep_len is 456.9 and dist reaches 0.82m (>= 0.8m) -> accumulates hold and advances
+    for _ in range(4):
+        stage, hold = next_stage(
+            stage=stage,
+            ep_len_mean=456.9,
+            rew_lin_vel_ratio=0.85,
+            hold_count=hold,
+            hold_iters=5,
+            mean_distance_x=0.82,
+            success_rate=0.80,
+        )
+        assert stage == 0
+    assert hold == 4
+
+    stage, hold = next_stage(
+        stage=stage,
+        ep_len_mean=456.9,
+        rew_lin_vel_ratio=0.85,
+        hold_count=hold,
+        hold_iters=5,
+        mean_distance_x=0.82,
+        success_rate=0.80,
+    )
+    assert stage == 1
+    assert hold == 0

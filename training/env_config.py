@@ -31,13 +31,21 @@ class LocomotionMode(IntEnum):
 
     WALK = 0
     SIT = 1
+    LIE = 2
 
 
 TARGET_SIT_HEIGHT: float = 0.075
+TARGET_LIE_HEIGHT: float = 0.040
 
 # Nominal sitting joint angles: (head_yaw, head_pitch, l_hip_roll, l_hip_pitch, l_knee_pitch, r_hip_roll, r_hip_pitch, r_knee_pitch)
 SIT_NOMINAL_QPOS: np.ndarray = np.array(
     [0.0, 0.0, 0.0, 0.70, 1.35, 0.0, 0.70, 1.35],
+    dtype=np.float32,
+)
+
+# Nominal lying joint angles: (head_yaw, head_pitch, l_hip_roll, l_hip_pitch, l_knee_pitch, r_hip_roll, r_hip_pitch, r_knee_pitch)
+LIE_NOMINAL_QPOS: np.ndarray = np.array(
+    [0.0, 0.0, 0.0, -0.65, 0.05, 0.0, -0.65, 0.05],
     dtype=np.float32,
 )
 
@@ -160,6 +168,7 @@ class MicroDuck8DoFConfig:
             "feet_air_time": 2.0,
             "emotion_tracking": 0.5,
             "sitting_pose": 2.0,
+            "lying_pose": 2.0,
             "joint_limit_penalty": -0.2,
         }
     )
@@ -450,17 +459,20 @@ def compute_rewards(
         else:
             target_yaw = float(cmd_ang_vel)
 
-    # Locomotion mode resolution (WALK = 0, SIT = 1)
+    # Locomotion mode resolution (WALK = 0, SIT = 1, LIE = 2)
     if cmd_mode is None:
         cmd_mode = 0
     if is_batch:
         mode_arr = np.asarray(cmd_mode, dtype=np.int32)
         if mode_arr.ndim == 0:
             is_sit = np.full(base_lin.shape[0], mode_arr == int(LocomotionMode.SIT), dtype=bool)
+            is_lie = np.full(base_lin.shape[0], mode_arr == int(LocomotionMode.LIE), dtype=bool)
         else:
             is_sit = (mode_arr == int(LocomotionMode.SIT))
+            is_lie = (mode_arr == int(LocomotionMode.LIE))
     else:
         is_sit = (int(cmd_mode) == int(LocomotionMode.SIT))
+        is_lie = (int(cmd_mode) == int(LocomotionMode.LIE))
 
     # 1. Forward linear velocity reward: direct multiplication reward_vel = 2.0 * base_lin_vel_x
     # minus lateral velocity error penalty to prevent crab-walking.
@@ -472,21 +484,21 @@ def compute_rewards(
     if is_batch:
         vel_x_eff = np.minimum(vel_x, cmd_x + 0.05)
         r_track_lin_vel = 2.0 * np.maximum(0.0, vel_x_eff) - 0.5 * np.square(vel_y - cmd_y)
-        r_track_lin_vel = np.where(is_sit, 0.0, r_track_lin_vel).astype(np.float32)
+        r_track_lin_vel = np.where(is_sit | is_lie, 0.0, r_track_lin_vel).astype(np.float32)
     else:
         vel_x_eff = min(float(vel_x), float(cmd_x) + 0.05)
         r_track_lin_vel = 2.0 * max(0.0, vel_x_eff) - 0.5 * float((vel_y - cmd_y) ** 2)
-        if is_sit:
+        if is_sit or is_lie:
             r_track_lin_vel = 0.0
 
     # Standstill penalty: if commanded forward (cmd_lin[..., 0] > 0.05) and base_lin_vel_x < 0.05 m/s
-    # penalize standing still (-0.5 per step) to force locomotion (disabled when sitting)
+    # penalize standing still (-0.5 per step) to force locomotion (disabled when sitting or lying)
     is_walking_cmd = cmd_x > 0.05
     is_standstill = (vel_x < 0.05) & is_walking_cmd
     r_standstill = np.where(is_standstill, 1.0, 0.0).astype(np.float32)
     if is_batch:
-        r_standstill = np.where(is_sit, 0.0, r_standstill).astype(np.float32)
-    elif is_sit:
+        r_standstill = np.where(is_sit | is_lie, 0.0, r_standstill).astype(np.float32)
+    elif is_sit or is_lie:
         r_standstill = 0.0
 
     # Feet air time reward: reward swing duration on touchdown (cyclic gait step reward)
@@ -633,7 +645,29 @@ def compute_rewards(
     else:
         r_sit = float(r_sit_raw) if is_sit else 0.0
 
-    # 13. Joint limit dwelling penalty (< 5% margin from physical stop)
+    # 13. Lying posture and height reward
+    if joint_pos is not None:
+        q_legs = np.asarray(joint_pos, dtype=np.float32)[..., 2:8]
+        lie_legs = LIE_NOMINAL_QPOS[2:8]
+        lie_pose_err_sq = np.sum(np.square(q_legs - lie_legs), axis=-1)
+        r_lie_pose = np.exp(-lie_pose_err_sq / 0.20)
+    else:
+        r_lie_pose = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
+    if root_z is not None:
+        rz = np.asarray(root_z, dtype=np.float32)
+        lie_height_err_sq = np.square(rz - TARGET_LIE_HEIGHT)
+        r_lie_height = np.exp(-lie_height_err_sq / 0.003)
+    else:
+        r_lie_height = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
+    r_lie_raw = 0.5 * r_lie_pose + 0.5 * r_lie_height
+    if is_batch:
+        r_lie = np.where(is_lie, r_lie_raw, 0.0).astype(np.float32)
+    else:
+        r_lie = float(r_lie_raw) if is_lie else 0.0
+
+    # 14. Joint limit dwelling penalty (< 5% margin from physical stop)
     r_joint_limit = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
     if joint_pos is not None:
         q = np.asarray(joint_pos, dtype=np.float32)
@@ -675,6 +709,7 @@ def compute_rewards(
         + weights.get("feet_air_time", 2.0) * r_feet_air_time
         + weights.get("emotion_tracking", 0.5) * r_emotion
         + weights.get("sitting_pose", 2.0) * r_sit
+        + weights.get("lying_pose", 2.0) * r_lie
         + limit_scale * r_joint_limit
     )
 
@@ -700,6 +735,8 @@ def compute_rewards(
             "emotion_tracking": float(r_emotion),
             "sitting_pose": float(r_sit),
             "r_sit": float(r_sit),
+            "lying_pose": float(r_lie),
+            "r_lie": float(r_lie),
             "joint_limit_penalty": float(r_joint_limit),
         }
 
@@ -724,5 +761,7 @@ def compute_rewards(
         "emotion_tracking": r_emotion.astype(np.float32),
         "sitting_pose": r_sit.astype(np.float32),
         "r_sit": r_sit.astype(np.float32),
+        "lying_pose": r_lie.astype(np.float32),
+        "r_lie": r_lie.astype(np.float32),
         "joint_limit_penalty": r_joint_limit.astype(np.float32),
     }

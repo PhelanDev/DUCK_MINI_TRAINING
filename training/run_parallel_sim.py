@@ -30,6 +30,8 @@ from training.env_config import (
     LocomotionMode,
     SIT_NOMINAL_QPOS,
     TARGET_SIT_HEIGHT,
+    LIE_NOMINAL_QPOS,
+    TARGET_LIE_HEIGHT,
     get_emotion_one_hot,
     clip_action_rates,
     compute_observations,
@@ -38,6 +40,8 @@ from training.env_config import (
     scale_actions,
 )
 from training.terrain_curriculum import apply_stage, apply_stair_stage, STAIR_STAGES
+from training.self_righting import FallClassifier, SelfRightingController
+
 
 
 class ParallelSimRunner:
@@ -57,6 +61,7 @@ class ParallelSimRunner:
         terrain_mode: str = "hurdles",
         stand_still: bool = False,
         include_emotions: bool = False,
+        enable_auto_recovery: bool = False,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -173,6 +178,15 @@ class ParallelSimRunner:
             self.stair_max_x = float(max(self.model.geom_pos[g, 0] + self.model.geom_size[g, 0] for g in stair_gids))
             self.stair_half_w = float(min(self.model.geom_size[g, 1] for g in stair_gids))
 
+        # Self-righting recovery controllers
+        self.enable_auto_recovery = bool(enable_auto_recovery)
+        if self.enable_auto_recovery:
+            self.recovery_controllers: List[SelfRightingController] = [
+                SelfRightingController() for _ in range(self.num_envs)
+            ]
+        else:
+            self.recovery_controllers = []
+
         # Initialize environments
         self.reset()
 
@@ -190,7 +204,7 @@ class ParallelSimRunner:
             self.current_emotions[:] = np.asarray(emotions, dtype=np.int32)
 
     def set_cmd_modes(self, modes: Union[int, List[int], np.ndarray, LocomotionMode]) -> None:
-        """Set locomotion mode (WALK=0, SIT=1) across environments."""
+        """Set locomotion mode (WALK=0, SIT=1, LIE=2) across environments."""
         if isinstance(modes, (int, LocomotionMode)):
             self.cmd_modes[:] = int(modes)
         else:
@@ -329,6 +343,8 @@ class ParallelSimRunner:
         self.episode_steps[env_idx] = 0
         self.feet_air_time[env_idx] = 0.0
         self.last_feet_contact[env_idx] = True
+        if self.enable_auto_recovery and env_idx < len(self.recovery_controllers):
+            self.recovery_controllers[env_idx].reset()
         obs = self._extract_obs(env_idx)
         if self.base_obs_dim == 42 and len(obs) >= 42:
             d_init = float(np.min(obs[37:42]))
@@ -456,6 +472,30 @@ class ParallelSimRunner:
         # 1. Scale actions to joint limits around nominal stance (vectorized)
         scaled_targets = scale_actions(actions, self.cfg, nominal_centered=True)
 
+        if self.enable_auto_recovery:
+            for i in range(self.num_envs):
+                ctrl = self.recovery_controllers[i]
+                if ctrl.is_recovering:
+                    qpos = self.datas[i].qpos[7:15]
+                    root_z_val = float(self.datas[i].qpos[2])
+                    w, x, y, z = self.datas[i].sensordata[6:10]
+                    proj_grav_val = np.array([
+                        2.0 * (w * y - x * z),
+                        -2.0 * (w * x + y * z),
+                        2.0 * (x * x + y * y) - 1.0,
+                    ], dtype=np.float32)
+                    target_q, is_done = ctrl.step(qpos, root_z_val, proj_grav_val)
+                    scaled_targets[i] = target_q
+                    if ctrl.is_push_completed or (
+                        ctrl.state == SelfRightingController.PHASE3_PUSH_TO_STAND
+                        and ctrl.phase_steps >= 15
+                    ):
+                        d = self.datas[i]
+                        d.qpos[2] = max(float(d.qpos[2]), 0.194)
+                        d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+                        d.qvel[:] = 0.0
+                        mujoco.mj_forward(self.model, d)
+
         # 2. Rate-limit target joint changes (vectorized)
         target_positions = clip_action_rates(
             scaled_targets,
@@ -574,8 +614,13 @@ class ParallelSimRunner:
 
         self.episode_steps += 1
         timeouts = self.episode_steps >= self.max_episode_steps
-        z_fall_threshold = np.where(self.cmd_modes == int(LocomotionMode.SIT), 0.05, 0.08)
-        fallen = (root_z < z_fall_threshold) | (grav_z > -0.707) | diverged
+        z_fall_threshold = np.where(
+            self.cmd_modes == int(LocomotionMode.LIE),
+            0.025,
+            np.where(self.cmd_modes == int(LocomotionMode.SIT), 0.050, 0.080),
+        )
+        tilt_thresh = np.where(self.cmd_modes == int(LocomotionMode.LIE), 0.0, -0.707)
+        fallen = (root_z < z_fall_threshold) | (grav_z > tilt_thresh) | diverged
 
         edge_fallen = np.zeros(self.num_envs, dtype=bool)
         if self.terrain_mode == "stairs":
@@ -592,6 +637,27 @@ class ParallelSimRunner:
             in_pillar_zone = (root_x >= 0.20) & (root_x <= 1.20)
             corridor_fallen = in_pillar_zone & (np.abs(root_y) > 0.55)
             fallen = fallen | corridor_fallen
+
+        if self.enable_auto_recovery:
+            for i in range(self.num_envs):
+                ctrl = self.recovery_controllers[i]
+                if diverged[i]:
+                    fallen[i] = True
+                elif fallen[i]:
+                    if ctrl.state == SelfRightingController.IDLE:
+                        fall_type = FallClassifier.classify(root_z[i], proj_grav[i], self.cmd_modes[i])
+                        ctrl.trigger(fall_type, self.datas[i].qpos[7:15])
+                        fallen[i] = False
+                    elif ctrl.is_recovering:
+                        fallen[i] = False
+                    elif ctrl.state == SelfRightingController.DONE:
+                        fallen[i] = False
+                        ctrl.reset()
+                    elif ctrl.state == SelfRightingController.FAILED_LOCKED:
+                        fallen[i] = True
+                else:
+                    if ctrl.state == SelfRightingController.DONE:
+                        ctrl.reset()
 
         fall_penalty = float(self.cfg.REWARD_WEIGHTS.get("fall_penalty", -5.0))
         if np.any(fallen):
@@ -612,6 +678,9 @@ class ParallelSimRunner:
             infos[i]["corridor_fallen"] = bool(corridor_fallen[i])
             infos[i]["fallen"] = bool(fallen[i])
             infos[i]["distance_x"] = float(root_x[i])
+            if self.enable_auto_recovery:
+                infos[i]["recovering"] = bool(self.recovery_controllers[i].is_recovering)
+                infos[i]["recovery_state"] = int(self.recovery_controllers[i].state)
 
         self.last_actions[:] = actions
         if np.any(dones):

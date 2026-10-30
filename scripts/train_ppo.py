@@ -27,6 +27,7 @@ from training.run_parallel_sim import ParallelSimRunner
 from training.terrain_curriculum import (
     STAGES,
     STAIR_STAGES,
+    STAGE_MIN_DISTANCE_X,
     apply_stage,
     apply_stair_stage,
     next_stage,
@@ -234,6 +235,7 @@ def train_ppo(
     num_epochs: int = 4,
     mini_batch_size: Optional[int] = None,
     save_path: Union[str, Path] = DEFAULT_SAVE_PATH,
+    best_save_path: Optional[Union[str, Path]] = None,
     dry_run: bool = False,
     device: Optional[str] = None,
     verbose: bool = True,
@@ -272,6 +274,41 @@ def train_ppo(
 
     save_path = Path(save_path).resolve()
     save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if best_save_path is None:
+        if save_path.name == "microduck_ppo.pt":
+            best_save_path = save_path.parent / "microduck_best.pt"
+        else:
+            best_save_path = save_path.parent / f"{save_path.stem}_best.pt"
+    else:
+        best_save_path = Path(best_save_path).resolve()
+        best_save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    latest_save_path = save_path.parent / "microduck_latest.pt"
+
+    # Historical best tracking
+    best_reward = -float("inf")
+    best_dist_x = -float("inf")
+    best_stage = current_stage
+
+    if best_save_path.exists():
+        try:
+            prev_best = torch.load(str(best_save_path), map_location="cpu", weights_only=False)
+            best_reward = float(
+                prev_best.get(
+                    "best_reward",
+                    prev_best.get("metrics", {}).get("mean_reward", -float("inf")),
+                )
+            )
+            best_dist_x = float(
+                prev_best.get(
+                    "best_distance_x",
+                    prev_best.get("metrics", {}).get("mean_distance_x", -float("inf")),
+                )
+            )
+            best_stage = int(prev_best.get("stage", current_stage))
+        except Exception:
+            pass
 
     # Initialize environment
     sim_model_path = Path(model_path).resolve()
@@ -511,7 +548,8 @@ def train_ppo(
             # Evaluate terrain & obstacle curriculum progression
             mean_ep_len = runner.get_mean_episode_length()
             mean_dist_x = runner.get_mean_distance_x()
-            cohort_success_rate = runner.get_success_rate(1.5)
+            stage_req_dist = STAGE_MIN_DISTANCE_X.get(current_stage, 0.8)
+            cohort_success_rate = runner.get_success_rate(stage_req_dist)
             rew_lin_vel_ratio = float(np.mean(step_lin_vels)) if step_lin_vels else 0.0
 
             if terrain_mode == "stairs":
@@ -522,6 +560,7 @@ def train_ppo(
                     hold_count=hold_count,
                     hold_iters=hold_iters,
                     mean_distance_x=mean_dist_x,
+                    min_distance_x=stage_req_dist,
                     success_rate=cohort_success_rate,
                 )
                 if new_stage != current_stage:
@@ -537,6 +576,7 @@ def train_ppo(
                     hold_count=hold_count,
                     hold_iters=hold_iters,
                     mean_distance_x=mean_dist_x,
+                    min_distance_x=stage_req_dist,
                     success_rate=cohort_success_rate,
                 )
                 if new_stage != current_stage:
@@ -577,7 +617,51 @@ def train_ppo(
                     f"FPS: {iter_fps:.0f}"
                 )
 
-            # Periodic checkpoint saving
+            # Check for historical best model (Reward and DistX peak without policy collapse)
+            cur_reward = metrics["mean_reward"]
+            cur_dist_x = metrics["mean_distance_x"]
+            is_best = False
+
+            if not dry_run and iteration > 0:
+                if current_stage > best_stage and cur_dist_x >= 0.0:
+                    is_best = True
+                elif (cur_reward >= best_reward and cur_dist_x >= best_dist_x) and (
+                    cur_reward > best_reward or cur_dist_x > best_dist_x
+                ):
+                    is_best = True
+                elif cur_dist_x > best_dist_x and cur_reward >= best_reward - 0.05:
+                    is_best = True
+
+            if is_best:
+                best_reward = max(best_reward, cur_reward)
+                best_dist_x = max(best_dist_x, cur_dist_x)
+                best_stage = max(best_stage, current_stage)
+                elapsed_cur = time.perf_counter() - start_time
+                best_ckpt = {
+                    "model_state_dict": model.state_dict(),
+                    "actor_state_dict": model.actor.state_dict(),
+                    "critic_state_dict": model.critic.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "obs_dim": obs_dim,
+                    "action_dim": action_dim,
+                    "hidden_dim": hidden_dim,
+                    "iterations": iteration,
+                    "stage": current_stage,
+                    "terrain_mode": terrain_mode,
+                    "total_timesteps": total_timesteps,
+                    "elapsed_seconds": elapsed_cur,
+                    "metrics": metrics,
+                    "best_reward": best_reward,
+                    "best_distance_x": best_dist_x,
+                }
+                torch.save(best_ckpt, str(best_save_path))
+                if verbose:
+                    print(
+                        f"[PPO] [BEST] New best model saved: {best_save_path.name} "
+                        f"(Reward: {cur_reward:+.3f}, DistX: {cur_dist_x:4.2f}m, Iter {iteration})"
+                    )
+
+            # Periodic checkpoint saving (latest model)
             if not dry_run and save_interval > 0 and (iteration % save_interval == 0):
                 elapsed_cur = time.perf_counter() - start_time
                 ckpt = {
@@ -594,10 +678,13 @@ def train_ppo(
                     "total_timesteps": total_timesteps,
                     "elapsed_seconds": elapsed_cur,
                     "metrics": metrics,
+                    "best_reward": best_reward,
+                    "best_distance_x": best_dist_x,
                 }
                 torch.save(ckpt, str(save_path))
+                torch.save(ckpt, str(latest_save_path))
                 if verbose:
-                    print(f"[PPO] Periodic checkpoint saved: {save_path} (iter {iteration})")
+                    print(f"[PPO] Periodic checkpoint saved: {save_path.name} & {latest_save_path.name} (iter {iteration})")
 
         # ------------------------------------------------------------------
         # Phase 4: Save Model Checkpoint
@@ -616,8 +703,13 @@ def train_ppo(
             "total_timesteps": total_timesteps,
             "elapsed_seconds": elapsed_total,
             "metrics": metrics,
+            "best_reward": best_reward,
+            "best_distance_x": best_dist_x,
         }
         torch.save(checkpoint, str(save_path))
+        torch.save(checkpoint, str(latest_save_path))
+        if not best_save_path.exists():
+            torch.save(checkpoint, str(best_save_path))
         if verbose:
             print(f"[PPO] Checkpoint saved successfully: {save_path} ({total_timesteps} steps in {elapsed_total:.2f}s)")
 
@@ -629,7 +721,10 @@ def train_ppo(
         "iterations": max_iterations,
         "total_timesteps": total_timesteps,
         "checkpoint_path": str(save_path),
+        "latest_checkpoint_path": str(latest_save_path),
+        "best_checkpoint_path": str(best_save_path),
         "metrics": metrics,
+        "stage": current_stage,
     }
 
 
@@ -637,6 +732,12 @@ def main():
     parser = argparse.ArgumentParser(description="MicroDuck 8-DOF PPO Training Pipeline")
     parser.add_argument("--model-path", type=str, default=str(DEFAULT_MODEL_PATH), help="Path to MuJoCo MJCF model")
     parser.add_argument("--save-path", type=str, default=str(DEFAULT_SAVE_PATH), help="Path to save PyTorch checkpoint")
+    parser.add_argument(
+        "--best-save-path",
+        type=str,
+        default=None,
+        help="Path to save best PyTorch checkpoint (default: microduck_best.pt in same directory as save-path)",
+    )
     parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel MuJoCo environments (default: 64)")
     parser.add_argument("--rollout-steps", type=int, default=128, help="Rollout steps per iteration (default: 128)")
     parser.add_argument("--max-iterations", type=int, default=100, help="Maximum PPO training iterations (default: 100)")
@@ -661,6 +762,7 @@ def main():
     train_ppo(
         model_path=args.model_path,
         save_path=args.save_path,
+        best_save_path=args.best_save_path,
         num_envs=args.num_envs,
         rollout_steps=args.rollout_steps,
         max_iterations=args.max_iterations,

@@ -159,6 +159,9 @@ def test_ppo_training_dry_run_api(tmp_path):
     assert result["iterations"] == 1
     assert checkpoint_path.exists()
     assert checkpoint_path.stat().st_size > 0
+    best_path = tmp_path / "microduck_ppo_dryrun_best.pt"
+    assert best_path.exists()
+    assert best_path.stat().st_size > 0
 
     # Load checkpoint and verify content
     ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
@@ -396,3 +399,30 @@ def test_cli_train_and_export_end_to_end(tmp_path):
     assert onnx_path.exists()
     assert weights_path.exists()
     assert config_path.exists()
+
+
+def test_best_model_saved_separately_from_latest(tmp_path):
+    """Verify that training maintains separate latest and best model checkpoints."""
+    from scripts.train_ppo import train_ppo
+
+    latest_path = tmp_path / "microduck_ppo.pt"
+    best_path = tmp_path / "microduck_best.pt"
+
+    res = train_ppo(
+        num_envs=4,
+        rollout_steps=4,
+        max_iterations=1,
+        save_path=str(latest_path),
+        best_save_path=str(best_path),
+        dry_run=True,
+    )
+
+    assert res["success"] is True
+    assert latest_path.exists()
+    assert best_path.exists()
+    assert (tmp_path / "microduck_latest.pt").exists()
+
+    ckpt_latest = torch.load(str(latest_path), map_location="cpu", weights_only=False)
+    ckpt_best = torch.load(str(best_path), map_location="cpu", weights_only=False)
+    assert "model_state_dict" in ckpt_latest
+    assert "model_state_dict" in ckpt_best

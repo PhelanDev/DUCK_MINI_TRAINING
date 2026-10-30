@@ -94,6 +94,13 @@ def apply_stage(model: mujoco.MjModel, stage: int) -> None:
                 model.geom_pos[gid, 2] = top_z - half_z
 
 
+STAGE_MIN_DISTANCE_X: Dict[int, float] = {
+    0: 0.8,   # Stage 0 -> 1: Flat floor clearance >= 0.8m (prevent overfitting to flat floor)
+    1: 1.2,   # Stage 1 -> 2: 5mm stair clearance >= 1.2m
+    2: 1.5,   # Stage 2 -> 3: 10mm stair clearance >= 1.5m
+}
+
+
 def next_stage(
     stage: int,
     ep_len_mean: float,
@@ -102,7 +109,7 @@ def next_stage(
     hold_iters: int = 10,
     rew_vx_ratio: Optional[float] = None,
     mean_distance_x: float = 0.0,
-    min_distance_x: float = 1.5,
+    min_distance_x: float = 0.8,
     success_rate: float = 1.0,
     min_success_rate: float = 0.70,
 ) -> Tuple[int, int]:
@@ -111,8 +118,8 @@ def next_stage(
     Requires maintaining success criteria for `hold_iters` consecutive iterations.
     Curriculum strictly moves forward and never regresses.
     Mandatory physical condition: robot must actually traverse forward along X
-    (mean_distance_x >= min_distance_x) and cohort success rate must be >= min_success_rate
-    (>= 70% of robot episodes reach min_distance_x). Standing still for 500 steps is strictly
+    (mean_distance_x >= stage_target_dist) and cohort success rate must be >= min_success_rate
+    (>= 70% of robot episodes reach stage_target_dist). Standing still for 500 steps is strictly
     forbidden from advancing stages.
 
     Returns:
@@ -123,17 +130,25 @@ def next_stage(
     if stage >= len(STAGES) - 1:
         return stage, hold_count
 
-    dist_met = (mean_distance_x >= min_distance_x)
+    # Stage-appropriate minimum forward distance:
+    # If caller leaves min_distance_x at default (0.8), use STAGE_MIN_DISTANCE_X mapping.
+    # Otherwise, honor explicit caller-provided threshold.
+    if min_distance_x == 0.8:
+        stage_target_dist = STAGE_MIN_DISTANCE_X.get(stage, 0.8)
+    else:
+        stage_target_dist = min_distance_x
+
+    dist_met = (mean_distance_x >= stage_target_dist)
     success_met = (success_rate >= min_success_rate)
     condition_met = False
     if stage == 0:
-        # Stage 0 -> 1: ep_len_mean >= 400, forward distance >= 1.5m, cohort success_rate >= 0.70
+        # Stage 0 -> 1: ep_len_mean >= 400.0, forward distance >= 0.8m, cohort success_rate >= 0.70
         condition_met = (ep_len_mean >= 400.0) and dist_met and success_met
     elif stage == 1:
-        # Stage 1 -> 2: sustained walking and slalom navigation past 1.5m, cohort success_rate >= 0.70
+        # Stage 1 -> 2: sustained walking and slalom navigation past stage_target_dist, cohort success_rate >= 0.70
         condition_met = (ep_len_mean >= 420.0) and dist_met and success_met
     elif stage == 2:
-        # Stage 2 -> 3: sustained stepping and stair negotiation past 1.5m, cohort success_rate >= 0.70
+        # Stage 2 -> 3: sustained stepping and stair negotiation past stage_target_dist, cohort success_rate >= 0.70
         condition_met = (ep_len_mean >= 420.0) and dist_met and success_met
 
     if condition_met:
@@ -157,7 +172,7 @@ def next_stair_stage(
     hold_iters: int = 10,
     rew_lin_vel_ratio: Optional[float] = None,
     mean_distance_x: float = 0.0,
-    min_distance_x: float = 1.5,
+    min_distance_x: float = 0.8,
     success_rate: float = 1.0,
     min_success_rate: float = 0.70,
 ) -> Tuple[int, int]:
