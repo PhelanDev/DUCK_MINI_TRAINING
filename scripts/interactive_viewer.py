@@ -220,43 +220,43 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def compute_gait_targets(t: float, frequency: float = 1.2) -> np.ndarray:
-    """Generate periodic joint angles for bipedal walking demonstration.
+def compute_gait_targets(t: float, frequency: float = 1.0) -> np.ndarray:
+    """Generate periodic joint angles for bipedal stepping demonstration.
     
     Generates coordinated hip roll (lateral weight shifting), hip pitch (sagittal leg swing),
-    and knee pitch (foot ground clearance) trajectories.
+    and knee pitch (foot ground clearance) trajectories centered around nominal stance.
     """
     omega = 2.0 * math.pi * frequency
     phase = omega * t
+    s = math.sin(phase)
 
-    # Weight shift: lateral hip roll
-    roll_amp = 0.12
-    l_roll = roll_amp * math.sin(phase)
-    r_roll = roll_amp * math.sin(phase)
+    # Lateral weight shift: roll pelvis toward support foot
+    roll_amp = 0.04
+    l_roll = roll_amp * s
+    r_roll = roll_amp * s
 
-    # Leg swing: hip pitch
-    pitch_amp = 0.25
-    l_hip_pitch = pitch_amp * math.sin(phase)
-    r_hip_pitch = -pitch_amp * math.sin(phase)
+    # Leg swing: hip pitch centered around nominal -0.15 rad
+    pitch_amp = 0.06
+    l_pitch = -0.15 - pitch_amp * s
+    r_pitch = -0.15 + pitch_amp * s
 
-    # Knee flexion: raise swing foot
-    knee_bias = 0.20
-    knee_amp = 0.25
-    l_knee = max(0.0, knee_bias + knee_amp * math.sin(phase))
-    r_knee = max(0.0, knee_bias - knee_amp * math.sin(phase))
+    # Knee flexion: raise swing foot centered around nominal +0.15 rad
+    knee_amp = 0.10
+    l_knee = 0.15 + knee_amp * max(0.0, s)
+    r_knee = 0.15 + knee_amp * max(0.0, -s)
 
     # Head counter-motion
-    head_yaw = -0.15 * math.sin(phase)
-    head_pitch = 0.05 * math.cos(phase * 2.0)
+    head_yaw = -0.05 * s
+    head_pitch = 0.02
 
     raw_targets = np.array([
         head_yaw,
         head_pitch,
         l_roll,
-        l_hip_pitch,
+        l_pitch,
         l_knee,
         r_roll,
-        r_hip_pitch,
+        r_pitch,
         r_knee,
     ], dtype=np.float32)
 
@@ -981,7 +981,7 @@ def run_opencv_viewer(
             )
             cv2.putText(
                 bgr_frame,
-                f"Feet: L={state['left_touch']:.1f}N, R={state['right_touch']:.1f}N | Controls: [Space]=Pause, [R]=Reset, [Q]=Quit",
+                f"Feet: L={state['left_touch']:.1f}N, R={state['right_touch']:.1f}N | Controls: [W]=Gait, [S]=Stand, [1..4]=Poses, [R]=Reset",
                 (20, 460),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,
@@ -998,6 +998,31 @@ def run_opencv_viewer(
                 break
             elif key == ord(" "):
                 paused = not paused
+            elif key in [ord("w"), ord("g")]:
+                gait_demo = not gait_demo
+                if gait_demo:
+                    policy = None
+                print(f"[ĐIỀU KHIỂN] {'BẬT' if gait_demo else 'TẮT'} chế độ bước đi (Gait Demo).")
+            elif key == ord("s"):
+                gait_demo = False
+                target_qpos = np.array(POSE_PRESETS["stand"], dtype=np.float32)
+                print("[ĐIỀU KHIỂN] Chuyển sang tư thế ĐỨNG THẲNG (Stand).")
+            elif key == ord("1"):
+                gait_demo = False
+                target_qpos = np.array(POSE_PRESETS["stand"], dtype=np.float32)
+                print("[ĐIỀU KHIỂN] Chọn tư thế [1]: ĐỨNG THẲNG (Stand).")
+            elif key == ord("2"):
+                gait_demo = False
+                target_qpos = np.array(POSE_PRESETS["squat"], dtype=np.float32)
+                print("[ĐIỀU KHIỂN] Chọn tư thế [2]: NGỒI XỔM (Squat).")
+            elif key == ord("3"):
+                gait_demo = False
+                target_qpos = np.array(POSE_PRESETS["sit"], dtype=np.float32)
+                print("[ĐIỀU KHIỂN] Chọn tư thế [3]: NGỒI BỆT (Sit).")
+            elif key == ord("4"):
+                gait_demo = False
+                target_qpos = np.array(POSE_PRESETS["lie"], dtype=np.float32)
+                print("[ĐIỀU KHIỂN] Chọn tư thế [4]: NẰM (Lie).")
             elif key == ord("r"):
                 mujoco.mj_resetData(model, data)
                 data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
