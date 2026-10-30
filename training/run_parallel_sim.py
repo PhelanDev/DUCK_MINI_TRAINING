@@ -25,6 +25,12 @@ from training.env_config import (
     MicroDuck8DoFConfig,
     _DEFAULT_CFG,
     DEFAULT_NOMINAL_QPOS,
+    EmotionState,
+    NUM_EMOTIONS,
+    LocomotionMode,
+    SIT_NOMINAL_QPOS,
+    TARGET_SIT_HEIGHT,
+    get_emotion_one_hot,
     clip_action_rates,
     compute_observations,
     compute_rewards,
@@ -50,12 +56,14 @@ class ParallelSimRunner:
         stage: int = 0,
         terrain_mode: str = "hurdles",
         stand_still: bool = False,
+        include_emotions: bool = False,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
             raise FileNotFoundError(f"MuJoCo model not found at {self.model_path}")
 
         self.terrain_mode = str(terrain_mode)
+        self.include_emotions = bool(include_emotions)
         self.cfg = cfg if cfg is not None else _DEFAULT_CFG
         self.num_envs = int(num_envs)
         self.decimation = max(1, int(decimation))
@@ -85,9 +93,14 @@ class ParallelSimRunner:
         )
 
         # Tracking state buffers
-        if len(self.datas[0].sensordata) >= 33 or self.cfg.OBS_DIM == 42:
+        if self.include_emotions:
+            self.base_obs_dim = 42 if self.cfg.OBS_DIM in (37, 42) else self.cfg.OBS_DIM
+            self.obs_dim = self.base_obs_dim + NUM_EMOTIONS
+        elif len(self.datas[0].sensordata) >= 33 or self.cfg.OBS_DIM == 42:
+            self.base_obs_dim = 42
             self.obs_dim = 42
         else:
+            self.base_obs_dim = self.cfg.OBS_DIM
             self.obs_dim = self.cfg.OBS_DIM
         self.action_dim = self.cfg.ACTION_DIM
 
@@ -102,7 +115,12 @@ class ParallelSimRunner:
         self.max_episode_steps = int(max_episode_steps)
         self.episode_steps = np.zeros(self.num_envs, dtype=np.int32)
         self.completed_ep_lens: deque = deque(maxlen=100)
+        self.completed_distances_x: deque = deque(maxlen=100)
+        self.feet_air_time = np.zeros((self.num_envs, 2), dtype=np.float32)
+        self.last_feet_contact = np.ones((self.num_envs, 2), dtype=bool)
         self.rng = np.random.default_rng(seed=42)
+        self.current_emotions = self.rng.integers(0, NUM_EMOTIONS, size=self.num_envs, dtype=np.int32)
+        self.cmd_modes = np.zeros(self.num_envs, dtype=np.int32)
 
         # Obstacle avoidance and approach-velocity tracking state
         self.control_dt = float(self.model.opt.timestep * self.decimation)
@@ -132,6 +150,11 @@ class ParallelSimRunner:
         self.left_foot_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_foot_link")
         self.right_foot_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_foot_link")
 
+        # Floor geom and base body for domain randomization (friction and torso mass)
+        self.floor_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        self.base_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
+        self.default_base_mass = float(self.model.body_mass[self.base_body_id]) if self.base_body_id != -1 else 0.32
+
         # Curriculum stage
         self.curriculum_stage = int(stage)
         self.set_stage(self.curriculum_stage)
@@ -158,6 +181,24 @@ class ParallelSimRunner:
         self.stand_still = bool(stand_still)
         if self.stand_still:
             self.commands[:, :] = 0.0
+
+    def set_emotions(self, emotions: Union[int, EmotionState, np.ndarray, List[int]]) -> None:
+        """Set emotion state across environments."""
+        if isinstance(emotions, (int, EmotionState)):
+            self.current_emotions[:] = int(emotions)
+        else:
+            self.current_emotions[:] = np.asarray(emotions, dtype=np.int32)
+
+    def set_cmd_modes(self, modes: Union[int, List[int], np.ndarray, LocomotionMode]) -> None:
+        """Set locomotion mode (WALK=0, SIT=1) across environments."""
+        if isinstance(modes, (int, LocomotionMode)):
+            self.cmd_modes[:] = int(modes)
+        else:
+            self.cmd_modes[:] = np.asarray(modes, dtype=np.int32)
+
+    def set_cmd_mode(self, mode: Union[int, List[int], np.ndarray, LocomotionMode]) -> None:
+        """Alias for set_cmd_modes."""
+        self.set_cmd_modes(mode)
 
     def set_stage(self, stage: int) -> None:
         """Update terrain and obstacle curriculum stage."""
@@ -247,6 +288,15 @@ class ParallelSimRunner:
         d = self.datas[env_idx]
         mujoco.mj_resetData(self.model, d)
 
+        # Domain randomization: floor friction mu in [0.8, 1.3] and torso mass +-5%
+        if self.floor_gid != -1:
+            self.model.geom_friction[self.floor_gid, 0] = float(self.rng.uniform(0.8, 1.3))
+        if self.base_body_id != -1:
+            self.model.body_mass[self.base_body_id] = float(self.default_base_mass * self.rng.uniform(0.95, 1.05))
+
+        if self.include_emotions:
+            self.current_emotions[env_idx] = self.rng.integers(0, NUM_EMOTIONS)
+
         d.qpos[0:3] = [0.0, 0.0, 0.194]
         d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
         # Khởi tạo góc khớp ban đầu quanh tư thế danh định đứng cân bằng (chùng gối nhẹ)
@@ -277,8 +327,10 @@ class ParallelSimRunner:
         self.last_actions[env_idx] = 0.0
         self.last_targets[env_idx] = d.qpos[7:15].astype(np.float32)
         self.episode_steps[env_idx] = 0
+        self.feet_air_time[env_idx] = 0.0
+        self.last_feet_contact[env_idx] = True
         obs = self._extract_obs(env_idx)
-        if self.obs_dim == 42 and len(obs) >= 42:
+        if self.base_obs_dim == 42 and len(obs) >= 42:
             d_init = float(np.min(obs[37:42]))
         else:
             d_init = self._compute_d_min(env_idx)
@@ -338,11 +390,17 @@ class ParallelSimRunner:
             raw_lidar = np.array(d.sensordata[28:33], dtype=np.float32)
             lidar_max = getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0)
             lidar_ranges = np.where(raw_lidar < 0.0, lidar_max, raw_lidar)
-        elif self.obs_dim == 42:
+        elif self.base_obs_dim == 42:
             lidar_max = getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0)
             lidar_ranges = np.full(5, lidar_max, dtype=np.float32)
         else:
             lidar_ranges = None
+
+        emotion_one_hot = (
+            get_emotion_one_hot(self.current_emotions[env_idx])
+            if self.include_emotions
+            else None
+        )
 
         return compute_observations(
             base_ang_vel=base_ang_vel,
@@ -352,7 +410,8 @@ class ParallelSimRunner:
             joint_vel=joint_vel,
             last_actions=last_act,
             foot_contact=foot_contact,
-            lidar_ranges=lidar_ranges if self.obs_dim == 42 else None,
+            lidar_ranges=lidar_ranges if self.base_obs_dim == 42 else None,
+            emotion_one_hot=emotion_one_hot,
         )
 
     def get_observations(self) -> np.ndarray:
@@ -438,8 +497,10 @@ class ParallelSimRunner:
         proj_grav = next_obs[:, 3:6]
         joint_torques = np.array([d.ctrl[:] for d in self.datas], dtype=np.float32)
         joint_vel = np.array([d.sensordata[20:28] for d in self.datas], dtype=np.float32)
+        joint_pos = np.array([d.sensordata[12:20] for d in self.datas], dtype=np.float32)
         foot_contact = next_obs[:, 33:37]
-        lidar_ranges = next_obs[:, 37:42] if self.obs_dim == 42 else None
+        lidar_ranges = next_obs[:, 37:42] if self.base_obs_dim == 42 else None
+        qpos_head = np.array([d.sensordata[12:14] for d in self.datas], dtype=np.float32)
 
         # Compute obstacle distances and approach velocity
         if lidar_ranges is not None:
@@ -462,6 +523,11 @@ class ParallelSimRunner:
         root_x = np.array([d.qpos[0] for d in self.datas], dtype=np.float32)
         root_y = np.array([d.qpos[1] for d in self.datas], dtype=np.float32)
         root_z = np.array([d.qpos[2] for d in self.datas], dtype=np.float32)
+
+        # Feet air time tracking: left foot (0) and right foot (1)
+        curr_contact = (foot_contact[:, :2] > 0.5)
+        touchdown = curr_contact & (~self.last_feet_contact)
+        self.feet_air_time[~curr_contact] += self.control_dt
 
         # Vectorized reward computation across all environments
         reward_dict = compute_rewards(
@@ -486,8 +552,18 @@ class ParallelSimRunner:
             root_y=root_y,
             root_z=root_z,
             terrain_mode=self.terrain_mode,
+            feet_air_time=self.feet_air_time,
+            feet_touchdown=touchdown,
+            current_emotion=self.current_emotions if self.include_emotions else None,
+            qpos_head=qpos_head,
+            joint_pos=joint_pos,
+            cmd_mode=self.cmd_modes,
         )
         rewards = reward_dict["total_reward"]
+
+        # Reset air time for feet in contact and update last contact history
+        self.feet_air_time[curr_contact] = 0.0
+        self.last_feet_contact[:] = curr_contact
 
         # Vectorized termination check: fall over, excessive tilt, numerical divergence, or timeout
         grav_z = proj_grav[:, 2]
@@ -498,7 +574,8 @@ class ParallelSimRunner:
 
         self.episode_steps += 1
         timeouts = self.episode_steps >= self.max_episode_steps
-        fallen = (root_z < 0.08) | (grav_z > -0.3) | diverged
+        z_fall_threshold = np.where(self.cmd_modes == int(LocomotionMode.SIT), 0.05, 0.08)
+        fallen = (root_z < z_fall_threshold) | (grav_z > -0.707) | diverged
 
         edge_fallen = np.zeros(self.num_envs, dtype=bool)
         if self.terrain_mode == "stairs":
@@ -509,6 +586,12 @@ class ParallelSimRunner:
             in_stair_x = (root_x >= min_x) & (root_x <= max_x)
             edge_fallen = in_stair_x & (np.abs(root_y) > (half_w + 0.04))
             fallen = fallen | edge_fallen
+
+        corridor_fallen = np.zeros(self.num_envs, dtype=bool)
+        if self.terrain_mode == "hurdles":
+            in_pillar_zone = (root_x >= 0.20) & (root_x <= 1.20)
+            corridor_fallen = in_pillar_zone & (np.abs(root_y) > 0.55)
+            fallen = fallen | corridor_fallen
 
         fall_penalty = float(self.cfg.REWARD_WEIGHTS.get("fall_penalty", -5.0))
         if np.any(fallen):
@@ -526,13 +609,17 @@ class ParallelSimRunner:
             infos[i]["timeout"] = bool(timeouts[i])
             infos[i]["time_outs"] = bool(timeouts[i] and not fallen[i])
             infos[i]["edge_fallen"] = bool(edge_fallen[i])
+            infos[i]["corridor_fallen"] = bool(corridor_fallen[i])
             infos[i]["fallen"] = bool(fallen[i])
+            infos[i]["distance_x"] = float(root_x[i])
 
         self.last_actions[:] = actions
         if np.any(dones):
             for i in np.where(dones)[0]:
                 self.completed_ep_lens.append(int(self.episode_steps[i]))
+                self.completed_distances_x.append(float(root_x[i]))
                 infos[i]["episode_length"] = int(self.episode_steps[i])
+                infos[i]["distance_x"] = float(root_x[i])
                 infos[i]["terminal_obs"] = next_obs[i].copy()
                 next_obs[i] = self.reset_env(i)
 
@@ -543,6 +630,21 @@ class ParallelSimRunner:
         if len(self.completed_ep_lens) > 0:
             return float(np.mean(self.completed_ep_lens))
         return float(self.episode_steps.mean())
+
+    def get_mean_distance_x(self) -> float:
+        """Return average forward distance along X from completed episodes window (or current positions if empty)."""
+        if len(self.completed_distances_x) > 0:
+            return float(np.mean(self.completed_distances_x))
+        return float(np.mean([d.qpos[0] for d in self.datas]))
+
+    def get_success_rate(self, min_dist: float = 1.5) -> float:
+        """Return proportion of completed episodes that achieved at least min_dist along X."""
+        if len(self.completed_distances_x) > 0:
+            return float(sum(1 for d in self.completed_distances_x if d >= min_dist) / len(self.completed_distances_x))
+        if self.num_envs == 0:
+            return 0.0
+        cur_dists = [float(d.qpos[0]) for d in self.datas]
+        return float(sum(1 for d in cur_dists if d >= min_dist) / len(cur_dists))
 
     def close(self):
         """Clean up thread executor resources."""

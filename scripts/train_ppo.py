@@ -341,6 +341,7 @@ def train_ppo(
     obs_buffer = torch.zeros((rollout_steps, num_envs, obs_dim), dtype=torch.float32, device=dev)
     actions_buffer = torch.zeros((rollout_steps, num_envs, action_dim), dtype=torch.float32, device=dev)
     log_probs_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
+    raw_rewards_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
     rewards_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
     dones_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
     values_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
@@ -379,8 +380,12 @@ def train_ppo(
                 next_obs_np, rewards_np, dones_np, infos = runner.step(actions_clamped)
                 step_lin_vels.append(float(np.mean([info.get("tracking_lin_vel", 0.0) for info in infos])))
 
-                # Time-limit value bootstrapping: add gamma * V(s_terminal) for truncated envs
-                step_rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
+                # Store raw unbootstrapped rewards for training metric logging
+                raw_step_rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
+                raw_rewards_buffer[step] = raw_step_rewards
+
+                # Time-limit value bootstrapping: add gamma * V(s_terminal) for truncated envs (used for GAE advantage computation)
+                step_rewards = raw_step_rewards.clone()
                 timeout_mask = torch.tensor(
                     [info.get("time_outs", False) for info in infos],
                     dtype=torch.bool,
@@ -505,6 +510,8 @@ def train_ppo(
                 )
             # Evaluate terrain & obstacle curriculum progression
             mean_ep_len = runner.get_mean_episode_length()
+            mean_dist_x = runner.get_mean_distance_x()
+            cohort_success_rate = runner.get_success_rate(1.5)
             rew_lin_vel_ratio = float(np.mean(step_lin_vels)) if step_lin_vels else 0.0
 
             if terrain_mode == "stairs":
@@ -514,6 +521,8 @@ def train_ppo(
                     rew_vx_ratio=rew_lin_vel_ratio,
                     hold_count=hold_count,
                     hold_iters=hold_iters,
+                    mean_distance_x=mean_dist_x,
+                    success_rate=cohort_success_rate,
                 )
                 if new_stage != current_stage:
                     current_stage = new_stage
@@ -527,6 +536,8 @@ def train_ppo(
                     rew_lin_vel_ratio=rew_lin_vel_ratio,
                     hold_count=hold_count,
                     hold_iters=hold_iters,
+                    mean_distance_x=mean_dist_x,
+                    success_rate=cohort_success_rate,
                 )
                 if new_stage != current_stage:
                     current_stage = new_stage
@@ -544,7 +555,10 @@ def train_ppo(
                             "Unlocking walking velocity commands!"
                         )
 
-            metrics["mean_reward"] = float(rewards_buffer.mean().item())
+            metrics["mean_reward"] = float(raw_rewards_buffer.mean().item())
+            metrics["bootstrapped_mean_reward"] = float(rewards_buffer.mean().item())
+            metrics["mean_distance_x"] = float(mean_dist_x)
+            metrics["success_rate"] = float(cohort_success_rate)
             metrics["stage"] = current_stage
             metrics["hold_count"] = hold_count
 
@@ -555,6 +569,8 @@ def train_ppo(
                     f"[Iteration {iteration:03d}/{max_iterations}] "
                     f"Stage: {current_stage} | "
                     f"EpLen: {mean_ep_len:5.1f}/500 | "
+                    f"DistX: {mean_dist_x:4.2f}m | "
+                    f"Succ: {cohort_success_rate*100:4.1f}% | "
                     f"Reward: {metrics['mean_reward']:+.3f} | "
                     f"PiLoss: {metrics['policy_loss']:.4f} | "
                     f"ValLoss: {metrics['value_loss']:.4f} | "

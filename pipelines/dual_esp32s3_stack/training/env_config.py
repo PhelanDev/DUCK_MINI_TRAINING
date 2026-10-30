@@ -88,8 +88,10 @@ class MicroDuck8DoFConfig:
             "foot_contact": 0.1,
             "obstacle_avoidance": 0.2,
             "stair_ascent": 1.5,
-            "alive_bonus": 0.5,
+            "alive_bonus": 0.05,
             "fall_penalty": -5.0,
+            "standstill_penalty": -0.5,
+            "feet_air_time": 2.0,
         }
     )
 

@@ -138,13 +138,13 @@ def test_next_stage_requires_hold():
 
     # 9 consecutive good iterations (ep_len=450, vel_ratio=0.85)
     for _ in range(9):
-        stage, hold = next_stage(stage, ep_len_mean=450.0, rew_lin_vel_ratio=0.85, hold_count=hold, hold_iters=10)
+        stage, hold = next_stage(stage, ep_len_mean=450.0, rew_lin_vel_ratio=0.85, hold_count=hold, hold_iters=10, mean_distance_x=1.8)
         assert stage == 0
 
     assert hold == 9
 
     # 10th iteration satisfies hold -> advances to stage 1
-    stage, hold = next_stage(stage, ep_len_mean=450.0, rew_lin_vel_ratio=0.85, hold_count=hold, hold_iters=10)
+    stage, hold = next_stage(stage, ep_len_mean=450.0, rew_lin_vel_ratio=0.85, hold_count=hold, hold_iters=10, mean_distance_x=1.8)
     assert stage == 1
     assert hold == 0
 
@@ -155,6 +155,6 @@ def test_next_stage_never_regresses():
     hold = 5
 
     # Significant performance drop
-    stage, hold = next_stage(stage, ep_len_mean=150.0, rew_lin_vel_ratio=0.2, hold_count=hold, hold_iters=10)
+    stage, hold = next_stage(stage, ep_len_mean=150.0, rew_lin_vel_ratio=0.2, hold_count=hold, hold_iters=10, mean_distance_x=1.8)
     assert stage == 2
     assert hold == 0  # Hold count resets, but stage never decreases

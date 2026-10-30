@@ -6,8 +6,73 @@ and balanced reward calculations for bipedal locomotion.
 """
 
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
+
+
+class EmotionState(IntEnum):
+    """10-state emotion model for MicroDuck 8-DOF head expressions."""
+
+    NEUTRAL = 0
+    HAPPY = 1
+    SAD = 2
+    ANGRY = 3
+    SCARED = 4
+    CURIOUS = 5
+    SURPRISED = 6
+    SLEEPY = 7
+    PLAYFUL = 8
+    PROUD = 9
+
+
+class LocomotionMode(IntEnum):
+    """Locomotion operational mode for MicroDuck 8-DOF."""
+
+    WALK = 0
+    SIT = 1
+
+
+TARGET_SIT_HEIGHT: float = 0.075
+
+# Nominal sitting joint angles: (head_yaw, head_pitch, l_hip_roll, l_hip_pitch, l_knee_pitch, r_hip_roll, r_hip_pitch, r_knee_pitch)
+SIT_NOMINAL_QPOS: np.ndarray = np.array(
+    [0.0, 0.0, 0.0, 0.70, 1.35, 0.0, 0.70, 1.35],
+    dtype=np.float32,
+)
+
+
+NUM_EMOTIONS: int = 10
+
+# Target (head_yaw, head_pitch) in radians for each expressive emotion state
+EMOTION_TARGET_HEAD_POS: Dict[Union[EmotionState, int], Tuple[float, float]] = {
+    EmotionState.NEUTRAL: (0.0, 0.0),
+    EmotionState.HAPPY: (0.0, 0.25),
+    EmotionState.SAD: (0.0, -0.30),
+    EmotionState.ANGRY: (0.0, -0.15),
+    EmotionState.SCARED: (0.0, 0.45),
+    EmotionState.CURIOUS: (0.40, 0.10),
+    EmotionState.SURPRISED: (0.0, 0.60),
+    EmotionState.SLEEPY: (0.0, -0.40),
+    EmotionState.PLAYFUL: (-0.35, 0.20),
+    EmotionState.PROUD: (0.0, 0.35),
+}
+
+# Pre-computed lookup array for fast vectorized reward computations: shape (10, 2)
+EMOTION_TARGET_HEAD_ARRAY: np.ndarray = np.array(
+    [EMOTION_TARGET_HEAD_POS[EmotionState(i)] for i in range(NUM_EMOTIONS)],
+    dtype=np.float32,
+)
+
+
+def get_emotion_one_hot(state: Union[EmotionState, int]) -> np.ndarray:
+    """Generate 10-dimensional one-hot vector for given emotion state."""
+    idx = int(state)
+    if not (0 <= idx < NUM_EMOTIONS):
+        raise ValueError(f"Emotion state index {idx} out of range [0, {NUM_EMOTIONS - 1}]")
+    one_hot = np.zeros(NUM_EMOTIONS, dtype=np.float32)
+    one_hot[idx] = 1.0
+    return one_hot
 
 
 @dataclass
@@ -89,8 +154,13 @@ class MicroDuck8DoFConfig:
             "stumble": 0.5,
             "w_centering": 1.5,
             "stair_ascent": 1.5,
-            "alive_bonus": 0.5,
+            "alive_bonus": 0.05,
             "fall_penalty": -5.0,
+            "standstill_penalty": -0.5,
+            "feet_air_time": 2.0,
+            "emotion_tracking": 0.5,
+            "sitting_pose": 2.0,
+            "joint_limit_penalty": -0.2,
         }
     )
 
@@ -111,6 +181,11 @@ class MicroDuck8DoFConfig:
 
 # Module-level cached configuration for high-frequency simulation steps
 _DEFAULT_CFG = MicroDuck8DoFConfig()
+
+# Global physical joint limit bounds (8, 2): column 0 = lower bound, column 1 = upper bound
+JOINT_LIMITS: np.ndarray = np.stack(
+    [_DEFAULT_CFG.low_limits, _DEFAULT_CFG.high_limits], axis=-1
+).astype(np.float32)
 
 DEFAULT_NOMINAL_JOINT_POS: Dict[str, float] = {
     "head_yaw": 0.0,
@@ -135,8 +210,9 @@ def compute_observations(
     last_actions: np.ndarray,
     foot_contact: np.ndarray,
     lidar_ranges: Optional[np.ndarray] = None,
+    emotion_one_hot: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Pack raw state tensors into observation vector (37-dim nominal, or 42-dim with 5-ray LiDAR).
+    """Pack raw state tensors into observation vector (37-dim nominal, 42-dim with 5-ray LiDAR, 47-dim or 52-dim with emotions).
 
     Dimensions:
     - Base angular velocity (3)
@@ -147,7 +223,8 @@ def compute_observations(
     - Previous actions (8)
     - Feet contact sensors (4)
     - Optional LiDAR rangefinder rays (5)
-    Total = 37 dims (or 42 dims).
+    - Optional Emotion state one-hot vector (10)
+    Total = 37, 42, 47, or 52 dims.
     """
     parts = [
         np.asarray(base_ang_vel, dtype=np.float32).ravel(),
@@ -160,10 +237,14 @@ def compute_observations(
     ]
     if lidar_ranges is not None:
         parts.append(np.asarray(lidar_ranges, dtype=np.float32).ravel())
+    if emotion_one_hot is not None:
+        emo_arr = np.asarray(emotion_one_hot, dtype=np.float32).ravel()
+        assert emo_arr.shape == (NUM_EMOTIONS,), f"Expected emotion_one_hot shape ({NUM_EMOTIONS},), got {emo_arr.shape}"
+        parts.append(emo_arr)
 
     obs = np.concatenate(parts, axis=-1).astype(np.float32)
 
-    expected_dim = 42 if lidar_ranges is not None else 37
+    expected_dim = 37 + (5 if lidar_ranges is not None else 0) + (NUM_EMOTIONS if emotion_one_hot is not None else 0)
     assert obs.shape == (expected_dim,), f"Expected observation shape ({expected_dim},), got {obs.shape}"
     return obs
 
@@ -329,6 +410,12 @@ def compute_rewards(
     root_y: Optional[np.ndarray] = None,
     root_z: Optional[Union[float, np.ndarray]] = None,
     terrain_mode: str = "hurdles",
+    feet_air_time: Optional[np.ndarray] = None,
+    feet_touchdown: Optional[np.ndarray] = None,
+    current_emotion: Optional[Union[int, np.ndarray, EmotionState]] = None,
+    qpos_head: Optional[np.ndarray] = None,
+    joint_pos: Optional[np.ndarray] = None,
+    cmd_mode: Optional[Union[int, np.ndarray, LocomotionMode]] = 0,
 ) -> Dict[str, Union[float, np.ndarray]]:
     """Compute balanced reward terms and total reward for RL training.
 
@@ -363,9 +450,62 @@ def compute_rewards(
         else:
             target_yaw = float(cmd_ang_vel)
 
-    # 1. Linear velocity tracking in XY plane (exponential kernel)
-    lin_err_sq = np.sum(np.square(base_lin[..., :2] - cmd_lin[..., :2]), axis=-1)
-    r_track_lin_vel = np.exp(-lin_err_sq / 0.25)
+    # Locomotion mode resolution (WALK = 0, SIT = 1)
+    if cmd_mode is None:
+        cmd_mode = 0
+    if is_batch:
+        mode_arr = np.asarray(cmd_mode, dtype=np.int32)
+        if mode_arr.ndim == 0:
+            is_sit = np.full(base_lin.shape[0], mode_arr == int(LocomotionMode.SIT), dtype=bool)
+        else:
+            is_sit = (mode_arr == int(LocomotionMode.SIT))
+    else:
+        is_sit = (int(cmd_mode) == int(LocomotionMode.SIT))
+
+    # 1. Forward linear velocity reward: direct multiplication reward_vel = 2.0 * base_lin_vel_x
+    # minus lateral velocity error penalty to prevent crab-walking.
+    # Speed diving exploit patch: clip rewarded forward velocity at cmd_x + 0.05.
+    vel_x = base_lin[..., 0]
+    vel_y = base_lin[..., 1]
+    cmd_x = cmd_lin[..., 0]
+    cmd_y = cmd_lin[..., 1]
+    if is_batch:
+        vel_x_eff = np.minimum(vel_x, cmd_x + 0.05)
+        r_track_lin_vel = 2.0 * np.maximum(0.0, vel_x_eff) - 0.5 * np.square(vel_y - cmd_y)
+        r_track_lin_vel = np.where(is_sit, 0.0, r_track_lin_vel).astype(np.float32)
+    else:
+        vel_x_eff = min(float(vel_x), float(cmd_x) + 0.05)
+        r_track_lin_vel = 2.0 * max(0.0, vel_x_eff) - 0.5 * float((vel_y - cmd_y) ** 2)
+        if is_sit:
+            r_track_lin_vel = 0.0
+
+    # Standstill penalty: if commanded forward (cmd_lin[..., 0] > 0.05) and base_lin_vel_x < 0.05 m/s
+    # penalize standing still (-0.5 per step) to force locomotion (disabled when sitting)
+    is_walking_cmd = cmd_x > 0.05
+    is_standstill = (vel_x < 0.05) & is_walking_cmd
+    r_standstill = np.where(is_standstill, 1.0, 0.0).astype(np.float32)
+    if is_batch:
+        r_standstill = np.where(is_sit, 0.0, r_standstill).astype(np.float32)
+    elif is_sit:
+        r_standstill = 0.0
+
+    # Feet air time reward: reward swing duration on touchdown (cyclic gait step reward)
+    # Trampling guard patch: require actual forward movement vel_x >= 0.05 m/s
+    if feet_air_time is not None and feet_touchdown is not None:
+        air_t = np.asarray(feet_air_time, dtype=np.float32)
+        td = np.asarray(feet_touchdown, dtype=np.float32)
+        # Reward air time between 0.08s and 0.40s upon touchdown
+        air_reward = np.clip(air_t - 0.08, 0.0, 0.40) * td
+        # Active only when commanded to move and actually moving forward (vel_x >= 0.05)
+        cmd_active = (np.linalg.norm(cmd_lin[..., :2], axis=-1) > 0.05).astype(np.float32)
+        if is_batch:
+            forward_active = (vel_x >= 0.05).astype(np.float32)
+            r_feet_air_time = np.sum(air_reward, axis=-1) * cmd_active * forward_active
+        else:
+            forward_active = float(vel_x >= 0.05)
+            r_feet_air_time = float(np.sum(air_reward) * cmd_active * forward_active)
+    else:
+        r_feet_air_time = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
     # 2. Angular velocity tracking around Z axis
     ang_err_sq = np.square(base_ang[..., 2] - target_yaw)
@@ -450,7 +590,72 @@ def compute_rewards(
     else:
         r_stair_ascent = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
+    # 11. Emotion head posture tracking reward
+    r_emotion = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+    if current_emotion is not None and weights.get("emotion_tracking", 0.5) != 0.0:
+        head = None
+        if qpos_head is not None:
+            head = np.asarray(qpos_head, dtype=np.float32)
+        elif joint_pos is not None:
+            head = np.asarray(joint_pos, dtype=np.float32)[..., :2]
+
+        if head is not None:
+            if is_batch:
+                emo_indices = np.asarray(current_emotion, dtype=np.int32).ravel()
+                target_head = EMOTION_TARGET_HEAD_ARRAY[emo_indices]
+                err_sq = np.sum(np.square(head[..., :2] - target_head), axis=-1)
+                r_emotion = np.exp(-err_sq / 0.15).astype(np.float32)
+            else:
+                emo_idx = int(current_emotion)
+                target_head = EMOTION_TARGET_HEAD_ARRAY[emo_idx]
+                err_sq = np.sum(np.square(head.ravel()[:2] - target_head))
+                r_emotion = float(np.exp(-err_sq / 0.15))
+
+    # 12. Sitting posture and height reward
+    if joint_pos is not None:
+        q_legs = np.asarray(joint_pos, dtype=np.float32)[..., 2:8]
+        sit_legs = SIT_NOMINAL_QPOS[2:8]
+        pose_err_sq = np.sum(np.square(q_legs - sit_legs), axis=-1)
+        r_sit_pose = np.exp(-pose_err_sq / 0.20)
+    else:
+        r_sit_pose = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
+    if root_z is not None:
+        rz = np.asarray(root_z, dtype=np.float32)
+        height_err_sq = np.square(rz - TARGET_SIT_HEIGHT)
+        r_sit_height = np.exp(-height_err_sq / 0.005)
+    else:
+        r_sit_height = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
+    r_sit_raw = 0.5 * r_sit_pose + 0.5 * r_sit_height
+    if is_batch:
+        r_sit = np.where(is_sit, r_sit_raw, 0.0).astype(np.float32)
+    else:
+        r_sit = float(r_sit_raw) if is_sit else 0.0
+
+    # 13. Joint limit dwelling penalty (< 5% margin from physical stop)
+    r_joint_limit = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+    if joint_pos is not None:
+        q = np.asarray(joint_pos, dtype=np.float32)
+        low = JOINT_LIMITS[:, 0]
+        high = JOINT_LIMITS[:, 1]
+        rng = high - low
+        margin = 0.05 * rng
+        low_thresh = low + margin
+        high_thresh = high - margin
+        pen_low = np.maximum(0.0, low_thresh - q) / margin
+        pen_high = np.maximum(0.0, q - high_thresh) / margin
+        pen = pen_low + pen_high
+        r_joint_limit_raw = -np.sum(np.square(pen), axis=-1)
+        if is_batch:
+            r_joint_limit = r_joint_limit_raw.astype(np.float32)
+        else:
+            r_joint_limit = float(r_joint_limit_raw)
+
     r_alive = np.ones(base_lin.shape[0], dtype=np.float32) if is_batch else 1.0
+
+    w_limit = weights.get("joint_limit_penalty", -0.2)
+    limit_scale = -w_limit if w_limit < 0 else w_limit
 
     total = (
         weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
@@ -465,7 +670,12 @@ def compute_rewards(
         + weights.get("stumble", 0.5) * r_stumble
         + (weights.get("w_centering", 1.5) * r_centering if terrain_mode == "stairs" else 0.0)
         + weights.get("stair_ascent", 0.0) * r_stair_ascent
-        + weights.get("alive_bonus", 0.0) * r_alive
+        + weights.get("alive_bonus", 0.05) * r_alive
+        + weights.get("standstill_penalty", -0.5) * r_standstill
+        + weights.get("feet_air_time", 2.0) * r_feet_air_time
+        + weights.get("emotion_tracking", 0.5) * r_emotion
+        + weights.get("sitting_pose", 2.0) * r_sit
+        + limit_scale * r_joint_limit
     )
 
     if not is_batch:
@@ -484,7 +694,13 @@ def compute_rewards(
             "stumble": float(r_stumble),
             "pen_stumble": float(r_stumble),
             "stair_ascent": float(r_stair_ascent),
-            "alive_bonus": float(weights.get("alive_bonus", 0.0) * r_alive),
+            "alive_bonus": float(weights.get("alive_bonus", 0.05) * r_alive),
+            "standstill_penalty": float(weights.get("standstill_penalty", -0.5) * r_standstill),
+            "feet_air_time": float(weights.get("feet_air_time", 2.0) * r_feet_air_time),
+            "emotion_tracking": float(r_emotion),
+            "sitting_pose": float(r_sit),
+            "r_sit": float(r_sit),
+            "joint_limit_penalty": float(r_joint_limit),
         }
 
     return {
@@ -502,5 +718,11 @@ def compute_rewards(
         "stumble": r_stumble.astype(np.float32),
         "pen_stumble": r_stumble.astype(np.float32),
         "stair_ascent": r_stair_ascent.astype(np.float32),
-        "alive_bonus": (weights.get("alive_bonus", 0.0) * r_alive).astype(np.float32),
+        "alive_bonus": (weights.get("alive_bonus", 0.05) * r_alive).astype(np.float32),
+        "standstill_penalty": (weights.get("standstill_penalty", -0.5) * r_standstill).astype(np.float32),
+        "feet_air_time": (weights.get("feet_air_time", 2.0) * r_feet_air_time).astype(np.float32),
+        "emotion_tracking": r_emotion.astype(np.float32),
+        "sitting_pose": r_sit.astype(np.float32),
+        "r_sit": r_sit.astype(np.float32),
+        "joint_limit_penalty": r_joint_limit.astype(np.float32),
     }
