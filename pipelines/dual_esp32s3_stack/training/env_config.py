@@ -257,6 +257,8 @@ def compute_rewards(
     cmd_mode: Optional[Union[int, np.ndarray]] = 0,
     double_support_time: Optional[Union[float, np.ndarray]] = None,
     last_joint_vel: Optional[np.ndarray] = None,
+    feet_air_time: Optional[np.ndarray] = None,
+    feet_touchdown: Optional[np.ndarray] = None,
 ) -> Dict[str, Union[float, np.ndarray]]:
     """Compute balanced reward terms and total reward for 42-dim RL training.
 
@@ -336,6 +338,20 @@ def compute_rewards(
             if is_dwell:
                 r_track_lin_vel = min(0.0, r_track_lin_vel)
 
+    # Feet air time reward: reward swing duration on touchdown (gated by vel_x > 0.02)
+    if feet_air_time is not None and feet_touchdown is not None:
+        air_t = np.asarray(feet_air_time, dtype=np.float32)
+        td = np.asarray(feet_touchdown, dtype=np.float32)
+        air_reward = np.clip(air_t - 0.08, 0.0, 0.40) * td
+        cmd_active = (np.linalg.norm(cmd_lin[..., :2], axis=-1) > 0.05).astype(np.float32)
+        forward_active = (vel_x > 0.02).astype(np.float32) if is_batch else float(vel_x > 0.02)
+        if is_batch:
+            r_feet_air_time = np.sum(air_reward, axis=-1) * cmd_active * forward_active
+        else:
+            r_feet_air_time = float(np.sum(air_reward) * cmd_active * forward_active)
+    else:
+        r_feet_air_time = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
     # 2. Angular velocity tracking around Z axis
     ang_err_sq = np.square(base_ang[..., 2] - target_yaw)
     r_track_ang_vel = np.exp(-ang_err_sq / 0.25)
@@ -407,6 +423,7 @@ def compute_rewards(
         + weights.get("joint_vel_penalty", -0.0001) * r_joint_vel_penalty
         + weights.get("action_rate_penalty", -0.01) * r_action_rate_penalty
         + weights.get("foot_contact", 0.1) * r_foot_contact
+        + weights.get("feet_air_time", 2.0) * r_feet_air_time
         + weights.get("obstacle_avoidance", 0.2) * r_obstacle
         + weights.get("stair_ascent", 0.0) * r_stair_ascent
         + weights.get("alive_bonus", 0.0) * r_alive
@@ -422,6 +439,7 @@ def compute_rewards(
             "joint_vel_penalty": float(r_joint_vel_penalty),
             "action_rate_penalty": float(r_action_rate_penalty),
             "foot_contact": float(r_foot_contact),
+            "feet_air_time": float(r_feet_air_time),
             "obstacle_avoidance": float(r_obstacle),
             "stair_ascent": float(r_stair_ascent),
             "alive_bonus": float(weights.get("alive_bonus", 0.0) * r_alive),
@@ -436,6 +454,7 @@ def compute_rewards(
         "joint_vel_penalty": r_joint_vel_penalty.astype(np.float32),
         "action_rate_penalty": r_action_rate_penalty.astype(np.float32),
         "foot_contact": r_foot_contact.astype(np.float32),
+        "feet_air_time": r_feet_air_time.astype(np.float32),
         "obstacle_avoidance": r_obstacle.astype(np.float32),
         "stair_ascent": r_stair_ascent.astype(np.float32),
         "alive_bonus": (weights.get("alive_bonus", 0.0) * r_alive).astype(np.float32),
