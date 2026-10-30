@@ -560,3 +560,78 @@ def test_audit_12_voice_intent_crc16_integrity():
         _ = unpack_uart_voice_packet(pkt)
     elapsed = time.perf_counter() - t0
     assert elapsed < 0.050, f"500 packet pack+unpack cycles took {elapsed:.4f}s (exceeded 50ms budget)"
+
+
+def test_audit_13_four_golden_hoops_anti_vibration():
+    """Audit 13: 4 Golden Hoops Anti-Vibration & Locomotion Integrity Certification."""
+    from training.env_config import _DEFAULT_CFG, compute_rewards
+
+    # 1. Hoop 1: Single support & double support dwell threshold
+    assert _DEFAULT_CFG.REWARD_WEIGHTS.get("double_support_penalty") == -0.5
+    r_dwell = compute_rewards(
+        base_lin_vel=np.array([0.4, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=np.array([0.4, 0.0, 0.0], dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        double_support_time=0.25,
+    )
+    assert r_dwell["tracking_lin_vel"] == 0.0, "Dwell > 0.20s must zero linear velocity reward"
+    assert r_dwell["double_support_penalty"] == -0.5, "Dwell > 0.20s must apply -0.5 penalty"
+
+    # 2. Hoop 2: Action rate (-0.10) & Joint acceleration (-0.01)
+    assert _DEFAULT_CFG.REWARD_WEIGHTS.get("action_rate_penalty") == -0.10
+    assert _DEFAULT_CFG.REWARD_WEIGHTS.get("joint_acc_penalty") == -0.01
+    r_acc = compute_rewards(
+        base_lin_vel=np.array([0.2, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=np.array([0.2, 0.0, 0.0], dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.ones(8, dtype=np.float32) * 5.0,
+        last_joint_vel=-np.ones(8, dtype=np.float32) * 5.0,
+        foot_contact=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    )
+    assert "joint_acc_penalty" in r_acc
+    assert np.isclose(r_acc["joint_acc_penalty"], 800.0)
+
+    # 3. Hoop 3: Orientation tilt (-2.0) & Head pos penalty (-1.0)
+    assert _DEFAULT_CFG.REWARD_WEIGHTS.get("upright") == 1.5
+    assert _DEFAULT_CFG.REWARD_WEIGHTS.get("orientation_penalty") == -2.0
+    assert _DEFAULT_CFG.REWARD_WEIGHTS.get("head_pos_penalty") == -1.0
+    r_tilt = compute_rewards(
+        base_lin_vel=np.array([0.2, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=np.array([0.2, 0.0, 0.0], dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.5, 0.0, -0.866], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    )
+    assert np.isclose(r_tilt["orientation_penalty"], 0.50)
+
+    # 4. Hoop 4: Floor friction >= 1.5 & Foot slip penalty (-0.8)
+    assert _DEFAULT_CFG.REWARD_WEIGHTS.get("foot_slip_penalty") == -0.8
+    xml_path = Path(__file__).resolve().parent.parent / "models" / "mjcf" / "microduck_8dof.xml"
+    with open(xml_path, "r", encoding="utf-8") as f:
+        xml_text = f.read()
+    assert 'friction="1.5' in xml_text
+    r_slip = compute_rewards(
+        base_lin_vel=np.array([0.3, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=np.array([0.3, 0.0, 0.0], dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        foot_vel_xy=np.array([[0.3, 0.1], [0.0, 0.0]], dtype=np.float32),
+        foot_contact_forces=np.array([[0.0, 0.0, 3.5], [0.0, 0.0, 0.0]], dtype=np.float32),
+    )
+    assert np.isclose(r_slip["foot_slip_penalty"], 0.10, atol=1e-4)
+

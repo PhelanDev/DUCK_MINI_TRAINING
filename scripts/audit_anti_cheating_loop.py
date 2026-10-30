@@ -35,6 +35,7 @@ from tests.test_5pass_anti_cheating_audit import (
     test_audit_10_multimode_unauthorized_pose,
     test_audit_11_self_righting_recovery_lock,
     test_audit_12_voice_intent_crc16_integrity,
+    test_audit_13_four_golden_hoops_anti_vibration,
 )
 
 AUDIT_CHECKS: List[Tuple[str, Callable[[], None]]] = [
@@ -86,6 +87,10 @@ AUDIT_CHECKS: List[Tuple[str, Callable[[], None]]] = [
         "Audit 12: Voice Intent Packet CRC16 Validation & Desync Immunity",
         test_audit_12_voice_intent_crc16_integrity,
     ),
+    (
+        "Audit 13: 4 Golden Hoops Anti-Vibration & Locomotion Integrity Certification",
+        test_audit_13_four_golden_hoops_anti_vibration,
+    ),
 ]
 
 
@@ -98,7 +103,7 @@ def run_5pass_audit_loop(
     print("=" * 80)
     print(" 5-PASS ZERO-TOLERANCE ANTI-CHEATING & VULNERABILITY AUDIT LOOP")
     print(f" Target: {required_passes} consecutive flawless passes without single error or reset")
-    print(f" Audited Modules: 12 physical integrity & reward hacking checkpoints")
+    print(f" Audited Modules: {len(AUDIT_CHECKS)} physical integrity & reward hacking checkpoints")
     print(f" Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 80)
 
@@ -125,13 +130,13 @@ def run_5pass_audit_loop(
                 check_fn()
                 check_dur = time.perf_counter() - check_t0
                 if verbose:
-                    print(f"  [OK] [{check_idx:02d}/12] {name} ({check_dur * 1000.0:.1f}ms)")
+                    print(f"  [OK] [{check_idx:02d}/{len(AUDIT_CHECKS):02d}] {name} ({check_dur * 1000.0:.1f}ms)")
             except Exception as e:
                 pass_failed = True
                 failed_audit_name = name
                 error_detail = f"{type(e).__name__}: {str(e)}"
                 if verbose:
-                    print(f"  [FAIL] [{check_idx:02d}/12] {name}")
+                    print(f"  [FAIL] [{check_idx:02d}/{len(AUDIT_CHECKS):02d}] {name}")
                     print(f"         Error: {error_detail}")
                     traceback.print_exc()
                 break
@@ -152,7 +157,7 @@ def run_5pass_audit_loop(
             pass_timings.append(pass_duration)
             print(
                 f" [PASS {consecutive_passes}/{required_passes} SUCCESS] "
-                f"All 12/12 audits passed flawlessly in {pass_duration:.3f}s"
+                f"All {len(AUDIT_CHECKS)}/{len(AUDIT_CHECKS)} audits passed flawlessly in {pass_duration:.3f}s"
             )
 
     total_time = time.perf_counter() - loop_start_time

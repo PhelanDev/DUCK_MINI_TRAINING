@@ -233,7 +233,7 @@ def test_reward_action_rate_penalty():
     assert np.isclose(r_diff["action_rate_penalty"], 32.0)
     assert r_diff["total_reward"] < r_same["total_reward"]
     # Verify expected math: difference is -0.01 * 32.0 = -0.32
-    assert np.isclose(r_same["total_reward"] - r_diff["total_reward"], 0.32)
+    assert np.isclose(r_same["total_reward"] - r_diff["total_reward"], 3.20)
 
 
 def test_quat_rotate_inverse_frame_transformation():

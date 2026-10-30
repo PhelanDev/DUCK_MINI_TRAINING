@@ -123,6 +123,8 @@ class ParallelSimRunner:
         self.completed_distances_x: deque = deque(maxlen=100)
         self.feet_air_time = np.zeros((self.num_envs, 2), dtype=np.float32)
         self.last_feet_contact = np.ones((self.num_envs, 2), dtype=bool)
+        self.double_support_time = np.zeros(self.num_envs, dtype=np.float32)
+        self.last_joint_vel = np.zeros((self.num_envs, 8), dtype=np.float32)
         self.rng = np.random.default_rng(seed=42)
         self.current_emotions = self.rng.integers(0, NUM_EMOTIONS, size=self.num_envs, dtype=np.int32)
         self.cmd_modes = np.zeros(self.num_envs, dtype=np.int32)
@@ -302,9 +304,9 @@ class ParallelSimRunner:
         d = self.datas[env_idx]
         mujoco.mj_resetData(self.model, d)
 
-        # Domain randomization: floor friction mu in [0.8, 1.3] and torso mass +-5%
+        # Domain randomization: floor friction mu in [1.1, 1.6] and torso mass +-5%
         if self.floor_gid != -1:
-            self.model.geom_friction[self.floor_gid, 0] = float(self.rng.uniform(0.8, 1.3))
+            self.model.geom_friction[self.floor_gid, 0] = float(self.rng.uniform(1.1, 1.6))
         if self.base_body_id != -1:
             self.model.body_mass[self.base_body_id] = float(self.default_base_mass * self.rng.uniform(0.95, 1.05))
 
@@ -340,6 +342,8 @@ class ParallelSimRunner:
 
         self.last_actions[env_idx] = 0.0
         self.last_targets[env_idx] = d.qpos[7:15].astype(np.float32)
+        self.last_joint_vel[env_idx] = 0.0
+        self.double_support_time[env_idx] = 0.0
         self.episode_steps[env_idx] = 0
         self.feet_air_time[env_idx] = 0.0
         self.last_feet_contact[env_idx] = True
@@ -569,6 +573,9 @@ class ParallelSimRunner:
         touchdown = curr_contact & (~self.last_feet_contact)
         self.feet_air_time[~curr_contact] += self.control_dt
 
+        both_contact = curr_contact[:, 0] & curr_contact[:, 1]
+        self.double_support_time = np.where(both_contact, self.double_support_time + self.control_dt, 0.0).astype(np.float32)
+
         # Vectorized reward computation across all environments
         reward_dict = compute_rewards(
             base_lin_vel=base_lin_vel_body,
@@ -598,8 +605,11 @@ class ParallelSimRunner:
             qpos_head=qpos_head,
             joint_pos=joint_pos,
             cmd_mode=self.cmd_modes,
+            double_support_time=self.double_support_time,
+            last_joint_vel=self.last_joint_vel,
         )
         rewards = reward_dict["total_reward"]
+        self.last_joint_vel[:] = joint_vel
 
         # Reset air time for feet in contact and update last contact history
         self.feet_air_time[curr_contact] = 0.0

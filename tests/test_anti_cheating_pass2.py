@@ -4,7 +4,7 @@ Validates fixes for 4 critical reward hacking and physical exploits:
 1. Cohort success rate in curriculum: next_stage requires success_rate >= 0.70.
 2. Joint limit dwelling penalty: qpos near bounds (< 5% margin) penalized.
 3. Runner get_success_rate calculation.
-4. Domain randomization on floor friction in [0.8, 1.3].
+4. Domain randomization on floor friction in [1.1, 1.6].
 """
 
 from pathlib import Path
@@ -183,7 +183,7 @@ def test_runner_get_success_rate():
 
 
 def test_domain_randomization_friction():
-    """Verify that reset_env applies domain randomization on floor friction in [0.8, 1.3]."""
+    """Verify that reset_env applies domain randomization on floor friction in [1.1, 1.6]."""
     runner = ParallelSimRunner(num_envs=1, terrain_mode="flat")
     try:
         frictions = set()
@@ -192,7 +192,7 @@ def test_domain_randomization_friction():
             floor_gid = mujoco.mj_name2id(runner.model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
             assert floor_gid != -1, "Floor geom must exist"
             mu = float(runner.model.geom_friction[floor_gid, 0])
-            assert 0.8 <= mu <= 1.3, f"Friction {mu} out of expected range [0.8, 1.3]"
+            assert 1.1 <= mu <= 1.6, f"Friction {mu} out of expected range [1.1, 1.6]"
             frictions.add(round(mu, 3))
 
         # With 20 resets, we expect multiple distinct values

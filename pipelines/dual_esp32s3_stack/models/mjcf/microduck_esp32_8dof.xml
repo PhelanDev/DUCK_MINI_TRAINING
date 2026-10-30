@@ -13,7 +13,7 @@
       <geom contype="1" conaffinity="1" group="3"/>
     </default>
     <default class="foot">
-      <geom type="box" size="0.0375 0.0275 0.005" friction="1.2 0.005 0.0001" solref="0.005 1" solimp="0.9 0.95 0.001 0.5 2"/>
+      <geom type="box" size="0.0375 0.0275 0.005" friction="1.5 0.01 0.0005" solref="0.005 1" solimp="0.9 0.95 0.001 0.5 2"/>
     </default>
   </default>
 
@@ -30,7 +30,7 @@
   </asset>
 
   <worldbody>
-    <geom name="floor" type="plane" size="5 5 0.1" material="grid_mat" friction="1.2 0.005 0.0001"/>
+    <geom name="floor" type="plane" size="5 5 0.1" material="grid_mat" friction="1.5 0.01 0.0005"/>
     <light directional="true" pos="0 0 2" dir="0 0 -1" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2"/>
     <!-- Slalom Pillars (3-layer course) -->
     <geom name="pillar_l1_left" type="cylinder" size="0.06 0.15" pos="0.45 0.35 0.15" rgba="0.8 0.2 0.2 1.0" contype="1" conaffinity="1"/>
@@ -41,13 +41,13 @@
     <geom name="pillar_back" type="cylinder" size="0.08 0.15" pos="-0.75 0.0 0.15" rgba="0.8 0.2 0.2 1.0" contype="1" conaffinity="1"/>
 
     <!-- Staircase & Landing Platform -->
-    <geom name="stair_step_1" type="box" size="0.06 0.40 0.0075" pos="1.40 0.0 0.0075" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
-    <geom name="stair_step_2" type="box" size="0.06 0.40 0.015" pos="1.52 0.0 0.015" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
-    <geom name="stair_step_3" type="box" size="0.06 0.40 0.0225" pos="1.64 0.0 0.0225" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
-    <geom name="stair_platform" type="box" size="0.16 0.40 0.0225" pos="1.86 0.0 0.0225" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
-    <geom name="stair_dn_1" type="box" size="0.06 0.40 0.015" pos="2.08 0.0 0.015" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
-    <geom name="stair_dn_2" type="box" size="0.06 0.40 0.0075" pos="2.20 0.0 0.0075" rgba="0.4 0.6 0.7 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
-    <geom name="floor_exit" type="box" size="0.40 0.40 0.005" pos="2.66 0.0 0.005" rgba="0.3 0.5 0.6 1.0" friction="1.2 0.005 0.0001" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_step_1" type="box" size="0.06 0.40 0.0075" pos="1.40 0.0 0.0075" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_step_2" type="box" size="0.06 0.40 0.015" pos="1.52 0.0 0.015" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_step_3" type="box" size="0.06 0.40 0.0225" pos="1.64 0.0 0.0225" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_platform" type="box" size="0.16 0.40 0.0225" pos="1.86 0.0 0.0225" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_dn_1" type="box" size="0.06 0.40 0.015" pos="2.08 0.0 0.015" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_dn_2" type="box" size="0.06 0.40 0.0075" pos="2.20 0.0 0.0075" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="floor_exit" type="box" size="0.40 0.40 0.005" pos="2.66 0.0 0.005" rgba="0.3 0.5 0.6 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
 
     <body name="base_link" pos="0 0 0.170">
       <freejoint name="root"/>
