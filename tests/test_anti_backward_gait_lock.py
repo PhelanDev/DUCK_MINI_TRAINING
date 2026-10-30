@@ -238,6 +238,84 @@ def test_gait_and_air_time_locked_by_forward_velocity(compute_fn, tag):
     )
 
 
+@pytest.mark.parametrize(
+    "compute_fn,cfg,tag",
+    [
+        (root_compute_rewards, root_cfg, "root"),
+        (rpi5_compute_rewards, rpi5_cfg, "rpi5"),
+        (esp32_compute_rewards, esp32_cfg, "esp32"),
+    ],
+)
+def test_backward_velocity_penalty_all_stacks(compute_fn, cfg, tag):
+    """Verify backward_vel_penalty is configured (-2.0) and penalizes backward motion on all stacks."""
+    assert cfg.REWARD_WEIGHTS.get("backward_vel_penalty") == -2.0, (
+        f"[{tag}] backward_vel_penalty must be -2.0 in REWARD_WEIGHTS"
+    )
+
+    cmd_lin = np.array([0.25, 0.0, 0.0], dtype=np.float32)
+    base_ang = np.zeros(3, dtype=np.float32)
+    proj_grav = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+    torques = np.zeros(8, dtype=np.float32)
+    j_vel = np.zeros(8, dtype=np.float32)
+    one_foot = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+    # 1. Single env walking backward (vel_x = -0.12 m/s) -> backward penalty active
+    r_bwd = compute_fn(
+        base_lin_vel=np.array([-0.12, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=one_foot,
+    )
+    assert "backward_vel_penalty" in r_bwd, f"[{tag}] backward_vel_penalty must be present in reward dict"
+    assert r_bwd["backward_vel_penalty"] < -0.20, (
+        f"[{tag}] Expected negative backward_vel_penalty, got {r_bwd['backward_vel_penalty']}"
+    )
+
+    # 2. Forward walking (vel_x = +0.20 m/s) -> backward penalty is 0.0
+    r_fwd = compute_fn(
+        base_lin_vel=np.array([0.20, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=cmd_lin,
+        base_ang_vel=base_ang,
+        cmd_ang_vel=0.0,
+        proj_gravity=proj_grav,
+        joint_torques=torques,
+        joint_vel=j_vel,
+        foot_contact=one_foot,
+    )
+    assert "backward_vel_penalty" in r_fwd
+    assert r_fwd["backward_vel_penalty"] == 0.0, (
+        f"[{tag}] Forward walking should have 0.0 backward_vel_penalty, got {r_fwd['backward_vel_penalty']}"
+    )
+
+    # 3. Batched execution
+    base_lin_batch = np.array([[-0.12, 0.0, 0.0], [0.20, 0.0, 0.0]], dtype=np.float32)
+    cmd_lin_batch = np.array([[0.25, 0.0, 0.0], [0.25, 0.0, 0.0]], dtype=np.float32)
+    base_ang_batch = np.zeros((2, 3), dtype=np.float32)
+    cmd_ang_batch = np.zeros(2, dtype=np.float32)
+    proj_grav_batch = np.array([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]], dtype=np.float32)
+    torques_batch = np.zeros((2, 8), dtype=np.float32)
+    j_vel_batch = np.zeros((2, 8), dtype=np.float32)
+    foot_batch = np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+
+    r_batch = compute_fn(
+        base_lin_vel=base_lin_batch,
+        cmd_lin_vel=cmd_lin_batch,
+        base_ang_vel=base_ang_batch,
+        cmd_ang_vel=cmd_ang_batch,
+        proj_gravity=proj_grav_batch,
+        joint_torques=torques_batch,
+        joint_vel=j_vel_batch,
+        foot_contact=foot_batch,
+    )
+    assert "backward_vel_penalty" in r_batch
+    assert r_batch["backward_vel_penalty"][0] < -0.20
+    assert r_batch["backward_vel_penalty"][1] == 0.0
+
+
 def test_mjcf_forward_axis_and_hip_pitch_kinematics():
     """Verify MuJoCo XML kinematics:
     1. Forward +X axis alignment: beak and slalom pillars lie strictly on +X.
