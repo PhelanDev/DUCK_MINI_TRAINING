@@ -36,7 +36,9 @@ from training.env_config import (
     clip_action_rates,
     compute_observations,
     compute_rewards,
+    compute_gait_phase,
     quat_rotate_inverse,
+    quat_to_yaw,
     scale_actions,
 )
 from training.terrain_curriculum import apply_stage, apply_stair_stage, STAIR_STAGES
@@ -62,6 +64,7 @@ class ParallelSimRunner:
         stand_still: bool = False,
         include_emotions: bool = False,
         enable_auto_recovery: bool = False,
+        walk_min_z: float = 0.080,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -69,6 +72,7 @@ class ParallelSimRunner:
 
         self.terrain_mode = str(terrain_mode)
         self.include_emotions = bool(include_emotions)
+        self.walk_min_z = float(walk_min_z)
         self.cfg = cfg if cfg is not None else _DEFAULT_CFG
         self.num_envs = int(num_envs)
         self.decimation = max(1, int(decimation))
@@ -128,6 +132,7 @@ class ParallelSimRunner:
         self.rng = np.random.default_rng(seed=42)
         self.current_emotions = self.rng.integers(0, NUM_EMOTIONS, size=self.num_envs, dtype=np.int32)
         self.cmd_modes = np.zeros(self.num_envs, dtype=np.int32)
+        self.tilt_exceed_count = np.zeros(self.num_envs, dtype=np.int32)
 
         # Obstacle avoidance and approach-velocity tracking state
         self.control_dt = float(self.model.opt.timestep * self.decimation)
@@ -422,6 +427,11 @@ class ParallelSimRunner:
             else None
         )
 
+        _, clock_sin, clock_cos = compute_gait_phase(
+            self.episode_steps[env_idx], dt_control=self.control_dt, period=0.8
+        )
+        phase_clock = np.array([clock_sin, clock_cos], dtype=np.float32)
+
         return compute_observations(
             base_ang_vel=base_ang_vel,
             proj_grav=proj_grav,
@@ -432,6 +442,7 @@ class ParallelSimRunner:
             foot_contact=foot_contact,
             lidar_ranges=lidar_ranges if self.base_obs_dim == 42 else None,
             emotion_one_hot=emotion_one_hot,
+            phase_clock=phase_clock,
         )
 
     def get_observations(self) -> np.ndarray:
@@ -522,6 +533,8 @@ class ParallelSimRunner:
         else:
             self._step_subrange(np.arange(self.num_envs), target_positions)
 
+        self.episode_steps += 1
+
         # 4. Extract observations, compute rewards, and check done flags
         next_obs = np.empty((self.num_envs, self.obs_dim), dtype=np.float32)
         for i in range(self.num_envs):
@@ -530,13 +543,14 @@ class ParallelSimRunner:
         # Vectorized extraction of kinodynamic tensors
         base_lin_vel_world = np.array([d.qvel[0:3] for d in self.datas], dtype=np.float32)
         base_quat = np.array([d.qpos[3:7] for d in self.datas], dtype=np.float32)
-        # Crucial: Project linear velocity from World Frame into Body Frame for tracking reward!
+        # Crucial: Project linear velocity and angular velocity from World Frame into Body Frame!
         base_lin_vel_body = quat_rotate_inverse(base_quat, base_lin_vel_world)
 
         cmd_lin_vel = np.zeros((self.num_envs, 3), dtype=np.float32)
         cmd_lin_vel[:, :2] = self.commands[:, :2]
 
-        base_ang_vel = np.array([d.sensordata[3:6] for d in self.datas], dtype=np.float32)
+        base_ang_vel_raw = np.array([d.sensordata[3:6] for d in self.datas], dtype=np.float32)
+        base_ang_vel_body = quat_rotate_inverse(base_quat, base_ang_vel_raw)
         cmd_ang_vel = self.commands[:, 2]
         proj_grav = next_obs[:, 3:6]
         joint_torques = np.array([d.ctrl[:] for d in self.datas], dtype=np.float32)
@@ -545,6 +559,11 @@ class ParallelSimRunner:
         foot_contact = next_obs[:, 33:37]
         lidar_ranges = next_obs[:, 37:42] if self.base_obs_dim == 42 else None
         qpos_head = np.array([d.sensordata[12:14] for d in self.datas], dtype=np.float32)
+
+        current_yaw = quat_to_yaw(base_quat)
+        _, clock_sin, clock_cos = compute_gait_phase(
+            self.episode_steps, dt_control=self.control_dt, period=0.8
+        )
 
         # Compute obstacle distances and approach velocity
         if lidar_ranges is not None:
@@ -574,13 +593,15 @@ class ParallelSimRunner:
         self.feet_air_time[~curr_contact] += self.control_dt
 
         both_contact = curr_contact[:, 0] & curr_contact[:, 1]
-        self.double_support_time = np.where(both_contact, self.double_support_time + self.control_dt, 0.0).astype(np.float32)
+        fwd_moving = np.abs(base_lin_vel_body[:, 0]) >= 0.05
+        dt_accum = np.where(fwd_moving, 0.5 * self.control_dt, self.control_dt).astype(np.float32)
+        self.double_support_time = np.where(both_contact, self.double_support_time + dt_accum, 0.0).astype(np.float32)
 
         # Vectorized reward computation across all environments
         reward_dict = compute_rewards(
             base_lin_vel=base_lin_vel_body,
             cmd_lin_vel=cmd_lin_vel,
-            base_ang_vel=base_ang_vel,
+            base_ang_vel=base_ang_vel_body,
             cmd_ang_vel=cmd_ang_vel,
             proj_gravity=proj_grav,
             joint_torques=joint_torques,
@@ -607,6 +628,9 @@ class ParallelSimRunner:
             cmd_mode=self.cmd_modes,
             double_support_time=self.double_support_time,
             last_joint_vel=self.last_joint_vel,
+            current_yaw=current_yaw,
+            target_yaw=0.0,
+            clock_sin=clock_sin,
         )
         rewards = reward_dict["total_reward"]
         self.last_joint_vel[:] = joint_vel
@@ -622,15 +646,43 @@ class ParallelSimRunner:
             for d in self.datas
         ], dtype=bool)
 
-        self.episode_steps += 1
         timeouts = self.episode_steps >= self.max_episode_steps
+
+        is_walk = (self.cmd_modes == int(LocomotionMode.WALK))
+        is_sit = (self.cmd_modes == int(LocomotionMode.SIT))
+        is_lie = (self.cmd_modes == int(LocomotionMode.LIE))
+
+        is_sitting_legs = (joint_pos[:, 4] > 0.9) | (joint_pos[:, 7] > 0.9)
+        walk_moving = is_walk & (self.episode_steps > 1) & (base_lin_vel_body[:, 0] >= 0.03) & (~is_sitting_legs)
+        configured_min_z = getattr(self, "walk_min_z", 0.080)
+        walk_z_thresh = np.where(walk_moving, min(0.065, configured_min_z), configured_min_z)
         z_fall_threshold = np.where(
-            self.cmd_modes == int(LocomotionMode.LIE),
+            is_lie,
             0.025,
-            np.where(self.cmd_modes == int(LocomotionMode.SIT), 0.050, 0.080),
+            np.where(is_sit, 0.050, walk_z_thresh),
         )
-        tilt_thresh = np.where(self.cmd_modes == int(LocomotionMode.LIE), 0.0, -0.707)
-        fallen = (root_z < z_fall_threshold) | (grav_z > tilt_thresh) | diverged
+
+        tilt_thresh = np.where(is_lie, 0.0, np.where(is_sit, -0.707, -0.81915))
+        exceeding_tilt = (grav_z > tilt_thresh)
+        severe_tilt = (grav_z > -0.50)
+
+        self.tilt_exceed_count = np.where(exceeding_tilt, self.tilt_exceed_count + 1, 0)
+        tilt_fallen = exceeding_tilt & (
+            severe_tilt
+            | (self.episode_steps <= 1)
+            | (~is_walk)
+            | (self.tilt_exceed_count >= 2)
+        )
+
+        z_fallen = (root_z < z_fall_threshold)
+
+        # Stage 0 heading yaw termination in WALK mode (when straight walking is commanded)
+        yaw_fallen = np.zeros(self.num_envs, dtype=bool)
+        if self.curriculum_stage == 0:
+            straight_cmd = np.abs(self.commands[:, 2]) < 0.05
+            yaw_fallen = is_walk & straight_cmd & (np.abs(current_yaw) > 1.0)
+
+        fallen = z_fallen | tilt_fallen | yaw_fallen | diverged
 
         edge_fallen = np.zeros(self.num_envs, dtype=bool)
         if self.terrain_mode == "stairs":
@@ -672,7 +724,10 @@ class ParallelSimRunner:
         fall_penalty = float(self.cfg.REWARD_WEIGHTS.get("fall_penalty", -5.0))
         if np.any(fallen):
             rewards = rewards.copy()
+            # If episode is an early multi-step collapse (< 60 steps and step > 1), add -10.0 early fall penalty
+            early_suicide_mask = fallen & (self.episode_steps < 60) & (self.episode_steps > 1)
             rewards[fallen] += fall_penalty
+            rewards[early_suicide_mask] += -10.0
 
         dones = fallen | timeouts
 
@@ -686,8 +741,11 @@ class ParallelSimRunner:
             infos[i]["time_outs"] = bool(timeouts[i] and not fallen[i])
             infos[i]["edge_fallen"] = bool(edge_fallen[i])
             infos[i]["corridor_fallen"] = bool(corridor_fallen[i])
+            infos[i]["yaw_fallen"] = bool(yaw_fallen[i])
+            infos[i]["tilt_fallen"] = bool(tilt_fallen[i])
             infos[i]["fallen"] = bool(fallen[i])
             infos[i]["distance_x"] = float(root_x[i])
+            infos[i]["episode_distance_y"] = float(root_y[i])
             if self.enable_auto_recovery:
                 infos[i]["recovering"] = bool(self.recovery_controllers[i].is_recovering)
                 infos[i]["recovery_state"] = int(self.recovery_controllers[i].state)
@@ -699,6 +757,7 @@ class ParallelSimRunner:
                 self.completed_distances_x.append(float(root_x[i]))
                 infos[i]["episode_length"] = int(self.episode_steps[i])
                 infos[i]["distance_x"] = float(root_x[i])
+                infos[i]["episode_distance_y"] = float(root_y[i])
                 infos[i]["terminal_obs"] = next_obs[i].copy()
                 next_obs[i] = self.reset_env(i)
 

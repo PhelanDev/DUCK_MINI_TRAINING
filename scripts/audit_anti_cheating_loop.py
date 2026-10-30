@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """5-Pass Zero-Tolerance Anti-Cheating & Vulnerability Audit Loop.
 
-Executes a strict 5-pass continuous verification loop covering 12 critical
+Executes a strict 5-pass continuous verification loop covering 15 critical
 reward hacking, kinodynamic exploit, and physical integrity rules.
 
 Zero-Tolerance Rule:
@@ -37,6 +37,7 @@ from tests.test_5pass_anti_cheating_audit import (
     test_audit_12_voice_intent_crc16_integrity,
     test_audit_13_four_golden_hoops_anti_vibration,
     test_audit_14_anti_backward_and_forward_gait_lock,
+    test_audit_15_six_part_locomotion_overhaul,
 )
 
 AUDIT_CHECKS: List[Tuple[str, Callable[[], None]]] = [
@@ -95,6 +96,10 @@ AUDIT_CHECKS: List[Tuple[str, Callable[[], None]]] = [
     (
         "Audit 14: Anti-Backward Velocity Penalty (-4.0*vx) & Forward Gait Lock (vx > 0.02)",
         test_audit_14_anti_backward_and_forward_gait_lock,
+    ),
+    (
+        "Audit 15: Six-Part Locomotion Overhaul (Body-Frame, Phase Clock, Gait Sync, Leg Pose, Strict Fall & Viewer Sync)",
+        test_audit_15_six_part_locomotion_overhaul,
     ),
 ]
 
@@ -171,7 +176,7 @@ def run_5pass_audit_loop(
         print(" 5-PASS ZERO-TOLERANCE AUDIT CERTIFICATION GRANTED: 100% CLEAN")
         print("=" * 80)
         for i, t in enumerate(pass_timings, 1):
-            print(f"   - Pass {i}/{required_passes}: PASSED ({t:.3f}s, 14/14 checks clean)")
+            print(f"   - Pass {i}/{required_passes}: PASSED ({t:.3f}s, {len(AUDIT_CHECKS)}/{len(AUDIT_CHECKS)} checks clean)")
         print(f" Total Continuous Audit Time : {total_time:.3f}s")
         print(f" Total Attempts Required     : {attempt_count}")
         print(f" Residual Vulnerabilities    : ZERO (0)")

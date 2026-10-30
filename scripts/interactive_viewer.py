@@ -42,6 +42,9 @@ try:
     from training.env_config import (
         _DEFAULT_CFG,
         compute_observations,
+        compute_gait_phase,
+        quat_to_yaw,
+        DEFAULT_NOMINAL_QPOS,
         scale_actions,
         clip_action_rates,
     )
@@ -53,6 +56,9 @@ except Exception:
     DEFAULT_KP = 25.0
     DEFAULT_KD = 0.8
     DEFAULT_TORQUE_LIMIT = 1.0
+    compute_gait_phase = None
+    quat_to_yaw = None
+    DEFAULT_NOMINAL_QPOS = None
 
 try:
     from training.terrain_curriculum import (
@@ -304,8 +310,8 @@ def get_robot_state(model: Any, data: Any) -> Dict[str, Any]:
     grav_z = 2.0 * (x * x + y * y) - 1.0
 
     is_stable = bool(
-        root_pos[2] > 0.08
-        and grav_z < -0.3
+        root_pos[2] >= 0.080
+        and grav_z < -0.81915
         and np.all(np.isfinite(data.qpos))
         and np.all(np.isfinite(data.qvel))
     )
@@ -329,6 +335,9 @@ def extract_viewer_observation(
     cmd_vel: Union[Tuple[float, float, float], List[float], np.ndarray] = (0.2, 0.0, 0.0),
     last_actions: Optional[np.ndarray] = None,
     obs_dim: int = 42,
+    episode_step: int = 0,
+    control_dt: float = 0.02,
+    sim_step: Optional[int] = None,
 ) -> np.ndarray:
     """Extract observation vector (37 or 42 dimensions) from current MuJoCo simulation data.
 
@@ -342,6 +351,9 @@ def extract_viewer_observation(
     - Feet contact sensors (4) from touch sensors (sensordata 10, 11, zero padded)
     - Optional LiDAR ranges (5) from rangefinder sensors (sensordata 28:33, clipped to max range)
     """
+    if sim_step is not None:
+        episode_step = sim_step
+
     if last_actions is None:
         last_actions = np.zeros(8, dtype=np.float32)
     else:
@@ -385,6 +397,13 @@ def extract_viewer_observation(
     else:
         lidar_ranges = None
 
+    clock_sin, clock_cos = 0.0, 1.0
+    if compute_gait_phase is not None:
+        _, clock_sin, clock_cos = compute_gait_phase(
+            episode_step, dt_control=control_dt, period=0.8
+        )
+    phase_clock = np.array([clock_sin, clock_cos], dtype=np.float32)
+
     try:
         return compute_observations(
             base_ang_vel=base_ang_vel,
@@ -395,8 +414,10 @@ def extract_viewer_observation(
             last_actions=last_actions,
             foot_contact=foot_contact,
             lidar_ranges=lidar_ranges if obs_dim == 42 else None,
+            phase_clock=phase_clock,
         )
     except Exception:
+        foot_contact[2:4] = phase_clock
         parts = [
             base_ang_vel.ravel(),
             proj_grav.ravel(),
@@ -567,6 +588,7 @@ def run_simulation_headless(
     policy = load_viewer_policy(policy_path) if policy_path else None
     control_dt = 0.02
     decimation = max(1, int(round(control_dt / dt)))
+    policy_episode_step = 0
     last_actions = np.zeros(8, dtype=np.float32)
     last_targets = np.array(data.qpos[7:15], dtype=np.float32)
     targets = target_pose
@@ -575,8 +597,15 @@ def run_simulation_headless(
         if policy is not None:
             if step_idx % decimation == 0:
                 obs = extract_viewer_observation(
-                    model, data, cmd_vel=cmd_vel, last_actions=last_actions, obs_dim=42
+                    model,
+                    data,
+                    cmd_vel=cmd_vel,
+                    last_actions=last_actions,
+                    obs_dim=42,
+                    episode_step=policy_episode_step,
+                    control_dt=control_dt,
                 )
+                policy_episode_step += 1
                 actions = policy_step(policy, obs)
                 scaled_targets = scale_actions(actions, _DEFAULT_CFG, nominal_centered=True)
                 max_vel = _DEFAULT_CFG.MAX_VELOCITY if _DEFAULT_CFG else 6.0
@@ -601,6 +630,7 @@ def run_simulation_headless(
                 data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
                 data.qpos[7:15] = target_pose
                 data.qvel[:] = 0.0
+                policy_episode_step = 0
                 last_actions = np.zeros(8, dtype=np.float32)
                 last_targets = np.array(target_pose, dtype=np.float32)
                 mujoco.mj_forward(model, data)
@@ -718,6 +748,7 @@ def run_interactive_viewer(
             policy = load_viewer_policy(policy_path) if policy_path else None
             control_dt = 0.02
             decimation = max(1, int(round(control_dt / dt)))
+            policy_episode_step = 0
             last_actions = np.zeros(8, dtype=np.float32)
             last_targets = np.array(data.qpos[7:15], dtype=np.float32)
             targets = target_qpos
@@ -733,8 +764,15 @@ def run_interactive_viewer(
                 if policy is not None:
                     if step_count % decimation == 0:
                         obs = extract_viewer_observation(
-                            model, data, cmd_vel=cmd_vel, last_actions=last_actions, obs_dim=42
+                            model,
+                            data,
+                            cmd_vel=cmd_vel,
+                            last_actions=last_actions,
+                            obs_dim=42,
+                            episode_step=policy_episode_step,
+                            control_dt=control_dt,
                         )
+                        policy_episode_step += 1
                         actions = policy_step(policy, obs)
                         scaled_targets = scale_actions(actions, _DEFAULT_CFG, nominal_centered=True)
                         max_vel = _DEFAULT_CFG.MAX_VELOCITY if _DEFAULT_CFG else 6.0
@@ -759,6 +797,7 @@ def run_interactive_viewer(
                         data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
                         data.qpos[7:15] = target_qpos
                         data.qvel[:] = 0.0
+                        policy_episode_step = 0
                         last_actions = np.zeros(8, dtype=np.float32)
                         last_targets = np.array(target_qpos, dtype=np.float32)
                         mujoco.mj_forward(model, data)
@@ -879,6 +918,7 @@ def run_opencv_viewer(
     policy = load_viewer_policy(policy_path) if policy_path else None
     control_dt = 0.02
     decimation = max(1, int(round(control_dt / dt)))
+    policy_episode_step = 0
     last_actions = np.zeros(8, dtype=np.float32)
     last_targets = np.array(data.qpos[7:15], dtype=np.float32)
     targets = target_qpos
@@ -924,8 +964,15 @@ def run_opencv_viewer(
                     if policy is not None:
                         if step_count % decimation == 0:
                             obs = extract_viewer_observation(
-                                model, data, cmd_vel=cmd_vel, last_actions=last_actions, obs_dim=42
+                                model,
+                                data,
+                                cmd_vel=cmd_vel,
+                                last_actions=last_actions,
+                                obs_dim=42,
+                                episode_step=policy_episode_step,
+                                control_dt=control_dt,
                             )
+                            policy_episode_step += 1
                             actions = policy_step(policy, obs)
                             scaled_targets = scale_actions(actions, _DEFAULT_CFG, nominal_centered=True)
                             max_vel = _DEFAULT_CFG.MAX_VELOCITY if _DEFAULT_CFG else 6.0
@@ -951,6 +998,7 @@ def run_opencv_viewer(
                             data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
                             data.qpos[7:15] = target_qpos
                             data.qvel[:] = 0.0
+                            policy_episode_step = 0
                             last_actions = np.zeros(8, dtype=np.float32)
                             last_targets = np.array(target_qpos, dtype=np.float32)
                             mujoco.mj_forward(model, data)
@@ -1028,6 +1076,7 @@ def run_opencv_viewer(
                 data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
                 data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
                 data.qpos[7:15] = target_qpos
+                policy_episode_step = 0
                 last_actions = np.zeros(8, dtype=np.float32)
                 last_targets = np.array(target_qpos, dtype=np.float32)
                 mujoco.mj_forward(model, data)

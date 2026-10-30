@@ -117,6 +117,20 @@ class MicroDuck8DoFConfig:
         }
     )
 
+    # Walking-specific joint limits for stable gait (prevents over-extension)
+    WALK_JOINT_LIMITS: Dict[str, Tuple[float, float]] = field(
+        default_factory=lambda: {
+            "head_yaw": (-1.57, 1.57),
+            "head_pitch": (-0.52, 0.78),
+            "left_hip_roll": (-0.25, 0.25),
+            "left_hip_pitch": (-0.50, 0.50),
+            "left_knee_pitch": (0.0, 0.85),
+            "right_hip_roll": (-0.25, 0.25),
+            "right_hip_pitch": (-0.50, 0.50),
+            "right_knee_pitch": (0.0, 0.85),
+        }
+    )
+
     # Nominal standing joint angles (radians) for natural balanced posture
     # Note: MicroDuck 8-DOF has no active ankles; foot is fixed perpendicular to shin.
     # Therefore hip_pitch + knee_pitch MUST equal 0.0 (-0.15 + 0.15 = 0.0) so feet rest perfectly flat on floor!
@@ -176,6 +190,9 @@ class MicroDuck8DoFConfig:
             "sitting_pose": 2.0,
             "lying_pose": 2.0,
             "joint_limit_penalty": -0.2,
+            "heading_penalty": -2.0,
+            "leg_pose_penalty": -0.4,
+            "gait_sync": 0.8,
         }
     )
 
@@ -186,6 +203,14 @@ class MicroDuck8DoFConfig:
         )
         self.high_limits = np.array(
             [self.JOINT_LIMITS[name][1] for name in self.JOINT_NAMES],
+            dtype=np.float32,
+        )
+        self.walk_low_limits = np.array(
+            [self.WALK_JOINT_LIMITS[name][0] for name in self.JOINT_NAMES],
+            dtype=np.float32,
+        )
+        self.walk_high_limits = np.array(
+            [self.WALK_JOINT_LIMITS[name][1] for name in self.JOINT_NAMES],
             dtype=np.float32,
         )
         self.nominal_qpos = np.array(
@@ -200,6 +225,11 @@ _DEFAULT_CFG = MicroDuck8DoFConfig()
 # Global physical joint limit bounds (8, 2): column 0 = lower bound, column 1 = upper bound
 JOINT_LIMITS: np.ndarray = np.stack(
     [_DEFAULT_CFG.low_limits, _DEFAULT_CFG.high_limits], axis=-1
+).astype(np.float32)
+
+# Global walking joint limit bounds (8, 2)
+WALK_JOINT_LIMITS: np.ndarray = np.stack(
+    [_DEFAULT_CFG.walk_low_limits, _DEFAULT_CFG.walk_high_limits], axis=-1
 ).astype(np.float32)
 
 DEFAULT_NOMINAL_JOINT_POS: Dict[str, float] = {
@@ -226,6 +256,7 @@ def compute_observations(
     foot_contact: np.ndarray,
     lidar_ranges: Optional[np.ndarray] = None,
     emotion_one_hot: Optional[np.ndarray] = None,
+    phase_clock: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Pack raw state tensors into observation vector (37-dim nominal, 42-dim with 5-ray LiDAR, 47-dim or 52-dim with emotions).
 
@@ -236,11 +267,19 @@ def compute_observations(
     - Joint positions (8)
     - Joint velocities (8)
     - Previous actions (8)
-    - Feet contact sensors (4)
+    - Feet contact sensors (4) [or feet contact (2) + phase_clock [sin, cos] (2) when phase_clock is provided]
     - Optional LiDAR rangefinder rays (5)
     - Optional Emotion state one-hot vector (10)
     Total = 37, 42, 47, or 52 dims.
     """
+    fc_arr = np.asarray(foot_contact, dtype=np.float32).ravel().copy()
+    if phase_clock is not None:
+        p_arr = np.asarray(phase_clock, dtype=np.float32).ravel()
+        if fc_arr.shape[0] >= 4:
+            fc_arr[2:4] = p_arr[:2]
+        elif fc_arr.shape[0] == 2:
+            fc_arr = np.concatenate([fc_arr, p_arr[:2]], axis=0)
+
     parts = [
         np.asarray(base_ang_vel, dtype=np.float32).ravel(),
         np.asarray(proj_grav, dtype=np.float32).ravel(),
@@ -248,7 +287,7 @@ def compute_observations(
         np.asarray(joint_pos, dtype=np.float32).ravel(),
         np.asarray(joint_vel, dtype=np.float32).ravel(),
         np.asarray(last_actions, dtype=np.float32).ravel(),
-        np.asarray(foot_contact, dtype=np.float32).ravel(),
+        fc_arr,
     ]
     if lidar_ranges is not None:
         parts.append(np.asarray(lidar_ranges, dtype=np.float32).ravel())
@@ -268,12 +307,14 @@ def scale_actions(
     raw_actions: np.ndarray,
     cfg: Optional[MicroDuck8DoFConfig] = None,
     nominal_centered: bool = False,
+    walk_clamp: bool = False,
 ) -> np.ndarray:
     """Scale raw normalized actions [-1, 1] into physical joint target angles.
 
     If nominal_centered=True, action 0.0 corresponds to nominal_qpos.
     If nominal_centered=False (default), linear mapping: -1.0 -> low_limit, +1.0 -> high_limit.
     Safely clips outputs to respect the hardware limits of each MG996R joint.
+    If walk_clamp=True, outputs are clamped to WALK_JOINT_LIMITS.
     """
     if cfg is None:
         cfg = _DEFAULT_CFG
@@ -293,7 +334,9 @@ def scale_actions(
             nom + clipped_actions * (cfg.high_limits - nom),
             nom + clipped_actions * (nom - cfg.low_limits),
         )
-    return np.clip(scaled, cfg.low_limits, cfg.high_limits).astype(np.float32)
+    low = cfg.walk_low_limits if walk_clamp else cfg.low_limits
+    high = cfg.walk_high_limits if walk_clamp else cfg.high_limits
+    return np.clip(scaled, low, high).astype(np.float32)
 
 
 def clip_action_rates(
@@ -331,6 +374,35 @@ def quat_rotate_inverse(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     t = 2.0 * np.cross(qv, v_arr)
     # v_body = v + qw * t + (qv x t)
     return (v_arr + qw * t + np.cross(qv, t)).astype(np.float32)
+
+
+def quat_to_yaw(q: np.ndarray) -> np.ndarray:
+    """Extract heading yaw angle (radians in [-pi, pi]) from quaternion q = [w, x, y, z].
+
+    Supports single quaternion (shape (4,)) or batched array (shape (..., 4)).
+    """
+    q_arr = np.asarray(q, dtype=np.float32)
+    w = q_arr[..., 0]
+    x = q_arr[..., 1]
+    y = q_arr[..., 2]
+    z = q_arr[..., 3]
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    return np.arctan2(siny_cosp, cosy_cosp).astype(np.float32)
+
+
+def compute_gait_phase(
+    episode_steps: Union[int, float, np.ndarray],
+    dt_control: float = 0.02,
+    period: float = 0.8,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute gait phase in [0, 1) and (clock_sin, clock_cos) for period T=0.8s (1.25 Hz)."""
+    steps = np.asarray(episode_steps, dtype=np.float32)
+    phase = np.mod(steps * float(dt_control) / float(period), 1.0).astype(np.float32)
+    two_pi_phase = 2.0 * np.pi * phase
+    clock_sin = np.sin(two_pi_phase).astype(np.float32)
+    clock_cos = np.cos(two_pi_phase).astype(np.float32)
+    return phase, clock_sin, clock_cos
 
 
 def ang_vel_mask(d_min: Union[float, np.ndarray]) -> np.ndarray:
@@ -433,6 +505,9 @@ def compute_rewards(
     cmd_mode: Optional[Union[int, np.ndarray, LocomotionMode]] = 0,
     double_support_time: Optional[Union[float, np.ndarray]] = None,
     last_joint_vel: Optional[np.ndarray] = None,
+    current_yaw: Optional[Union[float, np.ndarray]] = None,
+    target_yaw: Union[float, np.ndarray] = 0.0,
+    clock_sin: Optional[Union[float, np.ndarray]] = None,
 ) -> Dict[str, Union[float, np.ndarray]]:
     """Compute balanced reward terms and total reward for RL training.
 
@@ -452,20 +527,20 @@ def compute_rewards(
 
     is_batch = base_lin.ndim > 1
 
-    # Target yaw rate
+    # Target yaw rate (around Z axis in rad/s)
     if is_batch:
         if isinstance(cmd_ang_vel, np.ndarray) and cmd_ang_vel.ndim > 1:
-            target_yaw = cmd_ang_vel[:, 2] if cmd_ang_vel.shape[-1] >= 3 else cmd_ang_vel[:, 0]
+            cmd_yaw_rate = cmd_ang_vel[:, 2] if cmd_ang_vel.shape[-1] >= 3 else cmd_ang_vel[:, 0]
         elif isinstance(cmd_ang_vel, np.ndarray) and cmd_ang_vel.shape[0] == base_lin.shape[0]:
-            target_yaw = cmd_ang_vel
+            cmd_yaw_rate = cmd_ang_vel
         else:
-            target_yaw = float(cmd_ang_vel)
+            cmd_yaw_rate = float(cmd_ang_vel)
     else:
         if hasattr(cmd_ang_vel, "__len__"):
             cmd_ang_arr = np.asarray(cmd_ang_vel, dtype=np.float32).ravel()
-            target_yaw = float(cmd_ang_arr[2] if len(cmd_ang_arr) >= 3 else cmd_ang_arr[0])
+            cmd_yaw_rate = float(cmd_ang_arr[2] if len(cmd_ang_arr) >= 3 else cmd_ang_arr[0])
         else:
-            target_yaw = float(cmd_ang_vel)
+            cmd_yaw_rate = float(cmd_ang_vel)
 
     # Locomotion mode resolution (WALK = 0, SIT = 1, LIE = 2)
     if cmd_mode is None:
@@ -478,9 +553,11 @@ def compute_rewards(
         else:
             is_sit = (mode_arr == int(LocomotionMode.SIT))
             is_lie = (mode_arr == int(LocomotionMode.LIE))
+        walk_mode_mask = (~is_sit) & (~is_lie)
     else:
         is_sit = (int(cmd_mode) == int(LocomotionMode.SIT))
         is_lie = (int(cmd_mode) == int(LocomotionMode.LIE))
+        walk_mode_mask = (not is_sit) and (not is_lie)
 
     # 1. Forward linear velocity reward: direct multiplication reward_vel = 2.0 * base_lin_vel_x
     # minus lateral velocity error penalty to prevent crab-walking.
@@ -573,7 +650,7 @@ def compute_rewards(
         r_feet_air_time = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
     # 2. Angular velocity tracking around Z axis
-    ang_err_sq = np.square(base_ang[..., 2] - target_yaw)
+    ang_err_sq = np.square(base_ang[..., 2] - cmd_yaw_rate)
     r_track_ang_vel = np.exp(-ang_err_sq / 0.25)
     if d_min is not None:
         r_track_ang_vel = r_track_ang_vel * ang_vel_mask(d_min)
@@ -620,7 +697,7 @@ def compute_rewards(
 
     # 7. Foot contact reward (khuyến khích nhấc chân luân phiên khi di chuyển TIẾN)
     num_contacts = np.sum(f_contact > 0.0, axis=-1)
-    cmd_speed = np.linalg.norm(cmd_lin[..., :2], axis=-1) + np.abs(target_yaw)
+    cmd_speed = np.linalg.norm(cmd_lin[..., :2], axis=-1) + np.abs(cmd_yaw_rate)
     is_moving_cmd = cmd_speed > 0.05
     forward_gait_gate = (vel_x > 0.02).astype(np.float32)
     r_foot_contact = np.where(
@@ -797,7 +874,72 @@ def compute_rewards(
         else:
             r_joint_limit = float(r_joint_limit_raw)
 
-    r_alive = np.ones(base_lin.shape[0], dtype=np.float32) if is_batch else 1.0
+    if clock_sin is not None or current_yaw is not None:
+        if is_batch:
+            is_walk_cmd = walk_mode_mask & (cmd_x > 0.05)
+            r_alive = np.where(is_walk_cmd & (vel_x <= 0.02), 0.0, 1.0).astype(np.float32)
+        else:
+            is_walk_cmd = walk_mode_mask and (float(cmd_x) > 0.05)
+            r_alive = 0.0 if (is_walk_cmd and float(vel_x) <= 0.02) else 1.0
+    else:
+        r_alive = np.ones(base_lin.shape[0], dtype=np.float32) if is_batch else 1.0
+
+    # Heading penalty (locks heading yaw to target_yaw in WALK mode)
+    if current_yaw is not None:
+        yaw_cur = np.asarray(current_yaw, dtype=np.float32)
+        yaw_tgt = np.asarray(target_yaw, dtype=np.float32)
+        yaw_diff = yaw_cur - yaw_tgt
+        yaw_diff = np.arctan2(np.sin(yaw_diff), np.cos(yaw_diff))
+        w_heading = weights.get("heading_penalty", -2.0)
+        if is_batch:
+            r_heading = (w_heading * np.square(yaw_diff) * walk_mode_mask).astype(np.float32)
+        else:
+            r_heading = float(w_heading * np.square(yaw_diff)) if walk_mode_mask else 0.0
+    else:
+        r_heading = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
+    # Leg pose penalty (penalizes deviation from DEFAULT_NOMINAL_QPOS[2:8] in WALK mode)
+    if joint_pos is not None:
+        q_pos = np.asarray(joint_pos, dtype=np.float32)
+        q_legs = q_pos[..., 2:8]
+        nom_legs = DEFAULT_NOMINAL_QPOS[2:8]
+        leg_err_sq = np.sum(np.square(q_legs - nom_legs), axis=-1)
+        w_leg_pose = weights.get("leg_pose_penalty", -0.4)
+        if is_batch:
+            r_leg_pose = (w_leg_pose * leg_err_sq * walk_mode_mask).astype(np.float32)
+        else:
+            r_leg_pose = float(w_leg_pose * leg_err_sq) if walk_mode_mask else 0.0
+    else:
+        r_leg_pose = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
+    # Gait sync reward (rewards phase-synchronized alternating foot contact gated by forward motion)
+    eff_clock_sin = clock_sin
+    if eff_clock_sin is None and f_contact.shape[-1] >= 4:
+        if is_batch:
+            if np.any(f_contact[..., 2] != 0.0) or np.any(f_contact[..., 3] != 0.0):
+                eff_clock_sin = f_contact[..., 2]
+        else:
+            if f_contact[2] != 0.0 or f_contact[3] != 0.0:
+                eff_clock_sin = f_contact[2]
+
+    if eff_clock_sin is not None:
+        c_sin = np.asarray(eff_clock_sin, dtype=np.float32)
+        left_c = np.clip(f_contact[..., 0], 0.0, 1.0)
+        right_c = np.clip(f_contact[..., 1], 0.0, 1.0)
+        desired_L = np.where(c_sin < 0.0, 1.0, 0.0)
+        desired_R = np.where(c_sin >= 0.0, 1.0, 0.0)
+        sync_score = (1.0 - np.abs(left_c - desired_L)) + (1.0 - np.abs(right_c - desired_R))
+        w_gait_sync = weights.get("gait_sync", 0.8)
+        if is_batch:
+            fwd_gate = (vel_x > 0.03).astype(np.float32)
+            mode_gate = walk_mode_mask.astype(np.float32)
+            r_gait_sync = (w_gait_sync * sync_score * fwd_gate * mode_gate).astype(np.float32)
+        else:
+            fwd_gate = 1.0 if float(vel_x) > 0.03 else 0.0
+            mode_gate = 1.0 if walk_mode_mask else 0.0
+            r_gait_sync = float(w_gait_sync * sync_score * fwd_gate * mode_gate)
+    else:
+        r_gait_sync = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
     w_limit = weights.get("joint_limit_penalty", -0.2)
     limit_scale = -w_limit if w_limit < 0 else w_limit
@@ -830,6 +972,9 @@ def compute_rewards(
         + weights.get("sitting_pose", 2.0) * r_sit
         + weights.get("lying_pose", 2.0) * r_lie
         + limit_scale * r_joint_limit
+        + r_heading
+        + r_leg_pose
+        + r_gait_sync
     )
 
     if not is_batch:
@@ -863,6 +1008,9 @@ def compute_rewards(
             "lying_pose": float(r_lie),
             "r_lie": float(r_lie),
             "joint_limit_penalty": float(r_joint_limit),
+            "heading_penalty": float(r_heading),
+            "leg_pose_penalty": float(r_leg_pose),
+            "gait_sync": float(r_gait_sync),
         }
 
     return {
@@ -895,4 +1043,7 @@ def compute_rewards(
         "lying_pose": r_lie.astype(np.float32),
         "r_lie": r_lie.astype(np.float32),
         "joint_limit_penalty": r_joint_limit.astype(np.float32),
+        "heading_penalty": r_heading.astype(np.float32),
+        "leg_pose_penalty": r_leg_pose.astype(np.float32),
+        "gait_sync": r_gait_sync.astype(np.float32),
     }

@@ -8,6 +8,7 @@ Controls progression of difficulty by:
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import mujoco
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -112,14 +113,17 @@ def next_stage(
     min_distance_x: float = 0.8,
     success_rate: float = 1.0,
     min_success_rate: float = 0.70,
+    mean_distance_y: float = 0.0,
+    max_lateral_drift_y: float = 0.25,
 ) -> Tuple[int, int]:
     """Evaluate whether curriculum should advance to the next stage.
 
     Requires maintaining success criteria for `hold_iters` consecutive iterations.
     Curriculum strictly moves forward and never regresses.
     Mandatory physical condition: robot must actually traverse forward along X
-    (mean_distance_x >= stage_target_dist) and cohort success rate must be >= min_success_rate
-    (>= 70% of robot episodes reach stage_target_dist). Standing still for 500 steps is strictly
+    (mean_distance_x >= stage_target_dist), cohort success rate must be >= min_success_rate
+    (>= 70% of robot episodes reach stage_target_dist), and lateral drift must be small
+    (|mean_distance_y| < max_lateral_drift_y). Standing still or spinning sideways is strictly
     forbidden from advancing stages.
 
     Returns:
@@ -140,16 +144,17 @@ def next_stage(
 
     dist_met = (mean_distance_x >= stage_target_dist)
     success_met = (success_rate >= min_success_rate)
+    lateral_met = (abs(float(mean_distance_y)) < float(max_lateral_drift_y))
     condition_met = False
     if stage == 0:
-        # Stage 0 -> 1: ep_len_mean >= 400.0, forward distance >= 0.8m, cohort success_rate >= 0.70
-        condition_met = (ep_len_mean >= 400.0) and dist_met and success_met
+        # Stage 0 -> 1: ep_len_mean >= 400.0, forward distance >= 0.8m, cohort success_rate >= 0.70, lateral drift < 0.25m
+        condition_met = (ep_len_mean >= 400.0) and dist_met and success_met and lateral_met
     elif stage == 1:
         # Stage 1 -> 2: sustained walking and slalom navigation past stage_target_dist, cohort success_rate >= 0.70
-        condition_met = (ep_len_mean >= 420.0) and dist_met and success_met
+        condition_met = (ep_len_mean >= 420.0) and dist_met and success_met and lateral_met
     elif stage == 2:
         # Stage 2 -> 3: sustained stepping and stair negotiation past stage_target_dist, cohort success_rate >= 0.70
-        condition_met = (ep_len_mean >= 420.0) and dist_met and success_met
+        condition_met = (ep_len_mean >= 420.0) and dist_met and success_met and lateral_met
 
     if condition_met:
         new_hold = hold_count + 1
@@ -175,6 +180,8 @@ def next_stair_stage(
     min_distance_x: float = 0.8,
     success_rate: float = 1.0,
     min_success_rate: float = 0.70,
+    mean_distance_y: float = 0.0,
+    max_lateral_drift_y: float = 0.25,
 ) -> Tuple[int, int]:
     """Progression evaluator for stair curriculum supporting rew_vx_ratio keyword."""
     vel_ratio = (
@@ -192,6 +199,8 @@ def next_stair_stage(
         min_distance_x=min_distance_x,
         success_rate=success_rate,
         min_success_rate=min_success_rate,
+        mean_distance_y=mean_distance_y,
+        max_lateral_drift_y=max_lateral_drift_y,
     )
 
 

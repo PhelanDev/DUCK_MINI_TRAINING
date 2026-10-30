@@ -13,6 +13,9 @@ Validates all 12 critical anti-cheating, reward-hacking, and physical integrity 
 10. Multi-mode unauthorized pose (WALK collapsing to sit or lie triggers fall; standstill penalty active in WALK, zero in SIT/LIE).
 11. Recovery lock & finite loop (SelfRightingController locks after 3 failures).
 12. Voice intent desync & CRC16 validation.
+13. 4 Golden Hoops anti-vibration & locomotion integrity certification.
+14. Anti-backward velocity penalty (-4.0*vx) & forward gait lock (vx > 0.02).
+15. Six-part locomotion overhaul (body-frame velocity, phase clock, gait sync, leg pose penalty, strict fall & viewer sync).
 """
 
 from pathlib import Path
@@ -33,6 +36,11 @@ from training.env_config import (
     EmotionState,
     compute_rewards,
     clip_action_rates,
+    scale_actions,
+    quat_to_yaw,
+    quat_rotate_inverse,
+    compute_gait_phase,
+    compute_observations,
     DEFAULT_NOMINAL_QPOS,
     SIT_NOMINAL_QPOS,
     LIE_NOMINAL_QPOS,
@@ -42,6 +50,7 @@ from training.env_config import (
 )
 from training.run_parallel_sim import ParallelSimRunner
 from training.terrain_curriculum import next_stage, next_stair_stage
+from scripts.interactive_viewer import extract_viewer_observation
 from training.self_righting import (
     SelfRightingController,
     FallClassifier,
@@ -750,3 +759,297 @@ def test_audit_14_anti_backward_and_forward_gait_lock():
     data.qpos[knee_qadr] = 0.50
     mujoco.mj_forward(model, data)
     assert (data.xpos[foot_id][0] - data.xpos[base_id][0]) < -0.02, "Knee pitch > 0 folds foot backward (-X)"
+
+
+def test_audit_15_six_part_locomotion_overhaul():
+    """Audit 15: Six-Part Locomotion Overhaul & Kinodynamic Anti-Cheating Certification.
+
+    Validates:
+    1. Body-Frame velocity projection: rotating +90 deg around Z and translating along
+       World +X yields vx_local == 0.0 (crab-walking exploits eliminated). Also verify
+       heading_penalty (-2.0 * yaw^2) in WALK mode and zero in SIT/LIE.
+    2. Gait phase clock (T=0.8s) embeds [clock_sin, clock_cos] at obs[35:37], and gait_sync
+       is strictly 0.0 when vx_local <= 0.03 while rewarding phase-synchronized foot contacts
+       when vx_local > 0.03.
+    3. leg_pose_penalty penalizes split stance deviating from DEFAULT_NOMINAL_QPOS[2:8] with
+       weight -0.4, but remains 0.0 when nominal or in SIT/LIE modes.
+    4. Strict early termination: WALK mode tilt > 35 deg triggers fallen == True, and Stage 0
+       yaw deviation > 60 deg (1.0 rad) triggers fallen == True; curriculum progression is
+       blocked when |mean_distance_y| >= 0.25m.
+    5. 100% observation and control parity between ParallelSimRunner._extract_obs() and
+       interactive_viewer.extract_viewer_observation().
+    """
+    zero_foot = np.zeros(4, dtype=np.float32)
+
+    # -------------------------------------------------------------------------
+    # Check 1: Body-Frame Velocity Projection & Heading Penalty
+    # -------------------------------------------------------------------------
+    q_90 = np.array([np.cos(np.pi / 4.0), 0.0, 0.0, np.sin(np.pi / 4.0)], dtype=np.float32)
+    world_lin_vel = np.array([0.2, 0.0, 0.0], dtype=np.float32)
+    body_vel = quat_rotate_inverse(q_90, world_lin_vel)
+    assert np.isclose(body_vel[0], 0.0, atol=1e-5), "Crab-walking at 90 deg yaw must yield vx_local == 0.0"
+    assert np.isclose(body_vel[1], -0.2, atol=1e-5), "Crab-walking at 90 deg yaw must be pure lateral drift vy_local == -0.2"
+
+    # Heading penalty in WALK mode: -2.0 * yaw^2
+    r_heading_walk = compute_rewards(
+        base_lin_vel=np.array([0.1, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=np.array([0.1, 0.0, 0.0], dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=zero_foot,
+        current_yaw=0.5,
+        target_yaw=0.0,
+        cmd_mode=LocomotionMode.WALK,
+    )
+    assert np.isclose(r_heading_walk["heading_penalty"], -2.0 * (0.5 ** 2), atol=1e-5), "Heading penalty in WALK must be -2.0 * yaw^2"
+
+    # Heading penalty in SIT and LIE modes must be 0.0
+    r_heading_sit = compute_rewards(
+        base_lin_vel=np.zeros(3, dtype=np.float32),
+        cmd_lin_vel=np.zeros(3, dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=zero_foot,
+        current_yaw=0.5,
+        target_yaw=0.0,
+        cmd_mode=LocomotionMode.SIT,
+    )
+    assert r_heading_sit["heading_penalty"] == 0.0, "SIT mode must have 0.0 heading_penalty"
+
+    r_heading_lie = compute_rewards(
+        base_lin_vel=np.zeros(3, dtype=np.float32),
+        cmd_lin_vel=np.zeros(3, dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=zero_foot,
+        current_yaw=0.5,
+        target_yaw=0.0,
+        cmd_mode=LocomotionMode.LIE,
+    )
+    assert r_heading_lie["heading_penalty"] == 0.0, "LIE mode must have 0.0 heading_penalty"
+
+    # -------------------------------------------------------------------------
+    # Check 2: Gait Phase Clock (T=0.8s) & Phase-Synchronized Gait Sync
+    # -------------------------------------------------------------------------
+    phase, clock_sin, clock_cos = compute_gait_phase(episode_steps=10, dt_control=0.02, period=0.8)
+    assert np.isclose(phase, 0.25, atol=1e-5), "10 steps at 0.02s with T=0.8s must yield phase == 0.25"
+    assert np.isclose(clock_sin, 1.0, atol=1e-5), "phase 0.25 must yield clock_sin == 1.0"
+    assert np.isclose(clock_cos, 0.0, atol=1e-5), "phase 0.25 must yield clock_cos == 0.0"
+
+    obs = compute_observations(
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        proj_grav=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        commands=np.array([0.2, 0.0, 0.0], dtype=np.float32),
+        joint_pos=DEFAULT_NOMINAL_QPOS,
+        joint_vel=np.zeros(8, dtype=np.float32),
+        last_actions=np.zeros(8, dtype=np.float32),
+        foot_contact=np.zeros(4, dtype=np.float32),
+        phase_clock=np.array([clock_sin, clock_cos], dtype=np.float32),
+    )
+    assert obs.shape == (37,), "Base observation dimension must be 37"
+    assert np.isclose(obs[35], clock_sin, atol=1e-5), "obs[35] must store clock_sin"
+    assert np.isclose(obs[36], clock_cos, atol=1e-5), "obs[36] must store clock_cos"
+
+    # gait_sync is strictly 0.0 when vx_local <= 0.03
+    r_gait_still = compute_rewards(
+        base_lin_vel=np.array([0.02, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=np.array([0.2, 0.0, 0.0], dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        clock_sin=1.0,
+        cmd_mode=LocomotionMode.WALK,
+    )
+    assert r_gait_still["gait_sync"] == 0.0, "vx <= 0.03 must strictly lock gait_sync to 0.0"
+
+    # gait_sync rewards phase-synchronized foot contacts when vx_local > 0.03
+    r_gait_sync = compute_rewards(
+        base_lin_vel=np.array([0.15, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=np.array([0.2, 0.0, 0.0], dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        clock_sin=1.0,
+        cmd_mode=LocomotionMode.WALK,
+    )
+    assert r_gait_sync["gait_sync"] > 1.0, "Synchronized foot contact with vx > 0.03 must reward gait_sync"
+
+    # -------------------------------------------------------------------------
+    # Check 3: leg_pose_penalty Penalizes Split Stance Deviating from Nominal
+    # -------------------------------------------------------------------------
+    r_nom = compute_rewards(
+        base_lin_vel=np.array([0.1, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=np.array([0.1, 0.0, 0.0], dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=zero_foot,
+        joint_pos=DEFAULT_NOMINAL_QPOS,
+        cmd_mode=LocomotionMode.WALK,
+    )
+    assert r_nom["leg_pose_penalty"] == 0.0, "Nominal leg pose must incur 0.0 leg_pose_penalty"
+
+    split_qpos = DEFAULT_NOMINAL_QPOS.copy()
+    split_qpos[2] += 0.5  # left hip pitch
+    split_qpos[5] -= 0.5  # right hip pitch
+    # dev_sq = 0.5^2 + (-0.5)^2 = 0.50. Weight is -0.4 -> expected = -0.20
+    r_split_walk = compute_rewards(
+        base_lin_vel=np.array([0.1, 0.0, 0.0], dtype=np.float32),
+        cmd_lin_vel=np.array([0.1, 0.0, 0.0], dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=zero_foot,
+        joint_pos=split_qpos,
+        cmd_mode=LocomotionMode.WALK,
+    )
+    assert np.isclose(r_split_walk["leg_pose_penalty"], -0.20, atol=1e-5), "Split leg pose must be penalized with weight -0.4"
+
+    r_split_sit = compute_rewards(
+        base_lin_vel=np.zeros(3, dtype=np.float32),
+        cmd_lin_vel=np.zeros(3, dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=zero_foot,
+        joint_pos=split_qpos,
+        cmd_mode=LocomotionMode.SIT,
+    )
+    assert r_split_sit["leg_pose_penalty"] == 0.0, "SIT mode must have 0.0 leg_pose_penalty"
+
+    r_split_lie = compute_rewards(
+        base_lin_vel=np.zeros(3, dtype=np.float32),
+        cmd_lin_vel=np.zeros(3, dtype=np.float32),
+        base_ang_vel=np.zeros(3, dtype=np.float32),
+        cmd_ang_vel=0.0,
+        proj_gravity=np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        joint_torques=np.zeros(8, dtype=np.float32),
+        joint_vel=np.zeros(8, dtype=np.float32),
+        foot_contact=zero_foot,
+        joint_pos=split_qpos,
+        cmd_mode=LocomotionMode.LIE,
+    )
+    assert r_split_lie["leg_pose_penalty"] == 0.0, "LIE mode must have 0.0 leg_pose_penalty"
+
+    # -------------------------------------------------------------------------
+    # Check 4: Strict Early Termination & Curriculum Lateral Drift Gate
+    # -------------------------------------------------------------------------
+    runner = ParallelSimRunner(num_envs=2, terrain_mode="flat")
+    try:
+        runner.reset()
+        # Env 0: WALK mode with 40-deg pitch tilt (> 35 deg, grav_z ~ -0.766 > -0.81915)
+        runner.cmd_modes[0] = int(LocomotionMode.WALK)
+        runner.datas[0].qpos[2] = 0.20
+        pitch_40 = np.deg2rad(40.0)
+        runner.datas[0].qpos[3:7] = [np.cos(pitch_40 / 2.0), 0.0, np.sin(pitch_40 / 2.0), 0.0]
+
+        # Env 1: Stage 0 yaw deviation > 60 deg (1.134 rad > 1.0 rad) with cmd_wz = 0.0
+        runner.cmd_modes[1] = int(LocomotionMode.WALK)
+        runner.commands[1] = [0.2, 0.0, 0.0]
+        runner.datas[1].qpos[2] = 0.20
+        yaw_65 = np.deg2rad(65.0)
+        runner.datas[1].qpos[3:7] = [np.cos(yaw_65 / 2.0), 0.0, 0.0, np.sin(yaw_65 / 2.0)]
+        runner.curriculum_stage = 0
+
+        for d in runner.datas:
+            mujoco.mj_forward(runner.model, d)
+
+        actions = np.zeros((2, 8), dtype=np.float32)
+        _, _, dones, infos = runner.step(actions)
+
+        assert bool(infos[0]["fallen"]) is True, "40 deg tilt (>35 deg) in WALK must trigger fallen == True"
+        assert bool(dones[0]) is True
+        assert bool(infos[1]["fallen"]) is True, "Stage 0 yaw > 60 deg (1.0 rad) must trigger fallen == True"
+        assert bool(dones[1]) is True
+    finally:
+        runner.close()
+
+    # Curriculum lateral drift gate: |mean_distance_y| >= 0.25m blocks progression
+    stage_drift, hold_drift = next_stage(
+        stage=0,
+        ep_len_mean=450.0,
+        mean_distance_x=1.5,
+        mean_distance_y=0.28,
+        hold_count=5,
+    )
+    assert stage_drift == 0 and hold_drift == 0, "Curriculum progression must be blocked when |mean_distance_y| >= 0.25m"
+
+    stage_ok, hold_ok = next_stage(
+        stage=0,
+        ep_len_mean=450.0,
+        mean_distance_x=1.5,
+        mean_distance_y=0.10,
+        hold_count=9,
+        hold_iters=10,
+    )
+    assert stage_ok == 1 and hold_ok == 0, "Clean forward corridor walk (|mean_distance_y| < 0.25m) must advance stage"
+
+    # -------------------------------------------------------------------------
+    # Check 5: 100% Observation & Control Parity
+    # -------------------------------------------------------------------------
+    runner_sync = ParallelSimRunner(num_envs=1, terrain_mode="flat", decimation=10)
+    try:
+        runner_sync.reset()
+        runner_sync.episode_steps[0] = 7
+        runner_sync.commands[0] = np.array([0.20, -0.05, 0.0], dtype=np.float32)
+        runner_sync.last_actions[0] = np.array([0.1, -0.1, 0.2, -0.2, 0.05, -0.05, 0.1, -0.1], dtype=np.float32)
+
+        model = runner_sync.model
+        data = runner_sync.datas[0]
+        mujoco.mj_forward(model, data)
+
+        sim_obs = runner_sync._extract_obs(0)
+        viewer_obs = extract_viewer_observation(
+            model=model,
+            data=data,
+            cmd_vel=runner_sync.commands[0],
+            last_actions=runner_sync.last_actions[0],
+            obs_dim=37,
+            episode_step=7,
+            control_dt=runner_sync.control_dt,
+        )
+
+        assert sim_obs.shape == viewer_obs.shape == (37,), "Observation dimensions must be (37,)"
+        assert np.allclose(sim_obs, viewer_obs, atol=1e-5), "Observation mismatch between ParallelSimRunner and interactive_viewer"
+        assert np.isclose(sim_obs[35], viewer_obs[35], atol=1e-5)
+        assert np.isclose(sim_obs[36], viewer_obs[36], atol=1e-5)
+        assert not (np.isclose(sim_obs[35], 0.0, atol=1e-4) and np.isclose(sim_obs[36], 0.0, atol=1e-4))
+
+        # Action scaling & clipping parity
+        test_act = np.array([0.5, -0.3, 0.2, -0.4, 0.6, -0.1, 0.3, -0.5], dtype=np.float32)
+        scaled_runner = scale_actions(test_act.reshape(1, 8), runner_sync.cfg, nominal_centered=True)[0]
+        scaled_viewer = scale_actions(test_act, _DEFAULT_CFG, nominal_centered=True)
+        assert np.allclose(scaled_viewer, scaled_runner, atol=1e-6), "scale_actions parity failed"
+
+        last_target = runner_sync.last_targets[0]
+        targets_runner = clip_action_rates(
+            scaled_runner.reshape(1, 8), runner_sync.last_targets, dt=runner_sync.control_dt, max_velocity=runner_sync.cfg.MAX_VELOCITY
+        )[0]
+        targets_viewer = clip_action_rates(
+            scaled_viewer, last_target, dt=0.02, max_velocity=_DEFAULT_CFG.MAX_VELOCITY
+        )
+        assert np.allclose(targets_viewer, targets_runner, atol=1e-6), "clip_action_rates parity failed"
+    finally:
+        runner_sync.close()
+
