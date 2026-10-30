@@ -6,9 +6,9 @@ import pytest
 # Ensure repository root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from training.env_config import compute_rewards as root_compute_rewards
-from pipelines.rpi5_stack.training.env_config import compute_rewards as rpi5_compute_rewards
-from pipelines.dual_esp32s3_stack.training.env_config import compute_rewards as esp32_compute_rewards
+from training.env_config import compute_rewards as root_compute_rewards, _DEFAULT_CFG as root_cfg
+from pipelines.rpi5_stack.training.env_config import compute_rewards as rpi5_compute_rewards, _DEFAULT_CFG as rpi5_cfg
+from pipelines.dual_esp32s3_stack.training.env_config import compute_rewards as esp32_compute_rewards, _DEFAULT_CFG as esp32_cfg
 
 
 @pytest.mark.parametrize(
@@ -182,7 +182,7 @@ def test_gait_and_air_time_locked_by_forward_velocity(compute_fn, tag):
             joint_vel=j_vel,
             foot_contact=one_foot,
         )
-        if tag == "root":
+        if True:  # All stacks support feet_air_time
             kwargs["feet_air_time"] = air_time
             kwargs["feet_touchdown"] = touchdown
 
@@ -190,7 +190,7 @@ def test_gait_and_air_time_locked_by_forward_velocity(compute_fn, tag):
         assert res_bad["foot_contact"] == 0.0, (
             f"[{tag}] foot_contact must be 0.0 when vx={vx_bad} <= 0.02, got {res_bad['foot_contact']}"
         )
-        if tag == "root":
+        if True:  # All stacks support feet_air_time
             assert res_bad["feet_air_time"] == 0.0, (
                 f"[{tag}] feet_air_time must be 0.0 when vx={vx_bad} <= 0.02, got {res_bad['feet_air_time']}"
             )
@@ -206,7 +206,7 @@ def test_gait_and_air_time_locked_by_forward_velocity(compute_fn, tag):
         joint_vel=j_vel,
         foot_contact=one_foot,
     )
-    if tag == "root":
+    if True:  # All stacks support feet_air_time
         kwargs_good["feet_air_time"] = air_time
         kwargs_good["feet_touchdown"] = touchdown
 
@@ -214,7 +214,7 @@ def test_gait_and_air_time_locked_by_forward_velocity(compute_fn, tag):
     assert res_good["foot_contact"] == 1.0, (
         f"[{tag}] foot_contact must be 1.0 when vx=0.05 > 0.02, got {res_good['foot_contact']}"
     )
-    if tag == "root":
+    if True:  # All stacks support feet_air_time
         assert res_good["feet_air_time"] > 0.0, (
             f"[{tag}] feet_air_time must be > 0.0 when vx=0.05 > 0.02, got {res_good['feet_air_time']}"
         )

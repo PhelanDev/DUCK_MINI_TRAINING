@@ -179,7 +179,7 @@ class ParallelSimRunner:
         if self.stand_still:
             self.commands[env_idx, :] = 0.0
         else:
-            self.commands[env_idx, 0] = self.rng.uniform(0.0, 0.25)
+            self.commands[env_idx, 0] = self.rng.uniform(0.10, 0.25)
             self.commands[env_idx, 1] = self.rng.uniform(-0.08, 0.08)
             self.commands[env_idx, 2] = self.rng.uniform(-0.50, 0.50)
 

@@ -381,6 +381,20 @@ def test_hoop5_anti_backward_walking_and_forward_gate():
     assert r_forward["total_reward"] > 2.5
 
 
+def test_parallel_sim_always_commands_forward_walking():
+    """Đảm bảo khi stand_still=False, 100% môi trường nhận lệnh tiến cmd_x >= 0.10 m/s (không có lệnh đứng im <= 0.05)."""
+    from training.run_parallel_sim import ParallelSimRunner
+    sim = ParallelSimRunner(num_envs=16, stand_still=False)
+    try:
+        for _ in range(5):
+            sim.reset()
+            assert np.all(sim.commands[:, 0] >= 0.10), f"Found non-walking cmd_x < 0.10: {sim.commands[:, 0]}"
+            assert np.all(sim.commands[:, 0] <= 0.25)
+    finally:
+        sim.close()
+
+
+
 
 
 
