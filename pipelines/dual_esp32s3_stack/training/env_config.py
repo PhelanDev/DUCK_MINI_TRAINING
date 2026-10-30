@@ -88,6 +88,7 @@ class MicroDuck8DoFConfig:
             "joint_vel_penalty": -0.0001,
             "joint_acc_penalty": -0.01,
             "action_rate_penalty": -0.10,
+            "backward_vel_penalty": -2.0,
             "foot_contact": 1.0,
             "double_support_penalty": -0.5,
             "foot_slip_penalty": -0.8,
