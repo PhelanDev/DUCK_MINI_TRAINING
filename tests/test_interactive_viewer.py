@@ -283,3 +283,24 @@ def test_configure_viewer_camera():
         pass
 
 
+
+
+def test_interactive_viewer_policy_headless_stability():
+    """Verify that running policy brain in headless mode stays stable above z >= 0.18m."""
+    from scripts.interactive_viewer import run_simulation_headless
+
+    ckpt_path = os.path.join(PROJECT_ROOT, "models", "checkpoints", "microduck_ppo.pt")
+    if not os.path.exists(ckpt_path):
+        pytest.skip("Policy checkpoint not available")
+
+    metrics = run_simulation_headless(
+        model_path="models/mjcf/microduck_8dof.xml",
+        policy_path=ckpt_path,
+        duration=0.5,
+        dt=0.002,
+        auto_reset=True,
+    )
+    assert metrics["completed_steps"] > 0
+    # Must remain standing / walking and NOT collapse to z = 0.057m
+    assert metrics["final_root_z"] > 0.18, f"Robot collapsed to z={metrics['final_root_z']:.3f}m"
+    assert metrics["is_stable"] is True

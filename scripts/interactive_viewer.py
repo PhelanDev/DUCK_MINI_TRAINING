@@ -105,10 +105,15 @@ JOINT_LIMITS: Dict[str, Tuple[float, float]] = {
     "right_knee_pitch": (0.0, 1.48),    # 0 to 85 deg
 }
 
+# Rest height and nominal pose configuration matching training environment
+RESTING_SPAWN_HEIGHT: float = 0.194
+
 # Standard pose presets for testing stability and kinodynamics
 POSE_PRESETS: Dict[str, List[float]] = {
-    "stand": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "stand": [0.0, 0.0, 0.0, -0.15, 0.15, 0.0, -0.15, 0.15],
     "squat": [0.0, 0.0, 0.0, -0.20, 0.40, 0.0, -0.20, 0.40],
+    "sit": [0.0, 0.0, 0.0, 0.70, 1.35, 0.0, 0.70, 1.35],
+    "lie": [0.0, 0.0, 0.0, -0.65, 0.05, 0.0, -0.65, 0.05],
     "left_step": [0.0, 0.0, -0.10, 0.30, 0.40, 0.05, -0.20, 0.10],
     "right_step": [0.0, 0.0, 0.05, -0.20, 0.10, 0.10, 0.30, 0.40],
     "bow": [0.0, 0.35, 0.0, -0.30, 0.30, 0.0, -0.30, 0.30],
@@ -198,6 +203,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="FILE.mp4",
         help="Record simulation video directly to an MP4 video file",
+    )
+    parser.add_argument(
+        "--auto-reset",
+        dest="auto_reset",
+        action="store_true",
+        default=True,
+        help="Automatically reset robot to nominal standing pose when it falls",
+    )
+    parser.add_argument(
+        "--no-auto-reset",
+        dest="auto_reset",
+        action="store_false",
+        help="Disable automatic reset on fall",
     )
     return parser
 
@@ -516,6 +534,7 @@ def run_simulation_headless(
     verbose: bool = False,
     stage: int = 0,
     stairs: bool = False,
+    auto_reset: bool = True,
 ) -> Dict[str, Any]:
     """Execute a headless simulation without GUI window for verification and testing."""
     if not _MUJOCO_AVAILABLE:
@@ -533,9 +552,9 @@ def run_simulation_headless(
         apply_stage(model, stage)
     data = mujoco.MjData(model)
 
-    # Initialize nominal standing pose
+    # Initialize nominal standing pose with ground-aligned height
     mujoco.mj_resetData(model, data)
-    data.qpos[0:3] = [0.0, 0.0, 0.170]
+    data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
     data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
 
     target_pose = np.array(POSE_PRESETS.get(pose, POSE_PRESETS["stand"]), dtype=np.float32)
@@ -559,7 +578,7 @@ def run_simulation_headless(
                     model, data, cmd_vel=cmd_vel, last_actions=last_actions, obs_dim=42
                 )
                 actions = policy_step(policy, obs)
-                scaled_targets = scale_actions(actions, _DEFAULT_CFG)
+                scaled_targets = scale_actions(actions, _DEFAULT_CFG, nominal_centered=True)
                 max_vel = _DEFAULT_CFG.MAX_VELOCITY if _DEFAULT_CFG else 6.0
                 targets = clip_action_rates(
                     scaled_targets, last_targets, dt=control_dt, max_velocity=max_vel
@@ -574,6 +593,17 @@ def run_simulation_headless(
         apply_pd_control(model, data, targets)
         mujoco.mj_step(model, data)
         sim_time += dt
+
+        if policy is not None and auto_reset and step_idx % decimation == 0:
+            state = get_robot_state(model, data)
+            if not state["is_stable"]:
+                data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
+                data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+                data.qpos[7:15] = target_pose
+                data.qvel[:] = 0.0
+                last_actions = np.zeros(8, dtype=np.float32)
+                last_targets = np.array(target_pose, dtype=np.float32)
+                mujoco.mj_forward(model, data)
 
     state = get_robot_state(model, data)
     return {
@@ -614,6 +644,7 @@ def run_interactive_viewer(
     dt: float = 0.002,
     stage: int = 0,
     stairs: bool = False,
+    auto_reset: bool = True,
 ):
     """Launch passive 3D MuJoCo viewer or fall back to headless/CLI mode."""
     if not _MUJOCO_AVAILABLE:
@@ -633,9 +664,9 @@ def run_interactive_viewer(
         apply_stage(model, stage)
     data = mujoco.MjData(model)
 
-    # Reset to nominal standing pose
+    # Reset to nominal standing pose with ground-aligned height
     mujoco.mj_resetData(model, data)
-    data.qpos[0:3] = [0.0, 0.0, 0.170]
+    data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
     data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
 
     target_qpos = np.array(POSE_PRESETS.get(pose, POSE_PRESETS["stand"]), dtype=np.float32)
@@ -705,7 +736,7 @@ def run_interactive_viewer(
                             model, data, cmd_vel=cmd_vel, last_actions=last_actions, obs_dim=42
                         )
                         actions = policy_step(policy, obs)
-                        scaled_targets = scale_actions(actions, _DEFAULT_CFG)
+                        scaled_targets = scale_actions(actions, _DEFAULT_CFG, nominal_centered=True)
                         max_vel = _DEFAULT_CFG.MAX_VELOCITY if _DEFAULT_CFG else 6.0
                         targets = clip_action_rates(
                             scaled_targets, last_targets, dt=control_dt, max_velocity=max_vel
@@ -720,6 +751,17 @@ def run_interactive_viewer(
                 apply_pd_control(model, data, targets)
                 mujoco.mj_step(model, data)
                 step_count += 1
+
+                if policy is not None and auto_reset and step_count % decimation == 0:
+                    state = get_robot_state(model, data)
+                    if not state["is_stable"]:
+                        data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
+                        data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+                        data.qpos[7:15] = target_qpos
+                        data.qvel[:] = 0.0
+                        last_actions = np.zeros(8, dtype=np.float32)
+                        last_targets = np.array(target_qpos, dtype=np.float32)
+                        mujoco.mj_forward(model, data)
                 if step_count % 10 == 0:
                     viewer.sync()
                 if step_count % 250 == 0:
@@ -784,6 +826,7 @@ def run_opencv_viewer(
     dt: float = 0.002,
     stage: int = 0,
     record_path: Optional[Union[str, Path]] = None,
+    auto_reset: bool = True,
 ) -> None:
     """Launch resilient 3D viewer using MuJoCo offscreen Renderer + OpenCV native window.
 
@@ -809,7 +852,7 @@ def run_opencv_viewer(
     data = mujoco.MjData(model)
 
     mujoco.mj_resetData(model, data)
-    data.qpos[0:3] = [0.0, 0.0, 0.170]
+    data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
     data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
     target_qpos = np.array(POSE_PRESETS.get(pose, POSE_PRESETS["stand"]), dtype=np.float32)
     data.qpos[7:15] = target_qpos
@@ -884,7 +927,7 @@ def run_opencv_viewer(
                                 model, data, cmd_vel=cmd_vel, last_actions=last_actions, obs_dim=42
                             )
                             actions = policy_step(policy, obs)
-                            scaled_targets = scale_actions(actions, _DEFAULT_CFG)
+                            scaled_targets = scale_actions(actions, _DEFAULT_CFG, nominal_centered=True)
                             max_vel = _DEFAULT_CFG.MAX_VELOCITY if _DEFAULT_CFG else 6.0
                             targets = clip_action_rates(
                                 scaled_targets, last_targets, dt=control_dt, max_velocity=max_vel
@@ -900,6 +943,17 @@ def run_opencv_viewer(
                     mujoco.mj_step(model, data)
                     sim_time += dt
                     step_count += 1
+
+                    if policy is not None and auto_reset and step_count % decimation == 0:
+                        state = get_robot_state(model, data)
+                        if not state["is_stable"]:
+                            data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
+                            data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+                            data.qpos[7:15] = target_qpos
+                            data.qvel[:] = 0.0
+                            last_actions = np.zeros(8, dtype=np.float32)
+                            last_targets = np.array(target_qpos, dtype=np.float32)
+                            mujoco.mj_forward(model, data)
 
             renderer.update_scene(data, cam)
             rgb_frame = renderer.render()
@@ -946,7 +1000,7 @@ def run_opencv_viewer(
                 paused = not paused
             elif key == ord("r"):
                 mujoco.mj_resetData(model, data)
-                data.qpos[0:3] = [0.0, 0.0, 0.170]
+                data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
                 data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
                 data.qpos[7:15] = target_qpos
                 last_actions = np.zeros(8, dtype=np.float32)
@@ -985,9 +1039,9 @@ def run_interactive_cli(
 
     # Nominal reset
     mujoco.mj_resetData(model, data)
-    data.qpos[0:3] = [0.0, 0.0, 0.170]
+    data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
     data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-    current_targets = np.zeros(8, dtype=np.float32)
+    current_targets = np.array(POSE_PRESETS["stand"], dtype=np.float32)
 
     print("\n" + "=" * 60)
     print("  MICRODUCK 8-DOF - ĐIỀU KHIỂN KHỚP TƯƠNG TÁC DÒNG LỆNH")
@@ -1074,9 +1128,9 @@ def run_interactive_cli(
 
             elif cmd == "reset":
                 mujoco.mj_resetData(model, data)
-                data.qpos[0:3] = [0.0, 0.0, 0.170]
+                data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
                 data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-                current_targets = np.zeros(8, dtype=np.float32)
+                current_targets = np.array(POSE_PRESETS["stand"], dtype=np.float32)
                 mujoco.mj_forward(model, data)
                 print("[OK] Đã đặt lại toàn bộ trạng thái robot về mặc định.")
 
@@ -1111,6 +1165,7 @@ def main() -> int:
             dt=args.dt,
             stage=args.stage,
             stairs=args.stairs,
+            auto_reset=args.auto_reset,
         )
         print("Kết quả mô phỏng:")
         print(f"  - Tổng số bước      : {metrics['completed_steps']}")
@@ -1129,6 +1184,7 @@ def main() -> int:
             dt=args.dt,
             stage=args.stage,
             record_path=args.record,
+            auto_reset=args.auto_reset,
         )
     else:
         run_interactive_viewer(
@@ -1141,6 +1197,7 @@ def main() -> int:
             dt=args.dt,
             stage=args.stage,
             stairs=args.stairs,
+            auto_reset=args.auto_reset,
         )
     return 0
 
