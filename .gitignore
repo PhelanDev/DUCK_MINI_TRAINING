@@ -8,5 +8,9 @@ docs/superpowers/
 .env.*
 *.local
 t_m_t_t_chi_ti_t_d_n_robot_hai_ch_n_microduck.txt
+*.mp4
+assets/media/*.mp4
+*.avi
+
 
 

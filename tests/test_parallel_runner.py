@@ -199,8 +199,8 @@ def test_parallel_sim_foot_contact_binarization():
         foot_contacts = obs[:, 33:37]
         # Should be strictly 0.0 or 1.0 (binary)
         assert np.all((foot_contacts == 0.0) | (foot_contacts == 1.0))
-        # Padded elements [35:37] must be 0.0
-        assert np.all(foot_contacts[:, 2:] == 0.0)
+        # Phase clock at step 0 occupies [35:37] with [sin=0.0, cos=1.0]
+        np.testing.assert_allclose(foot_contacts[:, 2:], [[0.0, 1.0], [0.0, 1.0]], atol=1e-5)
     finally:
         runner.close()
 

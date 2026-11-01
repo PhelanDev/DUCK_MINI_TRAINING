@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MicroDuck 8-DOF - 3D Viewer & Simulation Hub</title>
+<style>
+  :root {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-card: #21262d;
+    --border: #30363d;
+    --accent: #f0883e;
+    --accent-glow: rgba(240, 136, 62, 0.35);
+    --text-primary: #f0f6fc;
+    --text-secondary: #8b949e;
+    --success: #3fb950;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font);
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+  header {
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .brand { display: flex; align-items: center; gap: 14px; font-weight: 700; font-size: 1.25rem; }
+  .badge {
+    background: var(--accent);
+    color: #000;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+  .container {
+    max-width: 1200px;
+    margin: 24px auto;
+    padding: 0 24px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .tabs {
+    display: flex;
+    gap: 12px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+  .tab-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .tab-btn:hover { color: var(--text-primary); background: var(--bg-card); }
+  .tab-btn.active {
+    color: #000;
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent-glow);
+  }
+  .tab-pane {
+    display: none;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .tab-pane.active { display: block; }
+  .media-wrapper {
+    position: relative;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 500px;
+  }
+  video, img, iframe {
+    width: 100%;
+    max-height: 600px;
+    object-fit: contain;
+    border: none;
+  }
+  .command-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .command-code {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.95rem;
+    color: #58a6ff;
+    word-break: break-all;
+  }
+  .copy-btn {
+    background: var(--accent);
+    color: #000;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-weight: 700;
+    font-size: 0.85rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: opacity 0.15s;
+  }
+  .copy-btn:hover { opacity: 0.9; }
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin-top: 20px;
+  }
+  .info-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .info-title { font-size: 0.85rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; }
+  .info-desc { font-size: 1.1rem; font-weight: 600; color: var(--text-primary); margin-top: 6px; }
+  footer {
+    text-align: center;
+    padding: 16px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>🦆 MicroDuck 8-DOF (MG996R)</span>
+      <span class="badge">3D Visualization Center</span>
+    </div>
+    <div style="color: var(--text-secondary); font-size: 0.9rem;">
+      Mô phỏng MuJoCo & Kiểm thử Bộ não RL
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="tabs">
+      <button class="tab-btn active" onclick="showTab('tab-video')">🎬 Video HD (Stage 3 Vượt Gờ Đất)</button>
+      <button class="tab-btn" onclick="showTab('tab-stream')">📡 3D Live Web Stream (Cổng 8080)</button>
+      <button class="tab-btn" onclick="showTab('tab-gif')">🖼️ Ảnh Động GIF (Xem Offline)</button>
+    </div>
+
+    <!-- TAB 1: VIDEO MP4 -->
+    <div id="tab-video" class="tab-pane active">
+      <div class="media-wrapper">
+        <video controls autoplay loop playsinline>
+          <source src="assets/media/microduck_stage3_demo.mp4" type="video/mp4">
+          Trình duyệt của bạn không hỗ trợ thẻ video HTML5.
+        </video>
+      </div>
+      <div class="command-card">
+        <div>
+          <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px;">Xem trực tiếp file video bằng Windows Media Player:</div>
+          <div class="command-code">Start-Process "assets/media/microduck_stage3_demo.mp4"</div>
+        </div>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('Start-Process assets/media/microduck_stage3_demo.mp4')">Sao chép lệnh</button>
+      </div>
+    </div>
+
+    <!-- TAB 2: LIVE WEB STREAM -->
+    <div id="tab-stream" class="tab-pane">
+      <div class="media-wrapper" style="min-height: 520px;">
+        <iframe id="stream-frame" src="http://127.0.0.1:8080" style="height: 520px;"></iframe>
+      </div>
+      <div class="command-card">
+        <div>
+          <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px;">Để khởi chạy máy chủ 3D trực tiếp tương tác xoay góc nhìn 360°:</div>
+          <div class="command-code">python scripts/interactive_viewer.py --web --policy models/checkpoints/microduck_ppo.pt --stage 3</div>
+        </div>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('python scripts/interactive_viewer.py --web --policy models/checkpoints/microduck_ppo.pt --stage 3')">Sao chép lệnh</button>
+      </div>
+    </div>
+
+    <!-- TAB 3: ANIMATED GIF -->
+    <div id="tab-gif" class="tab-pane">
+      <div class="media-wrapper">
+        <img src="assets/media/microduck_stage3_demo.gif" alt="MicroDuck Stage 3 Animation" />
+      </div>
+      <div class="command-card">
+        <div>
+          <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px;">Mở ảnh GIF bằng trình xem ảnh mặc định:</div>
+          <div class="command-code">Start-Process "assets/media/microduck_stage3_demo.gif"</div>
+        </div>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('Start-Process assets/media/microduck_stage3_demo.gif')">Sao chép lệnh</button>
+      </div>
+    </div>
+
+    <!-- SPECIFICATIONS -->
+    <div class="info-grid">
+      <div class="info-card">
+        <div class="info-title">Trạng thái huấn luyện</div>
+        <div class="info-desc" style="color: var(--success);">Stage 3: Hoàn thành 1000 vòng</div>
+      </div>
+      <div class="info-card">
+        <div class="info-title">Độ vững vật lý</div>
+        <div class="info-desc">Ổn định (CoM Z = 0.170m)</div>
+      </div>
+      <div class="info-card">
+        <div class="info-title">Động cơ chấp hành</div>
+        <div class="info-desc">8 Servo MG996R (2 Đầu, 6 Chân)</div>
+      </div>
+      <div class="info-card">
+        <div class="info-title">Giải pháp hiển thị 3D</div>
+        <div class="info-desc">DirectX/ANGLE Browser Hub</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    MicroDuck 8-DOF Bipedal Robot • MuJoCo Physics Engine • Deep Reinforcement Learning
+  </footer>
+
+  <script>
+    function showTab(tabId) {
+      document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+      event.target.classList.add('active');
+    }
+  </script>
+</body>
+</html>
+

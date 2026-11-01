@@ -99,6 +99,7 @@ class ParallelSimRunner:
         self.max_episode_steps = int(max_episode_steps)
         self.episode_steps = np.zeros(self.num_envs, dtype=np.int32)
         self.completed_ep_lens: deque = deque(maxlen=100)
+        self.completed_distances_x: deque = deque(maxlen=100)
         self.rng = np.random.default_rng(seed=42)
 
         # Obstacle avoidance and approach-velocity tracking state
@@ -383,7 +384,7 @@ class ParallelSimRunner:
 
         self.episode_steps += 1
         timeouts = self.episode_steps >= self.max_episode_steps
-        fallen = (root_z < 0.08) | (grav_z > -0.3) | diverged
+        fallen = (root_z < 0.08) | (grav_z > -0.707) | diverged
         fall_penalty = float(self.cfg.REWARD_WEIGHTS.get("fall_penalty", -5.0))
         if np.any(fallen):
             rewards = rewards.copy()
@@ -407,7 +408,9 @@ class ParallelSimRunner:
         if np.any(dones):
             for i in np.where(dones)[0]:
                 self.completed_ep_lens.append(int(self.episode_steps[i]))
+                self.completed_distances_x.append(float(root_x[i]))
                 infos[i]["episode_length"] = int(self.episode_steps[i])
+                infos[i]["distance_x"] = float(root_x[i])
                 infos[i]["terminal_obs"] = next_obs[i].copy()
                 next_obs[i] = self.reset_env(i)
 
@@ -418,6 +421,21 @@ class ParallelSimRunner:
         if len(self.completed_ep_lens) == 0:
             return float(default)
         return float(np.mean(self.completed_ep_lens))
+
+    def get_mean_distance_x(self) -> float:
+        """Return average forward distance along X from completed episodes window (or current positions if empty)."""
+        if len(self.completed_distances_x) > 0:
+            return float(np.mean(self.completed_distances_x))
+        return float(np.mean([d.qpos[0] for d in self.datas]))
+
+    def get_success_rate(self, min_dist: float = 1.5) -> float:
+        """Return proportion of completed episodes that achieved at least min_dist along X."""
+        if len(self.completed_distances_x) > 0:
+            return float(sum(1 for d in self.completed_distances_x if d >= min_dist) / len(self.completed_distances_x))
+        if self.num_envs == 0:
+            return 0.0
+        cur_dists = [float(d.qpos[0]) for d in self.datas]
+        return float(sum(1 for d in cur_dists if d >= min_dist) / len(cur_dists))
 
     def close(self):
         """Clean up thread executor resources."""

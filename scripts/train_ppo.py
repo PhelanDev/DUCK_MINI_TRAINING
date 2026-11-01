@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -55,7 +56,7 @@ class ActorCritic(nn.Module):
         obs_dim: int = 42,
         action_dim: int = 8,
         hidden_dim: int = 256,
-        init_noise_std: float = 1.0,
+        init_noise_std: float = 0.20,
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
@@ -401,6 +402,11 @@ def train_ppo(
         for iteration in range(1, max_iterations + 1):
             iter_start = time.perf_counter()
 
+            # Smooth velocity warmup over first 15 iterations: stabilize early stepping balance
+            if not stand_first and iteration <= 15:
+                max_cmd_vx = 0.15 + 0.35 * (iteration / 15.0)
+                runner.commands[:, 0] = np.clip(runner.commands[:, 0], 0.08, max_cmd_vx)
+
             # ------------------------------------------------------------------
             # Phase 1: Rollout Collection
             # ------------------------------------------------------------------
@@ -510,12 +516,12 @@ def train_ppo(
                     surr2 = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * mb_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
 
-                    # Value Function Loss with Clipping (prevents explosion on bootstrap)
+                    # Value Function Loss with Clipping and Huber / Smooth L1 (prevents explosion on bootstrap)
                     mb_ret = b_returns[mb_inds]
                     mb_val = b_values[mb_inds]
-                    v_loss_unclipped = (new_values - mb_ret) ** 2
+                    v_loss_unclipped = F.smooth_l1_loss(new_values, mb_ret, beta=1.0, reduction="none")
                     v_clipped = mb_val + torch.clamp(new_values - mb_val, -clip_epsilon, clip_epsilon)
-                    v_loss_clipped = (v_clipped - mb_ret) ** 2
+                    v_loss_clipped = F.smooth_l1_loss(v_clipped, mb_ret, beta=1.0, reduction="none")
                     value_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
                     # Total Loss with Entropy Regularization
