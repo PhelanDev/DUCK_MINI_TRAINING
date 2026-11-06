@@ -248,6 +248,8 @@ def train_ppo(
     log_interval: int = 50,
     save_interval: int = 250,
     stand_first: bool = False,
+    friction_min: float = 1.1,
+    friction_max: float = 1.6,
 ) -> Dict[str, Any]:
     """Execute PPO training pipeline using ParallelSimRunner."""
     if device is None:
@@ -328,6 +330,7 @@ def train_ppo(
         stage=current_stage,
         terrain_mode=terrain_mode,
         stand_still=stand_first,
+        friction_range=(friction_min, friction_max),
     )
 
     obs_dim = runner.obs_dim
@@ -762,6 +765,8 @@ def main():
     parser.add_argument("--log-interval", type=int, default=50, help="Print training logs every N iterations (default: 50)")
     parser.add_argument("--save-interval", type=int, default=250, help="Save periodic checkpoint every N iterations (default: 250)")
     parser.add_argument("--stand-first", action="store_true", help="Start training with zero velocity commands (stand still curriculum) until stable")
+    parser.add_argument("--friction-min", type=float, default=1.1, help="Minimum floor friction for domain randomization (default: 1.1)")
+    parser.add_argument("--friction-max", type=float, default=1.6, help="Maximum floor friction for domain randomization (default: 1.6)")
 
     args = parser.parse_args()
 
@@ -788,6 +793,8 @@ def main():
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         stand_first=args.stand_first,
+        friction_min=args.friction_min,
+        friction_max=args.friction_max,
     )
 
 

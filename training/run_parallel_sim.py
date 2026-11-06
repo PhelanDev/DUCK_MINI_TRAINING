@@ -65,6 +65,7 @@ class ParallelSimRunner:
         include_emotions: bool = False,
         enable_auto_recovery: bool = False,
         walk_min_z: float = 0.080,
+        friction_range: Tuple[float, float] = (1.1, 1.6),
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -73,6 +74,7 @@ class ParallelSimRunner:
         self.terrain_mode = str(terrain_mode)
         self.include_emotions = bool(include_emotions)
         self.walk_min_z = float(walk_min_z)
+        self.friction_range = (float(friction_range[0]), float(friction_range[1]))
         self.cfg = cfg if cfg is not None else _DEFAULT_CFG
         self.num_envs = int(num_envs)
         self.decimation = max(1, int(decimation))
@@ -309,9 +311,11 @@ class ParallelSimRunner:
         d = self.datas[env_idx]
         mujoco.mj_resetData(self.model, d)
 
-        # Domain randomization: floor friction mu in [1.1, 1.6] and torso mass +-5%
+        # Domain randomization: floor friction mu and torso mass +-5%
         if self.floor_gid != -1:
-            self.model.geom_friction[self.floor_gid, 0] = float(self.rng.uniform(1.1, 1.6))
+            self.model.geom_friction[self.floor_gid, 0] = float(
+                self.rng.uniform(self.friction_range[0], self.friction_range[1])
+            )
         if self.base_body_id != -1:
             self.model.body_mass[self.base_body_id] = float(self.default_base_mass * self.rng.uniform(0.95, 1.05))
 

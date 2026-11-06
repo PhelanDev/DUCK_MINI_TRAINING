@@ -156,9 +156,14 @@ def cmd_train(args: argparse.Namespace) -> int:
 def cmd_export(args: argparse.Namespace) -> int:
     """Export trained policy to ONNX and INT8 C header."""
     cmd = [sys.executable, str(REPO_ROOT / "scripts" / "export_policy.py")]
-    if args.checkpoint:
-        cmd.extend(["--checkpoint", str(args.checkpoint)])
-    print(">>> Đang xuất mô hình ra ONNX (RPi 5) và INT8 Header (ESP32-S3)...")
+    ckpt_path = args.checkpoint
+    if not ckpt_path:
+        best_ckpt = REPO_ROOT / "models" / "checkpoints" / "microduck_best.pt"
+        if best_ckpt.exists():
+            ckpt_path = str(best_ckpt)
+    if ckpt_path:
+        cmd.extend(["--checkpoint", ckpt_path])
+    print(f">>> Đang xuất mô hình ra ONNX (RPi 5) và INT8 Header (ESP32-S3) từ {ckpt_path or 'mặc định'}...")
     return subprocess.run(cmd).returncode
 
 

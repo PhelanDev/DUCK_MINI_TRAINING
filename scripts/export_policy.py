@@ -353,6 +353,21 @@ def main():
     args = parser.parse_args()
 
     ckpt_path = Path(args.checkpoint).resolve()
+    # If using default checkpoint, automatically prefer microduck_best.pt if it exists and has better iterations
+    if ckpt_path == DEFAULT_CHECKPOINT_PATH.resolve():
+        best_ckpt = REPO_ROOT / "models" / "checkpoints" / "microduck_best.pt"
+        if best_ckpt.exists():
+            try:
+                d_best = torch.load(str(best_ckpt), map_location="cpu", weights_only=False)
+                d_def = torch.load(str(ckpt_path), map_location="cpu", weights_only=False) if ckpt_path.exists() else {}
+                best_iter = d_best.get("iterations", 0) if isinstance(d_best, dict) else 0
+                def_iter = d_def.get("iterations", 0) if isinstance(d_def, dict) else 0
+                if best_iter >= def_iter:
+                    ckpt_path = best_ckpt
+            except Exception:
+                if not ckpt_path.exists():
+                    ckpt_path = best_ckpt
+
     if not ckpt_path.exists():
         print(f"[Error] Checkpoint not found: {ckpt_path}. Train a model first via scripts/train_ppo.py.")
         sys.exit(1)
