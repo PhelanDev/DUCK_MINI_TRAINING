@@ -170,14 +170,16 @@ def verify_mass_and_inertials(
             "valid": valid,
         })
 
-    # Expected total mass check with target_mass and tolerance
+    # Expected total mass check with target_mass and tolerance (Chibi Squat Kinematics)
     if target_mass is None:
         if "rpi5" in urdf_path.lower():
-            target_mass = 0.860
+            target_mass = 0.764
         elif "pizero" in urdf_path.lower():
-            target_mass = 0.745
+            target_mass = 0.649
+        elif "esp32" in urdf_path.lower():
+            target_mass = 0.684
         else:
-            target_mass = 0.780
+            target_mass = 0.694
     min_mass = target_mass * (1.0 - tolerance)
     max_mass = target_mass * (1.0 + tolerance)
     mass_in_range = min_mass <= total_mass <= max_mass
@@ -208,16 +210,16 @@ def verify_center_of_mass(mjcf_path: str) -> Dict[str, Any]:
         com_rel = [float(com_world[i] - base_pos[i]) for i in range(3)]
         used_mujoco = True
     except ImportError:
-        # Fallback analytical calculation if mujoco is not installed
-        # Estimated base CoM relative to base origin: [0.004, 0.0, -0.043]
-        com_world = [0.0041, 0.0, 0.1267]
-        base_pos = [0.0, 0.0, 0.1700]
-        com_rel = [0.0041, 0.0, -0.0433]
+        # Fallback analytical calculation if mujoco is not installed (Chibi Squat Kinematics)
+        # Estimated base CoM relative to base origin: [0.0041, 0.0, -0.0235]
+        com_world = [0.0041, 0.0, 0.0715]
+        base_pos = [0.0, 0.0, 0.0950]
+        com_rel = [0.0041, 0.0, -0.0235]
         used_mujoco = False
 
-    # Low in lower torso: relative z should be negative (-0.08 to -0.01)
+    # Low in lower torso: relative z should be negative (-0.06 to 0.0)
     # Centered: |y| < 0.01, |x| < 0.02
-    is_low = -0.08 <= com_rel[2] <= 0.0
+    is_low = -0.06 <= com_rel[2] <= 0.0
     is_centered_lat = abs(com_rel[1]) < 0.01
     is_centered_sag = abs(com_rel[0]) < 0.02
     com_low_and_centered = bool(is_low and is_centered_lat and is_centered_sag)
@@ -307,7 +309,8 @@ def print_summary(
     print("-" * 80)
     com_rel = com_info["com_rel"]
     com_w = com_info["com_world"]
-    print(f"Base Frame Origin  : [X=0.000m, Y=0.000m, Z=0.170m]")
+    base_p = com_info.get("base_pos", [0.0, 0.0, 0.095])
+    print(f"Base Frame Origin  : [X={base_p[0]:.3f}m, Y={base_p[1]:.3f}m, Z={base_p[2]:.3f}m]")
     print(f"CoM in World Frame : [X={com_w[0]:+.4f}m, Y={com_w[1]:+.4f}m, Z={com_w[2]:+.4f}m]")
     print(f"CoM rel. to Base   : [X={com_rel[0]:+.4f}m, Y={com_rel[1]:+.4f}m, Z={com_rel[2]:+.4f}m]")
     com_status = "PASS (Low in lower torso, laterally centered)" if com_info["com_low_and_centered"] else "FAIL"
