@@ -25,12 +25,16 @@ def test_duck_cli_help():
 
 
 def test_duck_cli_status():
-    """Verify duck.py status outputs checkpoint and curriculum info."""
+    """Verify duck.py status outputs checkpoint, curriculum info, and 3 hardware targets."""
     duck_py = REPO_ROOT / "duck.py"
     res = subprocess.run([sys.executable, str(duck_py), "status"], capture_output=True, encoding="utf-8", env=ENV_UTF8)
     assert res.returncode == 0
     assert "Stage" in res.stdout or "stage" in res.stdout
     assert "MicroDuck" in res.stdout
+    assert "Pi Zero 2 W" in res.stdout
+    assert "microduck_pizero2w_policy.onnx" in res.stdout
+    assert "RPi 5" in res.stdout
+    assert "ESP32-S3" in res.stdout
 
 
 def test_duck_cli_verify_help():

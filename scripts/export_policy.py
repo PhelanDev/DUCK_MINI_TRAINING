@@ -28,6 +28,7 @@ from scripts.train_ppo import ActorCritic
 
 DEFAULT_CHECKPOINT_PATH = REPO_ROOT / "models" / "checkpoints" / "microduck_ppo.pt"
 DEFAULT_ONNX_PATH = REPO_ROOT / "models" / "microduck_rpi5_policy.onnx"
+DEFAULT_PIZERO2W_ONNX_PATH = REPO_ROOT / "models" / "microduck_pizero2w_policy.onnx"
 DEFAULT_ESP32_WEIGHTS_PATH = (
     REPO_ROOT / "pipelines" / "dual_esp32s3_stack" / "deployment" / "esp32_policy_weights.h"
 )
@@ -343,7 +344,8 @@ static inline void evaluate_policy_int8(const int8_t* obs_int8, int8_t* actions_
 def main():
     parser = argparse.ArgumentParser(description="Export MicroDuck Policy Checkpoint to ONNX and ESP32 Headers")
     parser.add_argument("--checkpoint", type=str, default=str(DEFAULT_CHECKPOINT_PATH), help="Path to .pt checkpoint")
-    parser.add_argument("--onnx-output", type=str, default=str(DEFAULT_ONNX_PATH), help="Path for ONNX export")
+    parser.add_argument("--onnx-output", type=str, default=str(DEFAULT_ONNX_PATH), help="Path for ONNX export (RPi 5)")
+    parser.add_argument("--pizero-onnx-output", type=str, default=str(DEFAULT_PIZERO2W_ONNX_PATH), help="Path for ONNX export (Pi Zero 2 W)")
     parser.add_argument("--esp32-weights-output", type=str, default=str(DEFAULT_ESP32_WEIGHTS_PATH), help="Path for esp32_policy_weights.h")
     parser.add_argument("--esp32-config-output", type=str, default=str(DEFAULT_ESP32_CONFIG_PATH), help="Path for esp32_quant_config.h")
     parser.add_argument("--opset", type=int, default=13, help="ONNX opset version (default: 13)")
@@ -374,7 +376,10 @@ def main():
 
     print(f"[Export] Loading checkpoint from {ckpt_path}...")
     onnx_file = export_onnx(ckpt_path, output_path=args.onnx_output, opset=args.opset)
-    print(f"[Export] Exported Float32 ONNX model (opset {args.opset}): {onnx_file}")
+    print(f"[Export] Exported Float32 ONNX model (RPi 5) (opset {args.opset}): {onnx_file}")
+
+    pizero_onnx = export_onnx(ckpt_path, output_path=args.pizero_onnx_output, opset=args.opset)
+    print(f"[Export] Exported Float32 ONNX model (Pi Zero 2 W) (opset {args.opset}): {pizero_onnx}")
 
     weights_file, config_file = export_esp32_headers(
         ckpt_path,

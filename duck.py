@@ -81,9 +81,11 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     # 4. Hardware Deployment Targets
     onnx_file = REPO_ROOT / "models" / "microduck_rpi5_policy.onnx"
+    pizero_onnx_file = REPO_ROOT / "models" / "microduck_pizero2w_policy.onnx"
     esp32_h = REPO_ROOT / "pipelines" / "dual_esp32s3_stack" / "deployment" / "esp32_policy_weights.h"
     print("\n[4] TỆP TRIỂN KHAI PHẦN CỨNG (DEPLOYMENT ARTIFACTS)")
-    print(f"  • RPi 5 Float32 ONNX : {'[CÓ SẴN]' if onnx_file.exists() else '[CHƯA XUẤT]'} ({onnx_file.name})")
+    print(f"  • RPi 5 Float32 ONNX    : {'[CÓ SẴN]' if onnx_file.exists() else '[CHƯA XUẤT]'} ({onnx_file.name})")
+    print(f"  • Pi Zero 2 W ONNX      : {'[CÓ SẴN]' if pizero_onnx_file.exists() else '[CHƯA XUẤT]'} ({pizero_onnx_file.name})")
     print(f"  • ESP32-S3 INT8 C-Header: {'[CÓ SẴN]' if esp32_h.exists() else '[CHƯA XUẤT]'} ({esp32_h.name})")
 
     print("\n" + "=" * 72)
@@ -163,7 +165,7 @@ def cmd_export(args: argparse.Namespace) -> int:
             ckpt_path = str(best_ckpt)
     if ckpt_path:
         cmd.extend(["--checkpoint", ckpt_path])
-    print(f">>> Đang xuất mô hình ra ONNX (RPi 5) và INT8 Header (ESP32-S3) từ {ckpt_path or 'mặc định'}...")
+    print(f">>> Đang xuất mô hình ra ONNX (RPi 5 & Pi Zero 2 W) và INT8 Header (ESP32-S3) từ {ckpt_path or 'mặc định'}...")
     return subprocess.run(cmd).returncode
 
 
@@ -197,7 +199,7 @@ def main() -> int:
     p_train.add_argument("--stand-first", action="store_true", help="Ưu tiên học đứng thăng bằng trước")
 
     # export
-    p_export = subparsers.add_parser("export", help="Xuất policy sang ONNX và INT8 C Header")
+    p_export = subparsers.add_parser("export", help="Xuất policy sang ONNX (RPi 5 & Pi Zero 2 W) và INT8 C Header (ESP32-S3)")
     p_export.add_argument("--checkpoint", type=str, default=None, help="Đường dẫn checkpoint cần xuất")
 
     args = parser.parse_args()

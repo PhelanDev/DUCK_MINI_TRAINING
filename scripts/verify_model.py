@@ -172,7 +172,12 @@ def verify_mass_and_inertials(
 
     # Expected total mass check with target_mass and tolerance
     if target_mass is None:
-        target_mass = 0.860 if "rpi5" in urdf_path.lower() else 0.780
+        if "rpi5" in urdf_path.lower():
+            target_mass = 0.860
+        elif "pizero" in urdf_path.lower():
+            target_mass = 0.745
+        else:
+            target_mass = 0.780
     min_mass = target_mass * (1.0 - tolerance)
     max_mass = target_mass * (1.0 + tolerance)
     mass_in_range = min_mass <= total_mass <= max_mass
