@@ -102,7 +102,7 @@ def test_urdf_links_and_inertials():
     assert 0.620 <= total_mass <= 0.740, f"Expected total mass ~0.684kg, got {total_mass:.3f}kg"
 
     # Verify chibi squat leg lengths: thigh L1 = 32mm, shin L2 = 32mm
-    joints_by_name = {j.attrib["name"]: j for j in root.iter("joint")}
+    joints_by_name = {j.attrib["name"]: j for j in root.findall("joint")}
     knee_origin = [float(x) for x in joints_by_name["left_knee_pitch"].find("origin").attrib["xyz"].split()]
     assert knee_origin == [0.0, 0.0, -0.032], f"Expected knee origin [0, 0, -0.032], got {knee_origin}"
     foot_origin = [float(x) for x in joints_by_name["left_foot_joint"].find("origin").attrib["xyz"].split()]

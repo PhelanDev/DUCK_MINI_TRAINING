@@ -13,7 +13,7 @@
       <geom contype="1" conaffinity="1" group="3"/>
     </default>
     <default class="foot">
-      <geom type="box" size="0.0375 0.0275 0.005" friction="1.5 0.01 0.0005" solref="0.005 1" solimp="0.9 0.95 0.001 0.5 2"/>
+      <geom type="box" size="0.026 0.021 0.004" friction="1.5 0.01 0.0005" solref="0.005 1" solimp="0.9 0.95 0.001 0.5 2"/>
     </default>
   </default>
 
@@ -49,7 +49,7 @@
     <geom name="stair_dn_2" type="box" size="0.06 0.40 0.0075" pos="2.20 0.0 0.0075" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
     <geom name="floor_exit" type="box" size="0.40 0.40 0.005" pos="2.66 0.0 0.005" rgba="0.3 0.5 0.6 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
 
-    <body name="base_link" pos="0 0 0.170">
+    <body name="base_link" pos="0 0 0.095">
       <freejoint name="root"/>
       <site name="imu_site" pos="0 0 0.010" size="0.005" rgba="1 0 0 1"/>
       <!-- Base chassis + Pi 5 4GB + Active Cooler + Buck 5V/5A + 2S battery pack (~390g total, CoM elevated ~10mm) -->
@@ -98,18 +98,18 @@
 
         <body name="left_thigh_link" pos="0 0.015 -0.020">
           <joint name="left_hip_pitch" type="hinge" axis="0 1 0" range="-0.87 0.87"/>
-          <!-- Thigh L1 = 65mm, mass 65g -->
-          <geom name="left_thigh_geom" type="box" size="0.0175 0.015 0.0325" pos="0 0 -0.0325" mass="0.065" material="duck_yellow"/>
+          <!-- Thigh L1 = 32mm, mass 40g -->
+          <geom name="left_thigh_geom" type="box" size="0.0175 0.015 0.016" pos="0 0 -0.016" mass="0.040" material="duck_yellow"/>
 
-          <body name="left_shin_link" pos="0 0 -0.065">
+          <body name="left_shin_link" pos="0 0 -0.032">
             <joint name="left_knee_pitch" type="hinge" axis="0 1 0" range="0.0 1.48"/>
-            <!-- Shin L2 = 65mm, mass 45g -->
-            <geom name="left_shin_geom" type="box" size="0.015 0.0125 0.0325" pos="0 0 -0.0325" mass="0.045" material="servo_grey"/>
+            <!-- Shin L2 = 32mm, mass 30g -->
+            <geom name="left_shin_geom" type="box" size="0.015 0.0125 0.016" pos="0 0 -0.016" mass="0.030" material="servo_grey"/>
 
-            <body name="left_foot_link" pos="0 0 -0.065">
-              <!-- Foot 75 x 55 x 10 mm, mass 30g, high friction -->
-              <geom name="left_foot_geom" class="foot" pos="0.010 0 -0.005" mass="0.030" material="duck_orange"/>
-              <site name="left_foot_touch_site" pos="0.010 0 -0.010" size="0.040 0.030 0.005" type="box" rgba="0 1 1 0.5"/>
+            <body name="left_foot_link" pos="0 0 -0.032">
+              <!-- Foot 52 x 42 x 8 mm, mass 22g, high friction -->
+              <geom name="left_foot_geom" class="foot" pos="0.008 0 -0.004" mass="0.022" material="duck_orange"/>
+              <site name="left_foot_touch_site" pos="0.008 0 -0.008" size="0.026 0.021 0.004" type="box" rgba="0 1 1 0.5"/>
             </body>
           </body>
         </body>
@@ -123,18 +123,18 @@
 
         <body name="right_thigh_link" pos="0 -0.015 -0.020">
           <joint name="right_hip_pitch" type="hinge" axis="0 1 0" range="-0.87 0.87"/>
-          <!-- Thigh L1 = 65mm, mass 65g -->
-          <geom name="right_thigh_geom" type="box" size="0.0175 0.015 0.0325" pos="0 0 -0.0325" mass="0.065" material="duck_yellow"/>
+          <!-- Thigh L1 = 32mm, mass 40g -->
+          <geom name="right_thigh_geom" type="box" size="0.0175 0.015 0.016" pos="0 0 -0.016" mass="0.040" material="duck_yellow"/>
 
-          <body name="right_shin_link" pos="0 0 -0.065">
+          <body name="right_shin_link" pos="0 0 -0.032">
             <joint name="right_knee_pitch" type="hinge" axis="0 1 0" range="0.0 1.48"/>
-            <!-- Shin L2 = 65mm, mass 45g -->
-            <geom name="right_shin_geom" type="box" size="0.015 0.0125 0.0325" pos="0 0 -0.0325" mass="0.045" material="servo_grey"/>
+            <!-- Shin L2 = 32mm, mass 30g -->
+            <geom name="right_shin_geom" type="box" size="0.015 0.0125 0.016" pos="0 0 -0.016" mass="0.030" material="servo_grey"/>
 
-            <body name="right_foot_link" pos="0 0 -0.065">
-              <!-- Foot 75 x 55 x 10 mm, mass 30g, high friction -->
-              <geom name="right_foot_geom" class="foot" pos="0.010 0 -0.005" mass="0.030" material="duck_orange"/>
-              <site name="right_foot_touch_site" pos="0.010 0 -0.010" size="0.040 0.030 0.005" type="box" rgba="0 1 1 0.5"/>
+            <body name="right_foot_link" pos="0 0 -0.032">
+              <!-- Foot 52 x 42 x 8 mm, mass 22g, high friction -->
+              <geom name="right_foot_geom" class="foot" pos="0.008 0 -0.004" mass="0.022" material="duck_orange"/>
+              <site name="right_foot_touch_site" pos="0.008 0 -0.008" size="0.026 0.021 0.004" type="box" rgba="0 1 1 0.5"/>
             </body>
           </body>
         </body>

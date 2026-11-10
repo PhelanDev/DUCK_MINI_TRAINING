@@ -219,7 +219,7 @@ def test_esp32_urdf_structure_and_inertials():
     assert 0.295 <= base_mass <= 0.336, f"Expected URDF base_link mass ~0.310-0.320kg, got {base_mass:.3f}kg"
 
     # Verify chibi squat leg lengths: thigh L1 = 32mm, shin L2 = 32mm
-    joints_by_name = {j.attrib["name"]: j for j in root.iter("joint")}
+    joints_by_name = {j.attrib["name"]: j for j in root.findall("joint")}
     knee_origin = [float(x) for x in joints_by_name["left_knee_pitch"].find("origin").attrib["xyz"].split()]
     assert knee_origin == [0.0, 0.0, -0.032], f"Expected knee origin [0, 0, -0.032], got {knee_origin}"
     foot_origin = [float(x) for x in joints_by_name["left_foot_joint"].find("origin").attrib["xyz"].split()]
