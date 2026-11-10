@@ -177,6 +177,27 @@ def test_rpi5_hardware_spec_doc():
     assert "2S" in content or "7.4V" in content
 
 
+def test_pizero2w_hardware_spec_doc():
+    """Verify pizero2w_hardware_spec.md exists and contains thorough technical documentation."""
+    spec_path = REPO_ROOT / "pipelines" / "pizero2w_stack" / "docs" / "pizero2w_hardware_spec.md"
+    assert spec_path.exists(), f"Missing spec: {spec_path}"
+
+    content = spec_path.read_text(encoding="utf-8")
+    assert len(content) > 500, "Documentation is too brief"
+
+    assert "Raspberry Pi Zero 2 W" in content
+    assert "BCM2710A1" in content
+    assert "5V/2.5A" in content or "2.5A" in content or "5.1V" in content
+    assert "PCA9685" in content
+    assert "MG996R" in content
+    assert "I2C" in content
+    assert "I2S" in content or "INMP441" in content
+    assert "LiDAR" in content or "ToF" in content
+    assert "2S" in content or "7.4V" in content
+    assert "55" in content  # 55g electronics mass
+
+
+
 def test_uart_packet_protocol_cpp_compilation(tmp_path):
     """Test C/C++ header compilation and packet encode/decode/CRC validation."""
     header_path = (

@@ -1,7 +1,13 @@
 import math
 import os
+import sys
+from pathlib import Path
 import xml.etree.ElementTree as ET
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 MJCF_PATH = os.path.join(
     os.path.dirname(__file__), "..", "pipelines", "pizero2w_stack", "models", "mjcf", "microduck_pizero2w_8dof.xml"
@@ -232,3 +238,71 @@ def test_pizero2w_mjcf_obstacles():
     stair_names = {"stair_step_1", "stair_step_2", "stair_step_3", "stair_platform"}
     for name in stair_names:
         assert name in geoms, f"Missing {name} in worldbody"
+
+
+def test_pizero2w_infer_script_import_and_mock():
+    """Verify Pi Zero 2 W inference runtime import, angle-to-PWM mapping, and mock mode."""
+    from pipelines.pizero2w_stack.deployment.infer_pizero2w import (
+        PiZero2WInferenceEngine,
+        angle_to_pwm,
+        pack_pizero2w_observation,
+    )
+    import numpy as np
+
+    # 1. Test angle-to-PWM mapping
+    # Neutral 0 rad -> 1500us
+    assert angle_to_pwm(0.0) == 1500
+    # Boundary clamps
+    assert 500 <= angle_to_pwm(-2.0, min_rad=-1.57, max_rad=1.57) <= 600
+    assert 2400 <= angle_to_pwm(2.0, min_rad=-1.57, max_rad=1.57) <= 2500
+    # Asymmetric limits: knee joint [0.0, 1.48]
+    assert angle_to_pwm(0.0, min_rad=0.0, max_rad=1.48) == 1500
+    assert angle_to_pwm(-0.5, min_rad=0.0, max_rad=1.48) == 1500  # Clamped to 0.0
+
+    # 2. Test pack_pizero2w_observation
+    obs = pack_pizero2w_observation(
+        base_ang_vel=[0.0, 0.0, 0.0],
+        proj_grav=[0.0, 0.0, -1.0],
+        commands=[0.2, 0.0, 0.0],
+        joint_pos=[0.0] * 8,
+        joint_vel=[0.0] * 8,
+        last_actions=[0.0] * 8,
+        foot_contact=[1.0, 1.0, 0.0, 0.0],
+        lidar_ranges=[1.5] * 5,
+    )
+    assert obs.shape == (42,)
+
+    # 3. Test PiZero2WInferenceEngine in mock mode
+    engine = PiZero2WInferenceEngine(model_path=None, mock=True, freq=50.0)
+    assert engine.mock is True
+    assert engine.servo_controller is not None
+
+    targets, pwms = engine.step(obs)
+    assert len(targets) == 8
+    assert len(pwms) == 8
+    assert all(500 <= p <= 2500 for p in pwms)
+
+
+def test_pizero2w_infer_cli():
+    """Verify CLI flags --mock, --mock-pca, --freq, --rate work properly."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    script_path = repo_root / "pipelines" / "pizero2w_stack" / "deployment" / "infer_pizero2w.py"
+    assert script_path.exists(), f"Missing script: {script_path}"
+
+    for mock_flag in ["--mock", "--mock-pca"]:
+        cmd = [
+            sys.executable,
+            str(script_path),
+            mock_flag,
+            "--rate",
+            "50",
+            "--steps",
+            "5",
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        assert res.returncode == 0, f"CLI with {mock_flag} failed with error: {res.stderr}\nOutput: {res.stdout}"
+

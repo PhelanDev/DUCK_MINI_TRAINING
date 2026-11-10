@@ -13,8 +13,6 @@ from .env_config import (
     DEFAULT_OBS_BOUNDS,
     DEFAULT_OBS_SCALES,
 )
-from .run_parallel_sim import ParallelSimRunner, run_benchmark
-
 __all__ = [
     "MicroDuck8DoFConfig",
     "compute_observations",
@@ -27,6 +25,12 @@ __all__ = [
     "generate_esp32_quant_header",
     "DEFAULT_OBS_BOUNDS",
     "DEFAULT_OBS_SCALES",
-    "ParallelSimRunner",
-    "run_benchmark",
 ]
+
+try:
+    from .run_parallel_sim import ParallelSimRunner, run_benchmark
+
+    __all__.extend(["ParallelSimRunner", "run_benchmark"])
+except ImportError:
+    pass
+
