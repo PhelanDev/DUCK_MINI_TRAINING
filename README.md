@@ -87,7 +87,6 @@ Cả ba mô hình đều tích hợp cụm cảm biến trên đầu (`head_link
 - **Camera góc rộng:** FOV 60°, đặt ở mặt trước đầu vịt (`cam_lens`).
 - **Microphone:** Đặt tại đỉnh đầu để thu nhận âm thanh.
 - **IMU 6-DOF:** Đo gia tốc 3 trục và vận tốc góc 3 trục đặt tại tâm thân chính `base_link`.
-- **Cảm biến tiếp đất:** Đặt dưới đế hai bàn chân (`left_foot_touch_site`, `right_foot_touch_site`) để nhận biết pha chạm sàn.
 
 ---
 
