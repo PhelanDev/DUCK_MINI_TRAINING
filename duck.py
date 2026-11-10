@@ -146,12 +146,22 @@ def cmd_train(args: argparse.Namespace) -> int:
         "--max-iterations",
         str(args.iterations),
     ]
+
+    target_models = {
+        "rpi5": REPO_ROOT / "pipelines" / "rpi5_stack" / "models" / "mjcf" / "microduck_rpi5_8dof.xml",
+        "pizero2w": REPO_ROOT / "pipelines" / "pizero2w_stack" / "models" / "mjcf" / "microduck_pizero2w_8dof.xml",
+        "esp32": REPO_ROOT / "pipelines" / "dual_esp32s3_stack" / "models" / "mjcf" / "microduck_esp32_8dof.xml",
+    }
+    if getattr(args, "target", None) and args.target in target_models:
+        cmd.extend(["--model-path", str(target_models[args.target])])
+
     if args.resume:
         cmd.extend(["--resume", str(args.resume)])
     if args.stand_first:
         cmd.append("--stand-first")
 
-    print(f">>> Khởi động huấn luyện PPO ({args.envs} envs, tối đa {args.iterations} iters)...")
+    print(f">>> Khởi động huấn luyện PPO ({args.envs} envs, tối đa {args.iterations} iters, target: {getattr(args, 'target', 'rpi5')})...")
+
     return subprocess.run(cmd).returncode
 
 
@@ -193,6 +203,7 @@ def main() -> int:
 
     # train
     p_train = subparsers.add_parser("train", help="Huấn luyện mô hình bước đi bằng PPO đa môi trường")
+    p_train.add_argument("--target", choices=["rpi5", "pizero2w", "esp32"], default="rpi5", help="Nhánh phần cứng mục tiêu (mặc định: rpi5)")
     p_train.add_argument("--envs", type=int, default=256, help="Số lượng môi trường song song (mặc định: 256)")
     p_train.add_argument("--iterations", type=int, default=500, help="Số vòng lặp huấn luyện (mặc định: 500)")
     p_train.add_argument("--resume", type=str, default=None, help="Tiếp tục học từ checkpoint")
