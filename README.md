@@ -199,5 +199,6 @@ E:\duckV1/
 
 ---
 
-## 🔒 7. Bản Quyền & Giấy Phép
-Dự án được phát triển và duy trì bởi **PhelanDev**. Mọi quyền được bảo lưu. Mọi đóng góp hoặc tích hợp phần cứng vui lòng tuân thủ quy chuẩn kỹ thuật và các quy định an toàn Sim-to-Real.
+## 🔒 7. Bản Quyền & Giấy Phép (License)
+Dự án được phát hành dưới giấy phép mã nguồn mở **[MIT License](LICENSE)**. Bản quyền © 2026 **PhelanDev**.  
+Mọi cá nhân, tổ chức được tự do sử dụng, sao chép, sửa đổi, hợp nhất, xuất bản, phân phối và thương mại hóa mã nguồn theo các điều khoản của giấy phép MIT.
