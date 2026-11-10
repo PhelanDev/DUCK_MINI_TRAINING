@@ -125,9 +125,9 @@ def test_rpi5_mujoco_compilation_and_mass_budget():
     data = mujoco.MjData(model)
     mujoco.mj_step(model, data)
 
-    # Total mass ~860g (+/- 5%)
+    # Total mass ~764g (+/- 5%) -> 0.725 to 0.805 kg (Chibi Squat Kinematics)
     total_mass = sum(model.body_mass)
-    assert 0.817 <= total_mass <= 0.903, f"Expected total mass ~0.860kg (+/-5%), got {total_mass:.3f}kg"
+    assert 0.725 <= total_mass <= 0.805, f"Expected total mass ~0.764kg (+/-5%), got {total_mass:.3f}kg"
 
     # base_link mass ~390g (+/- 5%)
     base_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
@@ -214,9 +214,16 @@ def test_rpi5_urdf_structure_and_inertials():
             assert ixx + izz >= iyy - 1e-9, f"Link {name} violates triangle inequality (ixx+izz < iyy)"
             assert iyy + izz >= ixx - 1e-9, f"Link {name} violates triangle inequality (iyy+izz < ixx)"
 
-    assert 0.817 <= total_mass <= 0.903, f"Expected total URDF mass ~0.860kg, got {total_mass:.3f}kg"
+    assert 0.725 <= total_mass <= 0.805, f"Expected total URDF mass ~0.764kg, got {total_mass:.3f}kg"
     base_mass = float(links_by_name["base_link"].find("inertial").find("mass").attrib["value"])
     assert 0.370 <= base_mass <= 0.410, f"Expected URDF base_link mass ~0.390kg, got {base_mass:.3f}kg"
+
+    # Verify chibi squat leg lengths: thigh L1 = 32mm, shin L2 = 32mm
+    joints_by_name = {j.attrib["name"]: j for j in root.iter("joint")}
+    knee_origin = [float(x) for x in joints_by_name["left_knee_pitch"].find("origin").attrib["xyz"].split()]
+    assert knee_origin == [0.0, 0.0, -0.032], f"Expected knee origin [0, 0, -0.032], got {knee_origin}"
+    foot_origin = [float(x) for x in joints_by_name["left_foot_joint"].find("origin").attrib["xyz"].split()]
+    assert foot_origin == [0.0, 0.0, -0.032], f"Expected foot origin [0, 0, -0.032], got {foot_origin}"
 
 
 def test_rpi5_urdf_mujoco_compilation():

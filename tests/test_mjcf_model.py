@@ -72,9 +72,9 @@ def test_mujoco_compilation():
     data = mujoco.MjData(model)
     mujoco.mj_step(model, data)
     
-    # Total mass ~ 780g (0.78 kg) +/- 10%
+    # Total mass ~ 684g (0.684 kg) +/- 8% (Chibi Squat Kinematics)
     total_mass = sum(model.body_mass)
-    assert 0.70 <= total_mass <= 0.85, f"Expected total mass ~0.78kg, got {total_mass:.3f}kg"
+    assert 0.620 <= total_mass <= 0.740, f"Expected total mass ~0.684kg, got {total_mass:.3f}kg"
 
 
 def test_slalom_pillars():

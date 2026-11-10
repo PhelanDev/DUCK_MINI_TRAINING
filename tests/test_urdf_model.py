@@ -99,7 +99,14 @@ def test_urdf_links_and_inertials():
         assert visual is not None, f"Link {name} missing <visual>"
         assert collision is not None, f"Link {name} missing <collision>"
 
-    assert 0.70 <= total_mass <= 0.85, f"Expected total mass ~0.78kg, got {total_mass:.3f}kg"
+    assert 0.620 <= total_mass <= 0.740, f"Expected total mass ~0.684kg, got {total_mass:.3f}kg"
+
+    # Verify chibi squat leg lengths: thigh L1 = 32mm, shin L2 = 32mm
+    joints_by_name = {j.attrib["name"]: j for j in root.iter("joint")}
+    knee_origin = [float(x) for x in joints_by_name["left_knee_pitch"].find("origin").attrib["xyz"].split()]
+    assert knee_origin == [0.0, 0.0, -0.032], f"Expected knee origin [0, 0, -0.032], got {knee_origin}"
+    foot_origin = [float(x) for x in joints_by_name["left_foot_joint"].find("origin").attrib["xyz"].split()]
+    assert foot_origin == [0.0, 0.0, -0.032], f"Expected foot origin [0, 0, -0.032], got {foot_origin}"
 
 def test_urdf_mujoco_compilation():
     urdf_path = os.path.join(os.path.dirname(__file__), "..", "models", "urdf", "microduck_8dof.urdf")
