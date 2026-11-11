@@ -142,57 +142,41 @@ def generate_sleek_helmet():
     ear_l = filleted_cylinder(0.008, 0.003, fillet=0.001, center=(-0.002, 0.026, 0.016), axis='y')
     ear_r = filleted_cylinder(0.008, 0.003, fillet=0.001, center=(-0.002, -0.026, 0.016), axis='y')
     
-    # Sculpted Helmet Base Trim & Nape Flange
-    # Cắt gọn phần cổ áo trắng cũ để lộ ra cụm khớp cổ cơ khí carbon bionic tinh xảo bên dưới
-    nape_rim = superellipsoid(0.023, 0.022, 0.005, r=0.35, s=0.35, center=(-0.003, 0, -0.003))
-    chin_rim = superellipsoid(0.012, 0.013, 0.003, r=0.30, s=0.30, center=(0.009, 0, -0.002))
+    # Sculpted Helmet Base Trim (Vòm đáy nón bo tròn ôm lấy khớp gập cổ)
+    base_cup = filleted_cylinder(0.016, 0.004, fillet=0.001, center=(0.000, 0, 0.000), axis='z')
+    chin_rim = superellipsoid(0.012, 0.013, 0.004, r=0.30, s=0.30, center=(0.012, 0, -0.001))
     
-    return np.vstack([cranium, crest, cheek_l, cheek_r, ear_l, ear_r, nape_rim, chin_rim])
+    return np.vstack([cranium, crest, cheek_l, cheek_r, ear_l, ear_r, base_cup, chin_rim])
 
 def generate_bionic_neck():
     """
-    High-tech articulated bionic neck joint assembly (Graphite carbon & titanium).
-    Mounted on body name="neck" with origin at yaw joint (z=0.0) and head pitch joint (z=0.024).
-    Contains:
-    - Base rotary turret collar (Yaw bearing nesting on chest collar)
-    - Articulated triple-tier cervical vertebrae (Đốt sống cổ dạng đĩa xếp tầng)
-    - Dual pitch pivot clevis arms & bearing hub caps (Pitch axis at z=0.024)
-    - Front throat hydraulic actuator cylinder & pushrod
-    - Rear nuchal conduits / cable harness
+    Bionic 2-DOF Universal Neck Gimbal (Đồng bộ tuyệt đối ngôn ngữ thiết kế với khớp háng bionic).
+    Cầu nối vật lý giữa trục xoay Yaw (Z=0.000m) tại cổ áo ngực và trục xoay Pitch (Z=0.016m) tại đáy mũ bảo hiểm.
+    Gồm:
+    - Yaw Turret Knuckle: Khớp xoay mâm cổ ăn khớp khít với cổ áo ngực.
+    - Bionic Dogbone Link: Thân liên kết cơ bắp bo tròn nguyên khối vững chãi.
+    - Pitch Bearing Knuckle: Khớp gập đầu trục Y tròn mịn.
+    - Titanium Servo Bearing Caps: Nắp che ổ bi xoay 2 bên trục Y đồng điệu với rosettes tai nón.
+    - Front Throat Accent & Rear Spine Channel: Gờ vát ức khí động học và rãnh cáp sống lưng.
     """
-    # 1. Base Rotary Turret Collar (Yaw ring nesting on chest collar)
-    turret_ring = filleted_cylinder(0.013, 0.003, fillet=0.0008, center=(0, 0, 0.003), axis='z')
-    turret_step = filleted_cylinder(0.011, 0.002, fillet=0.0005, center=(0, 0, 0.006), axis='z')
+    # 1. Yaw Turret Knuckle (Khớp xoay Yaw trục Z tiếp xúc cổ ngực)
+    yaw_knuckle = filleted_cylinder(0.013, 0.003, fillet=0.0008, center=(0, 0, 0.003), axis='z')
     
-    # 2. Articulated Cervical Vertebrae (3 stacked vertebrae rings)
-    v1 = filleted_cylinder(0.0085, 0.0018, fillet=0.0004, center=(0, 0, 0.009), axis='z')
-    v2 = filleted_cylinder(0.0078, 0.0018, fillet=0.0004, center=(0, 0, 0.014), axis='z')
-    v3 = filleted_cylinder(0.0072, 0.0018, fillet=0.0004, center=(0, 0, 0.019), axis='z')
-    central_core = filleted_cylinder(0.0050, 0.010, fillet=0.0005, center=(0, 0, 0.012), axis='z')
+    # 2. Bionic Neck Dogbone Core (Thân liên kết cơ bắp bo tròn)
+    dogbone = superellipsoid(0.010, 0.009, 0.006, r=0.32, s=0.32, center=(0.001, 0, 0.008))
     
-    # 3. Dual Pitch Actuator Clevis (Rising along y = ±0.0105 to pitch pivot at z=0.024)
-    clevis_l = superellipsoid(0.004, 0.0022, 0.009, r=0.25, s=0.25, center=(0.0, 0.0105, 0.014))
-    clevis_r = superellipsoid(0.004, 0.0022, 0.009, r=0.25, s=0.25, center=(0.0, -0.0105, 0.014))
+    # 3. Pitch Bearing Knuckle (Khớp gập Pitch trục Y tại Z=0.016m)
+    pitch_knuckle = filleted_cylinder(0.0085, 0.010, fillet=0.0012, center=(0, 0, 0.016), axis='y')
     
-    # Pitch Servo Bearing Hub Caps (at pitch axis y = ±0.0115, z = 0.024)
-    hub_l = filleted_cylinder(0.0045, 0.0025, fillet=0.0006, center=(0, 0.0115, 0.024), axis='y')
-    hub_r = filleted_cylinder(0.0045, 0.0025, fillet=0.0006, center=(0, -0.0115, 0.024), axis='y')
+    # 4. Titanium Servo Bearing Caps (Nắp che ổ bi xoay 2 bên trục Y)
+    cap_l = filleted_cylinder(0.0060, 0.002, fillet=0.0005, center=(0, 0.011, 0.016), axis='y')
+    cap_r = filleted_cylinder(0.0060, 0.002, fillet=0.0005, center=(0, -0.011, 0.016), axis='y')
     
-    # 4. Front Throat Hydraulic Actuator (Pitch assistance cylinder)
-    piston_cyl = filleted_cylinder(0.0028, 0.005, fillet=0.0005, center=(0.007, 0, 0.010), axis='z')
-    piston_rod = filleted_cylinder(0.0015, 0.006, fillet=0.0003, center=(0.007, 0, 0.017), axis='z')
+    # 5. Front Throat Bionic Accent & Rear Spine Channel
+    throat_accent = superellipsoid(0.005, 0.005, 0.005, r=0.25, s=0.25, center=(0.008, 0, 0.007))
+    spine_rib = superellipsoid(0.004, 0.004, 0.005, r=0.25, s=0.25, center=(-0.007, 0, 0.007))
     
-    # 5. Rear Nuchal Conduits (Cable harnesses running up the spine)
-    cable_l = filleted_cylinder(0.0016, 0.008, fillet=0.0003, center=(-0.006, 0.005, 0.013), axis='z')
-    cable_r = filleted_cylinder(0.0016, 0.008, fillet=0.0003, center=(-0.006, -0.005, 0.013), axis='z')
-    
-    return np.vstack([
-        turret_ring, turret_step,
-        v1, v2, v3, central_core,
-        clevis_l, clevis_r, hub_l, hub_r,
-        piston_cyl, piston_rod,
-        cable_l, cable_r
-    ])
+    return np.vstack([yaw_knuckle, dogbone, pitch_knuckle, cap_l, cap_r, throat_accent, spine_rib])
 
 def generate_panoramic_visor():
     """
@@ -305,8 +289,9 @@ def generate_sculpted_chest():
     # Main Pectoral Torso Block
     chest_block = superellipsoid(0.028, 0.036, 0.032, r=0.4, s=0.4, center=(0.010, 0, 0.002))
     
-    # Slender Armored Neck Collar (cradles the base of the bionic neck turret)
-    collar = filleted_cylinder(0.015, 0.005, fillet=0.001, center=(0.012, 0, 0.033), axis='z')
+    # Integrated Neck Collar Socket (Vòm cổ áo ngực bo tròn fillet đón khớp cổ gimbal)
+    collar = filleted_cylinder(0.016, 0.006, fillet=0.0015, center=(0.012, 0, 0.034), axis='z')
+    collar_lip = filleted_cylinder(0.0145, 0.002, fillet=0.0005, center=(0.012, 0, 0.038), axis='z')
     
     # Shoulder Mount Armors (left & right)
     sh_l = superellipsoid(0.020, 0.010, 0.016, r=0.3, s=0.3, center=(0.006, 0.036, 0.014))
@@ -323,7 +308,7 @@ def generate_sculpted_chest():
     hip_socket_l = superellipsoid(0.018, 0.011, 0.014, r=0.30, s=0.30, center=(0.005, 0.030, -0.022))
     hip_socket_r = superellipsoid(0.018, 0.011, 0.014, r=0.30, s=0.30, center=(0.005, -0.030, -0.022))
     
-    return np.vstack([chest_block, collar, sh_l, sh_r, flank_l, flank_r, pelvis, hip_socket_l, hip_socket_r])
+    return np.vstack([chest_block, collar, collar_lip, sh_l, sh_r, flank_l, flank_r, pelvis, hip_socket_l, hip_socket_r])
 
 def generate_multi_tier_reactor():
     """

@@ -75,11 +75,11 @@
       <!-- Neck & Head Assembly -->
       <body name="neck" pos="0.012 0 0.038">
         <joint name="head_yaw" type="hinge" axis="0 0 1" range="-1.57 1.57" />
-        <inertial pos="0 0 0.012" mass="0.030" diaginertia="0.00001 0.00001 0.00001" />
+        <inertial pos="0 0 0.008" mass="0.030" diaginertia="0.00001 0.00001 0.00001" />
         <geom type="mesh" mesh="cyber_neck" material="mecha_carbon" class="visual" />
         <geom type="mesh" mesh="cyber_neck" class="collision" />
 
-        <body name="head" pos="0 0 0.024">
+        <body name="head" pos="0 0 0.016">
           <joint name="head_pitch" type="hinge" axis="0 1 0" range="-0.52 0.78" />
           <inertial pos="0.015 0 0.018" mass="0.065" diaginertia="0.00007 0.00007 0.00006" />
 
