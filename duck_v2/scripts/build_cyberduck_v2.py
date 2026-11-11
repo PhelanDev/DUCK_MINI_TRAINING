@@ -385,37 +385,38 @@ def generate_bionic_shin():
 
 def generate_bionic_foot(side=+1):
     """
-    Tactical 3-claw webbed foot in metallic gold with ankle clevis at (0,0,0),
-    arched heel, and 3 tapered forward claws.
+    Athletic 3-claw bionic foot in metallic gold with ankle clevis at (0,0,0),
+    compact arched heel counter, and 3 sleek tapered forward claws.
+    Proportional to athletic biped body (length ~50mm, width ~26mm).
     """
     # Ankle Clevis Mount (centered at 0,0,0)
-    clevis = filleted_cylinder(0.008, 0.011, fillet=0.001, center=(0.0, 0, 0.0), axis='y')
+    clevis = filleted_cylinder(0.007, 0.009, fillet=0.001, center=(0.0, 0, 0.0), axis='y')
     
-    # Arched Heel Counter
-    heel = superellipsoid(0.018, 0.018, 0.006, r=0.3, s=0.3, center=(-0.014, 0, -0.001))
+    # Compact Arched Heel Counter (reaches back to -0.019)
+    heel = superellipsoid(0.011, 0.012, 0.0055, r=0.3, s=0.3, center=(-0.008, 0, -0.001))
     
-    # Central Forward Claw
-    toe_mid = superellipsoid(0.024, 0.006, 0.005, r=0.3, s=0.3, center=(0.022, 0, -0.002))
+    # Central Forward Claw (reaches forward to +0.031)
+    toe_mid = superellipsoid(0.016, 0.0045, 0.0045, r=0.3, s=0.3, center=(0.015, 0, -0.002))
     
-    # Left & Right Outrigger Claws
-    toe_l = superellipsoid(0.020, 0.005, 0.005, r=0.3, s=0.3, center=(0.018, 0.014, -0.002))
-    toe_r = superellipsoid(0.020, 0.005, 0.005, r=0.3, s=0.3, center=(0.018, -0.014, -0.002))
+    # Left & Right Outrigger Claws (flaring out to y = ±0.011)
+    toe_l = superellipsoid(0.014, 0.004, 0.0045, r=0.3, s=0.3, center=(0.013, 0.010, -0.002))
+    toe_r = superellipsoid(0.014, 0.004, 0.0045, r=0.3, s=0.3, center=(0.013, -0.010, -0.002))
     
     return np.vstack([clevis, heel, toe_mid, toe_l, toe_r])
 
 def generate_bionic_sole():
     """
     High-traction rubber sole with parallel grip tread ribs.
-    Width fits neatly within foot boundaries (half_length = 0.016m = 32mm total width).
+    Proportionate to compact athletic foot (length ~48mm, width ~24mm).
     Bottom of tread ribs at local z = -0.0050m guarantees exact Z=0.000m ground contact!
     """
-    # Rubber sole base plate (from z = -0.0010 to -0.0035)
-    base = superellipsoid(0.036, 0.020, 0.0012, r=0.2, s=0.3, center=(0.006, 0, -0.0025))
+    # Rubber sole base plate (length ~48mm from x = -0.019 to +0.029)
+    base = superellipsoid(0.024, 0.013, 0.0012, r=0.2, s=0.3, center=(0.005, 0, -0.0025))
     
-    # 5 Parallel Rubber Grip Treads neatly tucked underneath foot
+    # 5 Parallel Rubber Grip Treads (width 22mm, half_length = 0.011)
     treads = []
-    for x in [-0.018, -0.008, 0.004, 0.016, 0.026]:
-        tr = filleted_cylinder(0.0010, 0.016, fillet=0.0003, center=(x, 0, -0.0040), axis='y')
+    for x in [-0.012, -0.003, 0.006, 0.015, 0.024]:
+        tr = filleted_cylinder(0.0010, 0.011, fillet=0.0003, center=(x, 0, -0.0040), axis='y')
         treads.append(tr)
     return np.vstack([base] + treads)
 
