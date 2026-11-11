@@ -98,6 +98,20 @@ def render_v2():
         shutil.copy2(p_foot, os.path.join(brain_dir, "cyberduck_v2_foot_closeup.png"))
     print(f"Rendered: {p_foot}")
 
+    # 5b. Neck Joint Closeup
+    cam_neck = mujoco.MjvCamera()
+    cam_neck.lookat = [0.010, 0.000, 0.150]
+    cam_neck.distance = 0.16
+    cam_neck.azimuth = 145
+    cam_neck.elevation = -5
+    renderer.update_scene(data, camera=cam_neck)
+    img_neck = renderer.render()
+    p_neck = os.path.join(media_dir, "cyberduck_v2_neck_closeup.png")
+    Image.fromarray(img_neck).save(p_neck)
+    if os.path.exists(brain_dir):
+        shutil.copy2(p_neck, os.path.join(brain_dir, "cyberduck_v2_neck_closeup.png"))
+    print(f"Rendered: {p_neck}")
+
     # 6. Exploded View 3D
     com = data.subtree_com[model.body("trunk_base").id].copy()
     for i in range(model.ngeom):

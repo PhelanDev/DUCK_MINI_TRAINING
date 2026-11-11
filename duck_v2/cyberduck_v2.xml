@@ -32,6 +32,7 @@
     <mesh name="cyber_helm" file="cyber_helm.stl" />
     <mesh name="cyber_visor" file="cyber_visor.stl" />
     <mesh name="cyber_beak" file="cyber_beak.stl" />
+    <mesh name="cyber_neck" file="cyber_neck.stl" />
     <mesh name="cyber_chest" file="cyber_chest.stl" />
     <mesh name="cyber_reactor" file="cyber_reactor.stl" />
     <mesh name="cyber_thruster_pack" file="cyber_thruster_pack.stl" />
@@ -74,11 +75,13 @@
       <!-- Neck & Head Assembly -->
       <body name="neck" pos="0.012 0 0.038">
         <joint name="head_yaw" type="hinge" axis="0 0 1" range="-1.57 1.57" />
-        <geom type="cylinder" size="0.006 0.008" material="mecha_carbon" class="visual" />
+        <inertial pos="0 0 0.012" mass="0.030" diaginertia="0.00001 0.00001 0.00001" />
+        <geom type="mesh" mesh="cyber_neck" material="mecha_carbon" class="visual" />
+        <geom type="mesh" mesh="cyber_neck" class="collision" />
 
         <body name="head" pos="0 0 0.024">
           <joint name="head_pitch" type="hinge" axis="0 1 0" range="-0.52 0.78" />
-          <inertial pos="0.015 0 0.018" mass="0.095" diaginertia="0.00009 0.00009 0.00007" />
+          <inertial pos="0.015 0 0.018" mass="0.065" diaginertia="0.00007 0.00007 0.00006" />
 
           <!-- Aero Helm, Glowing Cyber Visor, Metallic Gold Beak -->
           <geom type="mesh" mesh="cyber_helm" material="mecha_white" class="visual" />
