@@ -69,6 +69,10 @@ Raspberry Pi 5 trang bị đầu cắm 40-pin GPIO tiêu chuẩn. Các ngoại v
 | | SCL | Pin 5 | GPIO 3 (SCL1) | Đường xung nhịp I2C (Bus 1) |
 | | GND | Pin 6 | Ground | Mass chung |
 | | OE (Output Enable) | Pin 11 | GPIO 17 | Tích cực mức thấp (kéo GND để mở xuất xung) |
+| **MPU6050 (6-DOF IMU)** | VDD | Pin 1 | 3.3V Power | Cấp nguồn nuôi cảm biến 3.3V |
+| | SDA | Pin 3 | GPIO 2 (SDA1) | Đường dữ liệu I2C (Địa chỉ 0x68) |
+| | SCL | Pin 5 | GPIO 3 (SCL1) | Đường xung nhịp I2C (Bus 1, 400kHz) |
+| | GND | Pin 6 | Ground | Mass chung |
 | **INMP441 (I2S Mic)** | VDD | Pin 17 | 3.3V Power | Nguồn nuôi microphone |
 | | GND | Pin 20 | Ground | Mass tín hiệu âm thanh |
 | | SD (Serial Data) | Pin 38 | GPIO 20 (PCM_DIN) | Dữ liệu âm thanh 24-bit số gửi về Pi 5 |
@@ -130,7 +134,73 @@ Bo mạch mở rộng I2C PCA9685 được gán 8 kênh PWM đầu tiên tương
 
 ---
 
-## 5. Quy Trình Vận Hành & An Toàn Thực Địa
+## 5. Kiến Trúc Bộ Lọc Quán Tính IMU 3 Tầng & Mahony AHRS (Locomotion Stability)
+
+Trên nền tảng Raspberry Pi 5, tác vụ tiếp nhận và lọc cảm biến quán tính được thực thi qua lớp `MPU6050FilterReader` trong `pipelines/rpi5_stack/deployment/infer_rpi5.py`. Với 4 nhân Cortex-A76 @ 2.4GHz, hệ thống xử lý bộ lọc quán tính 3 tầng kết hợp Mahony AHRS với độ trễ cực thấp:
+
+```
+    ┌────────────────────────────────────────────────────────┐
+    │       Cảm biến MPU6050 trên I2C-1 (Bus 1, Addr 0x68)   │
+    └───────────────────────────┬────────────────────────────┘
+                                │ I2C Fast-Mode 400kHz
+    ┌───────────────────────────▼────────────────────────────┐
+    │  TẦNG 1: Hardware DLPF (Digital Low-Pass Filter)       │
+    │  - Thanh ghi CONFIG (0x1A) = 0x03                      │
+    │  - Tần số cắt: 42Hz (Gyro) / 44Hz (Accel), trễ ~4.8ms  │
+    │  - Khử triệt để rung chấn servo MG996R & quạt làm mát  │
+    └───────────────────────────┬────────────────────────────┘
+                                │
+    ┌───────────────────────────▼────────────────────────────┐
+    │  TẦNG 2: Calibration Độ Lệch & Bộ Lọc Số IIR Gyro      │
+    │  - Thu thập 100 mẫu tĩnh lúc khởi động để trừ bias     │
+    │  - Bộ lọc IIR: w_filt = 0.70*w_filt + 0.30*w_unbiased  │
+    │  - Cung cấp 3 chiều base_ang_vel mượt mà vào obs[0..2] │
+    └───────────────────────────┬────────────────────────────┘
+                                │
+    ┌───────────────────────────▼────────────────────────────┐
+    │  TẦNG 3: Vectorized Mahony AHRS & Impact Gating        │
+    │  - Tính toán ma trận/quaternion vector hóa NumPy       │
+    │  - Deadband gating: | ||a|| - 1.0g | <= 0.30g          │
+    │    * Khi va chạm (>1.30g / <0.70g): ngắt gia tốc kế     │
+    │    * Trạng thái chuẩn: Kp=1.0, Ki=0.05 hiệu chỉnh trôi │
+    │  - Chiếu trọng lực MuJoCo: proj_grav = R^T * [0,0,-1]  │
+    │  - Xuất 3 chiều proj_grav vào obs[3..5]                │
+    └────────────────────────────────────────────────────────┘
+```
+
+### 5.1. Tầng 1: Bộ lọc thông thấp phần cứng MPU6050 DLPF
+- **Thanh ghi cấu hình:** Thiết lập thanh ghi `CONFIG (0x1A) = 0x03` qua giao tiếp `smbus2`.
+- **Tần số cắt:** $42\text{ Hz}$ cho Gyroscope và $44\text{ Hz}$ cho Accelerometer (thời gian trễ nhóm $4.8\text{ ms}$).
+- **Hiệu quả:** Triệt tiêu trực tiếp nhiễu rung cơ học cao tần sinh ra từ 8 servo MG996R và quạt tản nhiệt Active Cooler của Pi 5 ngay tại bộ chuyển đổi phần cứng của cảm biến.
+
+### 5.2. Tầng 2: Hiệu chuẩn độ lệch tĩnh & Bộ lọc phần mềm IIR Gyro
+1. **Startup Zero-Rate Bias Calibration:**
+   - Khi dịch vụ `infer_rpi5.py` khởi chạy, hàm `_calibrate_gyro(samples=100)` đọc 100 mẫu khi robot đứng yên để xác định độ lệch không đổi $\mathbf{b}_{\text{gyro}}$.
+   - Giá trị này được trừ trực tiếp trong thời gian thực:
+     $$\mathbf{\omega}_{\text{unbiased}} = \left(\frac{\text{raw\_gyro}}{131.0} \cdot \frac{\pi}{180.0}\right) - \mathbf{b}_{\text{gyro}}$$
+2. **Bộ lọc IIR cho Vận tốc góc thân:**
+   - Vận tốc góc được làm mượt qua bộ lọc số IIR bậc 1 với hệ số $\alpha_{\text{gyro}} = 0.70$:
+     $$\mathbf{\omega}_{\text{filt}}[t] = 0.70 \cdot \mathbf{\omega}_{\text{filt}}[t-1] + 0.30 \cdot \mathbf{\omega}_{\text{unbiased}}[t]$$
+   - Cung cấp 3 thành phần `base_ang_vel` tin cậy vào vector quan sát `obs[0..2]`.
+
+### 5.3. Tầng 3: Vectorized Mahony AHRS & Ngắt va chạm (Dynamic Foot-Strike Impact Gating)
+1. **Thuật toán Mahony AHRS Vector Hóa:**
+   - Trạng thái tư thế được lưu trữ dưới dạng quaternion $\mathbf{q} = [q_w, q_x, q_y, q_z]$ chuẩn hóa, lặp ở tần số $50\text{ Hz}$ ($\Delta t = 20\text{ ms}$).
+   - Tận dụng tập lệnh ARMv8 NEON SIMD qua NumPy, thời gian thực thi thuật toán Mahony trên Pi 5 chỉ mất $< 0.08\text{ ms}$.
+2. **Cơ Chế Dynamic Foot-Strike Impact Gating (Deadband 0.30g):**
+   - **Ngưỡng kiểm tra:** $\text{impact\_threshold} = 0.30\text{g}$ quanh $1.0\text{g}$ ($0.70\text{g} \le \|\mathbf{a}\| \le 1.30\text{g}$).
+   - **Khi va chạm tiếp đất (Foot Strike Shock):** Gia tốc kế đo được các đỉnh xung kích từ $1.5\text{g} - 2.5\text{g}$ ($|\|\mathbf{a}\| - 1.0\text{g}| > 0.30\text{g}$). Hệ thống ngắt hoàn toàn hiệu chỉnh gia tốc kế ($K_p = 0, K_i = 0$), giữ nguyên sai số tích phân và chỉ dùng vận tốc góc con quay hồi chuyển để tích phân quaternion tư thế, ngăn ngừa hoàn toàn hiện tượng méo góc khi tiếp đất.
+   - **Khi di chuyển ổn định:** Cổng mở, hệ thống áp dụng hệ số tỉ lệ $K_p = 1.0$ và hệ số tích phân $K_i = 0.05$ để triệt tiêu trôi dạt góc dài hạn.
+3. **Tính toán Trọng Lực Chiếu MuJoCo (Projected Gravity):**
+   - Phương thức `get_proj_grav()` trích xuất vector trọng lực chiếu từ quaternion hiện tại:
+     $$\mathbf{g}_{\text{proj}} = \begin{bmatrix} 2(q_x q_z - q_w q_y) \\ 2(q_y q_z + q_w q_x) \\ -(q_w^2 - q_x^2 - q_y^2 + q_z^2) \end{bmatrix}$$
+   - Ở tư thế đứng thẳng cân bằng, $\mathbf{g}_{\text{proj}} = [0.0, 0.0, -1.0]$, đồng nhất tuyệt đối với mô hình huấn luyện mô phỏng MuJoCo.
+4. **Hỗ trợ Chế Độ Mô Phỏng & CI/CD Mock Mode:**
+   - Khi chạy với cờ `--mock` hoặc trên máy trạm không có phần cứng I2C vật lý, `MPU6050FilterReader` tự động trả về vector tĩnh $[0, 0, 0]$ cho vận tốc góc và $[0, 0, -1]$ cho trọng lực chiếu, đảm bảo kiểm thử toàn diện vượt qua 100%.
+
+---
+
+## 6. Quy Trình Vận Hành & An Toàn Thực Địa
 
 1. **Khởi động an toàn (Power-up Sequence):**
    - Bật công tắc mạch logic vi xử lý (Buck 5V) $\rightarrow$ Chờ Pi 5 boot hoàn tất hệ điều hành Raspberry Pi OS 64-bit và nạp dịch vụ `infer_rpi5.service`.

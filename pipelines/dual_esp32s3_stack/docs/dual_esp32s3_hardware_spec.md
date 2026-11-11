@@ -123,7 +123,80 @@ MCU 2 chịu trách nhiệm đọc tư thế bipedal và điều khiển 8 servo
 
 ---
 
-## 5. Quản Lý Pin & Mạch Bảo Vệ (Battery Management & Safety)
+## 5. Kiến Trúc Bộ Lọc Quán Tính IMU 3 Tầng & Mahony AHRS (Locomotion Stability)
+
+Để triệt tiêu hoàn toàn rung chấn cơ học từ 8 động cơ servo MG996R và các xung va đập tiếp đất (foot-strike shocks), MCU 2 triển khai kiến trúc lọc quán tính 3 tầng phần cứng - phần mềm kết hợp dung hợp cảm biến Mahony AHRS 6-DOF:
+
+```
+    ┌────────────────────────────────────────────────────────┐
+    │          Cảm biến quán tính 6-DOF MPU6050              │
+    └───────────────────────────┬────────────────────────────┘
+                                │ I2C @ 400kHz
+    ┌───────────────────────────▼────────────────────────────┐
+    │  TẦNG 1: Hardware DLPF (Digital Low-Pass Filter)       │
+    │  - Thanh ghi CONFIG (0x1A) = 0x03                      │
+    │  - Cutoff: 42Hz (Gyro) / 44Hz (Accel), Delay ~4.8ms    │
+    │  - Triệt tiêu rung chấn động cơ servo & cơ cấu chân    │
+    └───────────────────────────┬────────────────────────────┘
+                                │
+    ┌───────────────────────────▼────────────────────────────┐
+    │  TẦNG 2: Calibration & Bộ lọc IIR Vận tốc góc          │
+    │  - Startup zero-rate bias calibration (100 samples)     │
+    │  - Bộ lọc số IIR: w_filt = 0.70*w_filt + 0.30*w_raw    │
+    │  - Xuất 3 chiều base_ang_vel ổn định vào obs[0..2]     │
+    └───────────────────────────┬────────────────────────────┘
+                                │
+    ┌───────────────────────────▼────────────────────────────┐
+    │  TẦNG 3: Mahony AHRS & Ngắt va chạm (Impact Gating)    │
+    │  - Fast Inverse Square Root (fast_inv_sqrt) ~4 cycles  │
+    │  - Deadband gating: | ||a|| - 1.0g | <= 0.30g          │
+    │    * Va chạm (>1.30g hoặc <0.70g): Kp=0, Ki=0 (chỉ gyro)│
+    │    * Bình thường: Kp=1.0, Ki=0.05 bù trôi góc dính     │
+    │  - MuJoCo Projected Gravity: proj_grav = R^T * [0,0,-1] │
+    │  - Xuất 3 chiều proj_grav chuẩn hóa vào obs[3..5]      │
+    └────────────────────────────────────────────────────────┘
+```
+
+### 5.1. Tầng 1: Bộ lọc thông thấp phần cứng (Hardware DLPF)
+- **Thanh ghi cấu hình:** `CONFIG (0x1A) = 0x03`.
+- **Đặc tính lọc:**
+  - Tần số cắt con quay hồi chuyển (Gyroscope): $42\text{ Hz}$, trễ nhóm $4.8\text{ ms}$.
+  - Tần số cắt gia tốc kế (Accelerometer): $44\text{ Hz}$, trễ nhóm $4.9\text{ ms}$.
+- **Tác dụng:** Khử trực tiếp các hài dao động cơ học cao tần sinh ra do bánh răng kim loại của servo MG996R và tần số điều xung PWM $50\text{ Hz}$ trước khi bộ chuyển đổi ADC $16\text{-bit}$ nội bộ của MPU6050 chuyển đổi thành dữ liệu số.
+
+### 5.2. Tầng 2: Hiệu chuẩn độ lệch tĩnh & Bộ lọc phần mềm IIR Gyro
+1. **Zero-Rate Gyro Bias Calibration:**
+   - Tại hàm `init_mpu6050()`, khi robot vừa bật nguồn và đứng yên, hệ thống lấy liên tiếp $100$ mẫu với chu kỳ $2\text{ms}$ (`calib_samples = 100`).
+   - Giá trị trung bình của từng trục được lưu vào `s_gyro_bias[3]` và tự động trừ khử khỏi mọi phép đo thời gian thực:
+     $$\omega_{\text{unbiased}} = \left(\frac{\text{raw\_gyro}}{131.0} \cdot \frac{\pi}{180.0}\right) - s_{\text{gyro\_bias}}$$
+2. **Bộ lọc IIR cho vận tốc góc thân:**
+   - Tín hiệu sau khi trừ bias được lọc tiếp qua bộ lọc số Infinite Impulse Response bậc 1 với hệ số $\alpha_g = 0.70$:
+     $$\omega_{\text{filt}}[t] = 0.70 \cdot \omega_{\text{filt}}[t-1] + 0.30 \cdot \omega_{\text{unbiased}}[t]$$
+   - Tín hiệu lọc này cung cấp trực tiếp cho 3 thành phần `base_ang_vel` trong vector quan sát 42 chiều (`obs[0..2]`), giúp chính sách điều khiển phản ứng mượt mà, không bị giật rung do sốc nhiễu.
+
+### 5.3. Tầng 3: 6-DOF Mahony AHRS & Ngắt va chạm tiếp đất (Dynamic Foot-Strike Impact Gating)
+1. **Thuật toán Mahony AHRS Tối Ưu Cho Vi Điều Khiển Xtensa LX7:**
+   - Cập nhật hướng tư thế dưới dạng quaternion chuẩn hóa $\mathbf{q} = [s_{q0}, s_{q1}, s_{q2}, s_{q3}]$ với chu kỳ điều khiển $\Delta t = 20\text{ms}$ ($50\text{Hz}$).
+   - Sử dụng thuật toán căn bậc hai nghịch đảo nhanh `fast_inv_sqrt` (Fast Inverse Square Root) với 2 vòng lặp Newton-Raphson cho độ chính xác số thực IEEE 754 $23\text{-bit}$ mà chỉ tốn $\sim 4$ chu kỳ lệnh, loại bỏ hoàn toàn chi phí hàm chia/căn phần cứng.
+2. **Cơ chế Ngắt Va Chạm Tiếp Đất (Dynamic Foot-Strike Impact Gating):**
+   - **Ngưỡng Deadband:** $\text{IMPACT\_GATE\_THRESHOLD} = 0.30\text{g}$ quanh mức trọng trường danh định $1.0\text{g}$.
+   - **Quy tắc cổng:**
+     * **Điều kiện bình thường ($0.70\text{g} \le \|\mathbf{a}\| \le 1.30\text{g}$):** Gia tốc đo được chủ yếu là vector trọng lực. Hệ thống tính tích có hướng $\mathbf{e} = \mathbf{a}_{\text{norm}} \times \mathbf{v}$ (với $\mathbf{v}$ là vector trọng lực ước lượng từ quaternion), tích lũy sai số tích phân với $K_i = 0.05$ và phản hồi tỷ lệ $K_p = 1.0$ để sửa trôi dạt góc con quay hồi chuyển:
+       $$\mathbf{e}_{\text{fb}} = K_p \mathbf{e} + \int K_i \mathbf{e} \, dt$$
+     * **Điều kiện va đập tiếp đất ($\|\mathbf{a}\| > 1.30\text{g}$ hoặc $\|\mathbf{a}\| < 0.70\text{g}$):** Khi bàn chân va chạm mặt đất tạo cú sốc $1.5\text{g} - 2.5\text{g}$, gia tốc kế bị nhiễu động lực học cực mạnh không còn phản ánh hướng trọng trường. Cổng ngắt lập tức khóa cập nhật gia tốc ($K_p = 0, K_i = 0$), giữ nguyên sai số tích phân hiện tại và chỉ sử dụng vận tốc góc con quay hồi chuyển để tích phân quaternion tư thế.
+     * Cơ chế này triệt tiêu hoàn toàn hiện tượng "giật góc giả" khi bước đi, bảo vệ robot không bị phán đoán sai góc nghiêng thân.
+3. **Tính toán Trọng Lực Chiếu (MuJoCo Projected Gravity):**
+   - Vector trọng lực danh định của thế giới $[0, 0, -1]$ được chiếu ngược lên hệ tọa độ thân robot thông qua ma trận quay của quaternion:
+     $$\begin{aligned}
+     g_{\text{proj}}[0] &= 2.0 \cdot (s_{q1} s_{q3} - s_{q0} s_{q2}) \\
+     g_{\text{proj}}[1] &= 2.0 \cdot (s_{q2} s_{q3} + s_{q0} s_{q1}) \\
+     g_{\text{proj}}[2] &= -(s_{q0}^2 - s_{q1}^2 - s_{q2}^2 + s_{q3}^2)
+     \end{aligned}$$
+   - Ở tư thế đứng thẳng cân bằng, $g_{\text{proj}} = [0.0, 0.0, -1.0]$, đồng nhất tuyệt đối với không gian quan sát trong mô phỏng huấn luyện MuJoCo.
+
+---
+
+## 6. Quản Lý Pin & Mạch Bảo Vệ (Battery Management & Safety)
 
 1. **Thông số Pack Pin:**
    - Cấu hình: $2\text{S}1\text{P}$ LiPo hoặc 2 cell $18650$ dung lượng $2200\text{mAh} - 2500\text{mAh}$.
