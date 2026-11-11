@@ -1,4 +1,4 @@
-# Thiết Kế Kiến Trúc Nhánh Phần Cứng Thứ 3: Raspberry Pi Zero 2 W (MicroDuck 8-DOF)
+﻿# Thiết Kế Kiến Trúc Nhánh Phần Cứng Thứ 3: Raspberry Pi Zero 2 W (MicroDuck 8-DOF)
 
 **Ngày lập:** 2026-11-10  
 **Trạng thái:** Đã phê duyệt (Approved by User)  
@@ -39,7 +39,7 @@ Raspberry Pi Zero 2 W mang đến điểm cân bằng lý tưởng giữa khả 
 ## 3. Cấu Trúc File & Thư Mục Đồng Bộ (`pipelines/pizero2w_stack`)
 
 ```text
-d:\duckV1\
+E:\duckV1\
 ├── pipelines/
 │   ├── rpi5_stack/
 │   ├── dual_esp32s3_stack/
@@ -81,7 +81,7 @@ d:\duckV1\
 - Chu kỳ điều khiển vòng lặp $50\text{ Hz}$ ($20\text{ ms}$), ghi nhận jitter và thời gian đáp ứng từng bước.
 
 ### 4.3. Kiểm thử Tự động (TDD & Verification)
-- File kiểm thử [`tests/test_pizero2w_model.py`](file:///d:/duckV1/tests/test_pizero2w_model.py) xác thực:
+- File kiểm thử [`tests/test_pizero2w_model.py`](file:///E:/duckV1/tests/test_pizero2w_model.py) xác thực:
   1. Cấu trúc MJCF: 8 khớp, giới hạn góc, actuator motor, IMU, 5 tia LiDAR, touch sensor bàn chân.
   2. Cấu trúc URDF: Các link, joint, visual và collision.
   3. Tính nhất quán động học & phân bổ khối lượng giữa MJCF và URDF.
