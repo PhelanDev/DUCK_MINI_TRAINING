@@ -322,7 +322,7 @@ class ParallelSimRunner:
         if self.include_emotions:
             self.current_emotions[env_idx] = self.rng.integers(0, NUM_EMOTIONS)
 
-        d.qpos[0:3] = [0.0, 0.0, 0.194]
+        d.qpos[0:3] = [0.0, 0.0, 0.128]
         d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
         # Khởi tạo góc khớp ban đầu quanh tư thế danh định đứng cân bằng (chùng gối nhẹ)
         nominal = getattr(self.cfg, "nominal_qpos", DEFAULT_NOMINAL_QPOS)
@@ -510,7 +510,7 @@ class ParallelSimRunner:
                         and ctrl.phase_steps >= 15
                     ):
                         d = self.datas[i]
-                        d.qpos[2] = max(float(d.qpos[2]), 0.194)
+                        d.qpos[2] = max(float(d.qpos[2]), 0.128)
                         d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
                         d.qvel[:] = 0.0
                         mujoco.mj_forward(self.model, d)

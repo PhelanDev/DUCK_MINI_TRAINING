@@ -1,0 +1,315 @@
+# Material definitions for MicroDuck 8-DOF CAD Assembly
+# Generated from models/mjcf/microduck_cad.xml
+
+newmtl seeed_bearing__configuration__22x16x4_material
+Ka 0.1427 0.1522 0.1600
+Kd 0.7137 0.7608 0.8000
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl right_shell_material
+Ka 0.1600 0.1600 0.1600
+Kd 0.8000 0.8000 0.8000
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl banana_pcb_locker_material
+Ka 0.1294 0.1294 0.1294
+Kd 0.6471 0.6471 0.6471
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl trunk_base_material
+Ka 0.0698 0.0753 0.0800
+Kd 0.3490 0.3765 0.4000
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl xl330_material
+Ka 0.0573 0.0573 0.0573
+Kd 0.2863 0.2863 0.2863
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl power_support_material
+Ka 0.1804 0.1804 0.1804
+Kd 0.9020 0.9020 0.9020
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl np_f970_material
+Ka 0.1804 0.1804 0.1804
+Kd 0.9020 0.9020 0.9020
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl left_shell_material
+Ka 0.1600 0.1600 0.1600
+Kd 0.8000 0.8000 0.8000
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl yaw2roll_material
+Ka 0.1294 0.1294 0.1294
+Kd 0.6471 0.6471 0.6471
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl bearing_roll_material
+Ka 0.0525 0.0565 0.0604
+Kd 0.2627 0.2824 0.3020
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl hip_l_material
+Ka 0.1804 0.1804 0.1804
+Kd 0.9020 0.9020 0.9020
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl upper_leg_left_material
+Ka 0.1733 0.1733 0.1733
+Kd 0.8667 0.8667 0.8667
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl upper_leg_rigidity_plate_material
+Ka 0.1075 0.1710 0.1655
+Kd 0.5373 0.8549 0.8275
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl leg_material
+Ka 0.1624 0.1718 0.1796
+Kd 0.8118 0.8588 0.8980
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl sole_left_material
+Ka 0.1075 0.1710 0.1655
+Kd 0.5373 0.8549 0.8275
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl foot_left_material
+Ka 0.1961 0.1427 0.0008
+Kd 0.9804 0.7137 0.0039
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl seeed_bearing__configuration_default_material
+Ka 0.1427 0.1522 0.1600
+Kd 0.7137 0.7608 0.8000
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl ankle_left_material
+Ka 0.1961 0.1427 0.0008
+Kd 0.9804 0.7137 0.0039
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl neck_material
+Ka 0.1600 0.1600 0.1600
+Kd 0.8000 0.8000 0.8000
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl neck_pitch_material
+Ka 0.0698 0.0753 0.0800
+Kd 0.3490 0.3765 0.4000
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl yaw_roll_motion_material
+Ka 0.1537 0.1773 0.1906
+Kd 0.7686 0.8863 0.9529
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl lens_material
+Ka 0.0525 0.0565 0.0604
+Kd 0.2627 0.2824 0.3020
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl face_part_material
+Ka 0.0698 0.0753 0.0800
+Kd 0.3490 0.3765 0.4000
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl jaw_soft_material
+Ka 0.1702 0.1514 0.1733
+Kd 0.8510 0.7569 0.8667
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl motor_support_material
+Ka 0.0525 0.0565 0.0604
+Kd 0.2627 0.2824 0.3020
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl top_head_shell_material
+Ka 0.1804 0.1804 0.1804
+Kd 0.9020 0.9020 0.9020
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl elec_rpi_robot_hat_pcb_material
+Ka 0.0627 0.0973 0.0824
+Kd 0.3137 0.4863 0.4118
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl soft_mouth_top_material
+Ka 0.1702 0.1514 0.1733
+Kd 0.8510 0.7569 0.8667
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl noenoeil_material
+Ka 0.0525 0.0565 0.0604
+Kd 0.2627 0.2824 0.3020
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl jaw_material
+Ka 0.1961 0.1427 0.0008
+Kd 0.9804 0.7137 0.0039
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl bottom_head_shell_material
+Ka 0.1961 0.1427 0.0008
+Kd 0.9804 0.7137 0.0039
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl m12_lens_holder_material
+Ka 0.0525 0.0565 0.0604
+Kd 0.2627 0.2824 0.3020
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl pcb__raspberry_pi_zero_2_w_material
+Ka 0.0996 0.0996 0.0996
+Kd 0.4980 0.4980 0.4980
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl speaker_material
+Ka 0.0588 0.0580 0.0580
+Kd 0.2941 0.2902 0.2902
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl upper_leg_right_material
+Ka 0.1733 0.1733 0.1733
+Kd 0.8667 0.8667 0.8667
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl ankle_right_material
+Ka 0.1961 0.1427 0.0008
+Kd 0.9804 0.7137 0.0039
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl sole_right_material
+Ka 0.1075 0.1710 0.1655
+Kd 0.5373 0.8549 0.8275
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl foot_right_material
+Ka 0.1961 0.1427 0.0008
+Kd 0.9804 0.7137 0.0039
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+
+newmtl default_material
+Ka 0.1400 0.1400 0.1400
+Kd 0.7000 0.7000 0.7000
+Ks 0.2500 0.2500 0.2500
+Ns 32.0
+d 1.0000
+illum 2
+

@@ -1,0 +1,173 @@
+<mujoco model="cyberduck_v2_pro">
+  <compiler angle="radian" meshdir="meshes" autolimits="true" />
+
+  <visual>
+    <global offwidth="1024" offheight="768" />
+    <quality shadowsize="2048" />
+  </visual>
+
+  <default>
+    <default class="cyberduck_v2">
+      <joint frictionloss="0.1" armature="0.005" damping="0.05" />
+      <position kp="50" dampratio="1" forcerange="-2.5 2.5" />
+      <default class="visual">
+        <geom contype="0" conaffinity="0" group="2" />
+      </default>
+      <default class="collision">
+        <geom group="3" />
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <!-- Materials with realistic PBR shine and emissive glow -->
+    <material name="mecha_white" rgba="0.96 0.97 0.99 1.0" specular="0.6" shininess="0.85" reflectance="0.10" />
+    <material name="mecha_carbon" rgba="0.18 0.20 0.24 1.0" specular="0.4" shininess="0.5" />
+    <material name="mecha_gold" rgba="0.96 0.74 0.14 1.0" specular="0.85" shininess="0.90" reflectance="0.20" />
+    <material name="mecha_cyan_glow" rgba="0.0 0.92 1.0 1.0" specular="0.9" shininess="1.0" emission="0.8" />
+    <material name="mecha_thruster" rgba="0.22 0.25 0.30 1.0" specular="0.5" shininess="0.6" />
+    <material name="mecha_sole_rubber" rgba="0.12 0.13 0.15 1.0" specular="0.1" />
+
+    <!-- Meshes -->
+    <mesh name="cyber_helm" file="cyber_helm.stl" />
+    <mesh name="cyber_visor" file="cyber_visor.stl" />
+    <mesh name="cyber_beak" file="cyber_beak.stl" />
+    <mesh name="cyber_chest" file="cyber_chest.stl" />
+    <mesh name="cyber_reactor" file="cyber_reactor.stl" />
+    <mesh name="cyber_thruster_pack" file="cyber_thruster_pack.stl" />
+    <mesh name="cyber_hip_left" file="cyber_hip_left.stl" />
+    <mesh name="cyber_hip_right" file="cyber_hip_right.stl" />
+    <mesh name="cyber_thigh_left" file="cyber_thigh_left.stl" />
+    <mesh name="cyber_thigh_right" file="cyber_thigh_right.stl" />
+    <mesh name="cyber_shin_left" file="cyber_shin_left.stl" />
+    <mesh name="cyber_shin_right" file="cyber_shin_right.stl" />
+    <mesh name="cyber_foot_left" file="cyber_foot_left.stl" />
+    <mesh name="cyber_foot_right" file="cyber_foot_right.stl" />
+    <mesh name="cyber_sole_left" file="cyber_sole_left.stl" />
+    <mesh name="cyber_sole_right" file="cyber_sole_right.stl" />
+
+    <!-- Clean High-Tech Studio Environment -->
+    <texture type="skybox" builtin="gradient" rgb1="0.28 0.34 0.44" rgb2="0.10 0.12 0.16" width="512" height="512" />
+    <texture name="grid_floor" type="2d" builtin="checker" width="512" height="512" rgb1="0.20 0.24 0.30" rgb2="0.14 0.17 0.22" />
+    <material name="floor_mat" texture="grid_floor" texrepeat="20 20" reflectance="0.12" />
+  </asset>
+
+  <worldbody>
+    <light directional="false" diffuse="0.95 0.95 0.95" specular="0.3 0.3 0.3" pos="0 0 2.5" dir="0 0 -1" />
+    <light directional="true" diffuse="0.75 0.75 0.80" specular="0.4 0.4 0.4" pos="1.2 1.5 2.0" dir="-1.2 -1.5 -1.6" />
+    <light directional="true" diffuse="0.50 0.55 0.65" specular="0.3 0.3 0.3" pos="-1.5 -1.0 1.8" dir="1.5 1.0 -1.4" />
+    <light directional="true" diffuse="0.40 0.45 0.55" specular="0.2 0.2 0.2" pos="0.0 -2.0 1.2" dir="0.0 2.0 -0.8" />
+    <geom name="floor" type="plane" size="5 5 0.1" material="floor_mat" friction="1.0" />
+
+    <!-- Main Torso Body -->
+    <body name="trunk_base" pos="0 0 0.125" childclass="cyberduck_v2">
+      <freejoint name="trunk_freejoint" />
+      <inertial pos="0.002 0.000 -0.012" mass="0.36" diaginertia="0.00038 0.00048 0.00032" />
+
+      <!-- Chest Armor, Reactor Core, Thruster Backpack -->
+      <geom type="mesh" mesh="cyber_chest" material="mecha_white" class="visual" />
+      <geom type="mesh" mesh="cyber_chest" class="collision" />
+      <geom type="mesh" mesh="cyber_reactor" material="mecha_cyan_glow" class="visual" />
+      <geom type="mesh" mesh="cyber_thruster_pack" material="mecha_thruster" class="visual" />
+      <geom type="mesh" mesh="cyber_thruster_pack" class="collision" />
+
+      <!-- Neck & Head Assembly -->
+      <body name="neck" pos="0.012 0 0.038">
+        <joint name="head_yaw" type="hinge" axis="0 0 1" range="-1.57 1.57" />
+        <geom type="cylinder" size="0.006 0.008" material="mecha_carbon" class="visual" />
+
+        <body name="head" pos="0 0 0.024">
+          <joint name="head_pitch" type="hinge" axis="0 1 0" range="-0.52 0.78" />
+          <inertial pos="0.015 0 0.018" mass="0.095" diaginertia="0.00009 0.00009 0.00007" />
+
+          <!-- Aero Helm, Glowing Cyber Visor, Metallic Gold Beak -->
+          <geom type="mesh" mesh="cyber_helm" material="mecha_white" class="visual" />
+          <geom type="mesh" mesh="cyber_helm" class="collision" />
+          <geom type="mesh" mesh="cyber_visor" material="mecha_cyan_glow" class="visual" />
+          <geom type="mesh" mesh="cyber_beak" material="mecha_gold" class="visual" />
+          <geom type="mesh" mesh="cyber_beak" class="collision" />
+          <site name="imu" pos="0.02 0 0.01" />
+        </body>
+      </body>
+
+      <!-- Left Biped Leg -->
+      <body name="left_hip" pos="0.005 0.036 -0.025">
+        <joint name="left_hip_roll" type="hinge" axis="1 0 0" range="-0.44 0.44" />
+        <inertial pos="0 0.008 -0.010" mass="0.05" diaginertia="0.00002 0.00002 0.00002" />
+        <geom type="mesh" mesh="cyber_hip_left" material="mecha_carbon" class="visual" />
+        <geom type="mesh" mesh="cyber_hip_left" class="collision" />
+
+        <body name="left_thigh" pos="0 0.012 -0.015">
+          <joint name="left_hip_pitch" type="hinge" axis="0 1 0" range="-0.87 0.87" />
+          <inertial pos="0.002 0 -0.020" mass="0.05" diaginertia="0.00003 0.00003 0.00002" />
+          <geom type="mesh" mesh="cyber_thigh_left" material="mecha_white" class="visual" />
+          <geom type="mesh" mesh="cyber_thigh_left" class="collision" />
+
+          <body name="left_shin" pos="0 0 -0.044">
+            <joint name="left_knee_pitch" type="hinge" axis="0 1 0" range="0.0 1.48" />
+            <inertial pos="0 0 -0.018" mass="0.04" diaginertia="0.00002 0.00002 0.00001" />
+            <geom type="mesh" mesh="cyber_shin_left" material="mecha_carbon" class="visual" />
+            <geom type="mesh" mesh="cyber_shin_left" class="collision" />
+
+            <body name="left_foot" pos="0.004 0 -0.036">
+              <inertial pos="0.005 0 0.006" mass="0.038" diaginertia="0.00002 0.00002 0.00002" />
+              <!-- 3-Claw Tactical Gold Foot & Rubber Tread Sole -->
+              <geom type="mesh" mesh="cyber_foot_left" material="mecha_gold" class="visual" />
+              <geom name="left_sole_geom" type="mesh" mesh="cyber_sole_left" material="mecha_sole_rubber" class="collision" />
+              <geom type="mesh" mesh="cyber_sole_left" material="mecha_sole_rubber" class="visual" />
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- Right Biped Leg -->
+      <body name="right_hip" pos="0.005 -0.036 -0.025">
+        <joint name="right_hip_roll" type="hinge" axis="1 0 0" range="-0.44 0.44" />
+        <inertial pos="0 -0.008 -0.010" mass="0.05" diaginertia="0.00002 0.00002 0.00002" />
+        <geom type="mesh" mesh="cyber_hip_right" material="mecha_carbon" class="visual" />
+        <geom type="mesh" mesh="cyber_hip_right" class="collision" />
+
+        <body name="right_thigh" pos="0 -0.012 -0.015">
+          <joint name="right_hip_pitch" type="hinge" axis="0 1 0" range="-0.87 0.87" />
+          <inertial pos="0.002 0 -0.020" mass="0.05" diaginertia="0.00003 0.00003 0.00002" />
+          <geom type="mesh" mesh="cyber_thigh_right" material="mecha_white" class="visual" />
+          <geom type="mesh" mesh="cyber_thigh_right" class="collision" />
+
+          <body name="right_shin" pos="0 0 -0.044">
+            <joint name="right_knee_pitch" type="hinge" axis="0 1 0" range="0.0 1.48" />
+            <inertial pos="0 0 -0.018" mass="0.04" diaginertia="0.00002 0.00002 0.00001" />
+            <geom type="mesh" mesh="cyber_shin_right" material="mecha_carbon" class="visual" />
+            <geom type="mesh" mesh="cyber_shin_right" class="collision" />
+
+            <body name="right_foot" pos="0.004 0 -0.036">
+              <inertial pos="0.005 0 0.006" mass="0.038" diaginertia="0.00002 0.00002 0.00002" />
+              <!-- 3-Claw Tactical Gold Foot & Rubber Tread Sole -->
+              <geom type="mesh" mesh="cyber_foot_right" material="mecha_gold" class="visual" />
+              <geom name="right_sole_geom" type="mesh" mesh="cyber_sole_right" material="mecha_sole_rubber" class="collision" />
+              <geom type="mesh" mesh="cyber_sole_right" material="mecha_sole_rubber" class="visual" />
+            </body>
+          </body>
+        </body>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="head_yaw" joint="head_yaw" />
+    <position name="head_pitch" joint="head_pitch" />
+    <position name="left_hip_roll" joint="left_hip_roll" />
+    <position name="left_hip_pitch" joint="left_hip_pitch" />
+    <position name="left_knee_pitch" joint="left_knee_pitch" />
+    <position name="right_hip_roll" joint="right_hip_roll" />
+    <position name="right_hip_pitch" joint="right_hip_pitch" />
+    <position name="right_knee_pitch" joint="right_knee_pitch" />
+  </actuator>
+
+  <sensor>
+    <framequat name="orientation" objtype="site" objname="imu" noise="0.001" />
+    <gyro name="angular-velocity" site="imu" noise="0.005" />
+    <accelerometer name="imu_accel" site="imu" />
+    <velocimeter name="imu_lin_vel" site="imu" />
+  </sensor>
+</mujoco>

@@ -7,7 +7,7 @@
     <joint damping="0.15" armature="0.005" limited="true"/>
     <geom contype="1" conaffinity="1" condim="3"/>
     <default class="visual">
-      <geom contype="0" conaffinity="0" group="2"/>
+      <geom contype="0" conaffinity="0" group="2" density="0"/>
     </default>
     <default class="collision">
       <geom contype="1" conaffinity="1" group="3"/>
@@ -23,6 +23,7 @@
     <material name="grid_mat" texture="grid" texrepeat="20 20" reflectance="0.2"/>
     <material name="duck_yellow" rgba="0.95 0.85 0.1 1.0" specular="0.3" shininess="0.5"/>
     <material name="duck_orange" rgba="1.0 0.5 0.05 1.0" specular="0.3" shininess="0.5"/>
+    <material name="web_orange" rgba="0.95 0.45 0.05 0.95" specular="0.2" shininess="0.3"/>
     <material name="servo_grey" rgba="0.2 0.2 0.22 1.0" specular="0.4" shininess="0.7"/>
     <material name="esp32_blue" rgba="0.08 0.25 0.65 1.0" specular="0.5" shininess="0.8"/>
     <material name="white" rgba="0.95 0.95 0.95 1.0"/>
@@ -52,28 +53,35 @@
     <body name="base_link" pos="0 0 0.095">
       <freejoint name="root"/>
       <site name="imu_site" pos="0 0 0.0" size="0.005" rgba="1 0 0 1"/>
-      <!-- Base chassis + 2x ESP32-S3 boards + Carrier Board + 2S 18650 Li-ion battery pack (~310g total, low CoM at lower torso) -->
-      <geom name="base_body" type="box" size="0.055 0.040 0.035" pos="0 0 0" mass="0.220" material="duck_yellow"/>
+      <!-- Sculpted Chibi Belly (ellipsoid) -->
+      <geom name="base_body" type="ellipsoid" size="0.055 0.040 0.035" pos="0 0 0" mass="0.220" material="duck_yellow"/>
+      <!-- Sculpted Pelvis & Hip Flanks bridging body to hip joints -->
+      <geom name="pelvis_geom" class="visual" type="ellipsoid" size="0.042 0.034 0.020" pos="0 0 -0.024" material="duck_yellow"/>
+      <geom name="left_hip_flank" class="visual" type="ellipsoid" size="0.026 0.016 0.020" pos="0 0.026 -0.028" material="duck_yellow"/>
+      <geom name="right_hip_flank" class="visual" type="ellipsoid" size="0.026 0.016 0.020" pos="0 -0.026 -0.028" material="duck_yellow"/>
+      <geom name="tail_geom" class="visual" type="ellipsoid" size="0.015 0.018 0.009" pos="-0.052 0 0.012" quat="0.9659 0 0.2588 0" material="duck_yellow"/>
       <geom name="esp32_electronics" type="box" size="0.045 0.030 0.015" pos="0 0 -0.018" mass="0.090" material="esp32_blue"/>
 
       <!-- Head branch: Neck + Head (2 DOF) with Perception Suite -->
       <body name="neck_link" pos="0.020 0 0.035">
         <joint name="head_yaw" type="hinge" axis="0 0 1" range="-1.57 1.57"/>
-        <!-- Neck 35 x 35 x 30 mm, mass 30g -->
-        <geom name="neck_geom" type="box" size="0.0175 0.0175 0.015" pos="0 0 0.015" mass="0.030" material="servo_grey"/>
+        <!-- Sculpted organic yellow duck neck -->
+        <geom name="neck_geom" type="capsule" fromto="-0.002 0 0.000 0.004 0 0.016" size="0.017" mass="0.030" material="duck_yellow"/>
 
-        <body name="head_link" pos="0 0 0.030">
+        <body name="head_link" pos="0.004 0 0.016">
           <joint name="head_pitch" type="hinge" axis="0 1 0" range="-0.52 0.78"/>
-          <!-- Head 60 x 50 x 45 mm, mass 54g -->
-          <geom name="head_geom" type="box" size="0.030 0.025 0.0225" pos="0.010 0 0.0225" mass="0.054" material="duck_yellow"/>
-          <!-- Beak / Bill mass 4g -->
-          <geom name="beak_geom" type="box" size="0.018 0.018 0.006" pos="0.048 0 0.015" mass="0.004" material="duck_orange"/>
+          <!-- Sculpted Head (rounded ellipsoid) -->
+          <geom name="head_geom" type="ellipsoid" size="0.032 0.027 0.023" pos="0.008 0 0.016" mass="0.054" material="duck_yellow"/>
+          <!-- Sculpted Duck Beak (curved duckbill ellipsoid) -->
+          <geom name="beak_geom" type="ellipsoid" size="0.020 0.018 0.006" pos="0.046 0 0.011" mass="0.004" material="duck_orange"/>
           <!-- Eyes -->
-          <geom name="left_eye" class="visual" type="sphere" size="0.004" pos="0.032 0.022 0.030" material="black"/>
-          <geom name="right_eye" class="visual" type="sphere" size="0.004" pos="0.032 -0.022 0.030" material="black"/>
+          <geom name="left_eye" class="visual" type="sphere" size="0.004" pos="0.030 0.022 0.022" material="black"/>
+          <geom name="right_eye" class="visual" type="sphere" size="0.004" pos="0.030 -0.022 0.022" material="black"/>
+          <geom name="left_eye_pupil" class="visual" type="sphere" size="0.0015" pos="0.032 0.0225 0.0235" material="white"/>
+          <geom name="right_eye_pupil" class="visual" type="sphere" size="0.0015" pos="0.032 -0.0215 0.0235" material="white"/>
 
           <!-- Camera & Optical Lens -->
-          <site name="camera_site" pos="0.045 0 0.030" size="0.004" rgba="0 1 0 1"/>
+          <site name="camera_site" pos="0.045 0 0.030" size="0.004" rgba="0 1 0 0"/>
           <camera name="head_camera" pos="0.045 0 0.030" fovy="60" xyaxes="0 -1 0 0 0 1"/>
           <geom name="cam_lens" class="visual" type="cylinder" size="0.005 0.003" pos="0.043 0 0.030" zaxis="1 0 0" material="black" mass="0.001"/>
 
@@ -93,23 +101,41 @@
       <!-- Left Leg branch (3 DOF) -->
       <body name="left_hip_roll_link" pos="0 0.035 -0.035">
         <joint name="left_hip_roll" type="hinge" axis="1 0 0" range="-0.44 0.44"/>
-        <!-- Hip roll block 45 x 40 x 40 mm, mass 50g -->
-        <geom name="left_hip_roll_geom" type="box" size="0.0225 0.020 0.020" pos="0 0.010 -0.010" mass="0.050" material="servo_grey"/>
+        <!-- Sculpted Hip roll (cylinder along X) -->
+        <geom name="left_hip_roll_geom" type="cylinder" size="0.018 0.015" pos="0 0.005 -0.006" zaxis="1 0 0" mass="0.050" material="servo_grey"/>
 
         <body name="left_thigh_link" pos="0 0.015 -0.020">
           <joint name="left_hip_pitch" type="hinge" axis="0 1 0" range="-0.87 0.87"/>
-          <!-- Thigh L1 = 32mm, mass 40g -->
-          <geom name="left_thigh_geom" type="box" size="0.0175 0.015 0.016" pos="0 0 -0.016" mass="0.040" material="duck_yellow"/>
+          <!-- Sculpted Thigh (smooth rounded capsule) -->
+          <geom name="left_thigh_geom" type="capsule" fromto="0 0 -0.004 0 0 -0.028" size="0.014" mass="0.040" material="duck_yellow"/>
 
           <body name="left_shin_link" pos="0 0 -0.032">
             <joint name="left_knee_pitch" type="hinge" axis="0 1 0" range="0.0 1.48"/>
-            <!-- Shin L2 = 32mm, mass 30g -->
-            <geom name="left_shin_geom" type="box" size="0.015 0.0125 0.016" pos="0 0 -0.016" mass="0.030" material="servo_grey"/>
+            <!-- Sculpted Shin (smooth rounded capsule) -->
+            <geom name="left_shin_geom" type="capsule" fromto="0 0 -0.004 0 0 -0.028" size="0.012" mass="0.030" material="servo_grey"/>
 
             <body name="left_foot_link" pos="0 0 -0.032">
-              <!-- Foot 52 x 42 x 8 mm, mass 22g, high friction -->
-              <geom name="left_foot_geom" class="foot" pos="0.008 0 -0.004" mass="0.022" material="duck_orange"/>
-              <site name="left_foot_touch_site" pos="0.008 0 -0.008" size="0.026 0.021 0.004" type="box" rgba="0 1 1 0.5"/>
+              <!-- Flat collision sole plate (flat bottom at Z = -0.008, high friction) -->
+              <geom name="left_foot_geom" class="foot" pos="0.008 0 -0.004" mass="0.022" material="duck_orange" group="3"/>
+              
+              <!-- Sculpted Duck Foot Visuals -->
+              <geom name="left_heel" class="visual" type="cylinder" size="0.012 0.003" pos="-0.008 0 -0.005" material="duck_orange"/>
+              <geom name="left_ankle_bracket" class="visual" type="cylinder" size="0.013 0.004" pos="0 0 -0.002" material="servo_grey"/>
+              
+              <geom name="left_toe_mid" class="visual" type="capsule" fromto="-0.002 0 -0.0045 0.030 0 -0.0055" size="0.004" material="duck_orange"/>
+              <geom name="left_claw_mid" class="visual" type="ellipsoid" size="0.004 0.0025 0.002" pos="0.033 0 -0.006" material="servo_grey"/>
+
+              <geom name="left_toe_out" class="visual" type="capsule" fromto="-0.002 0.004 -0.0045 0.026 0.016 -0.0055" size="0.0038" material="duck_orange"/>
+              <geom name="left_claw_out" class="visual" type="ellipsoid" size="0.0035 0.002 0.0018" pos="0.028 0.0175 -0.006" quat="0.976 0 0 0.216" material="servo_grey"/>
+
+              <geom name="left_toe_in" class="visual" type="capsule" fromto="-0.002 -0.004 -0.0045 0.026 -0.016 -0.0055" size="0.0038" material="duck_orange"/>
+              <geom name="left_claw_in" class="visual" type="ellipsoid" size="0.0035 0.002 0.0018" pos="0.028 -0.0175 -0.006" quat="0.976 0 0 -0.216" material="servo_grey"/>
+
+              <geom name="left_web_left" class="visual" type="ellipsoid" size="0.015 0.007 0.0015" pos="0.014 0.008 -0.006" quat="0.991 0 0 0.13" material="web_orange"/>
+              <geom name="left_web_right" class="visual" type="ellipsoid" size="0.015 0.007 0.0015" pos="0.014 -0.008 -0.006" quat="0.991 0 0 -0.13" material="web_orange"/>
+              <geom name="left_instep" class="visual" type="ellipsoid" size="0.014 0.012 0.003" pos="0.006 0 -0.0035" material="duck_orange"/>
+
+              <site name="left_foot_touch_site" pos="0.008 0 -0.004" size="0.026 0.021 0.004" type="box" rgba="0 1 1 0"/>
             </body>
           </body>
         </body>
@@ -118,23 +144,41 @@
       <!-- Right Leg branch (3 DOF) -->
       <body name="right_hip_roll_link" pos="0 -0.035 -0.035">
         <joint name="right_hip_roll" type="hinge" axis="1 0 0" range="-0.44 0.44"/>
-        <!-- Hip roll block 45 x 40 x 40 mm, mass 50g -->
-        <geom name="right_hip_roll_geom" type="box" size="0.0225 0.020 0.020" pos="0 -0.010 -0.010" mass="0.050" material="servo_grey"/>
+        <!-- Sculpted Hip roll (cylinder along X) -->
+        <geom name="right_hip_roll_geom" type="cylinder" size="0.018 0.015" pos="0 -0.005 -0.006" zaxis="1 0 0" mass="0.050" material="servo_grey"/>
 
         <body name="right_thigh_link" pos="0 -0.015 -0.020">
           <joint name="right_hip_pitch" type="hinge" axis="0 1 0" range="-0.87 0.87"/>
-          <!-- Thigh L1 = 32mm, mass 40g -->
-          <geom name="right_thigh_geom" type="box" size="0.0175 0.015 0.016" pos="0 0 -0.016" mass="0.040" material="duck_yellow"/>
+          <!-- Sculpted Thigh (smooth rounded capsule) -->
+          <geom name="right_thigh_geom" type="capsule" fromto="0 0 -0.004 0 0 -0.028" size="0.014" mass="0.040" material="duck_yellow"/>
 
           <body name="right_shin_link" pos="0 0 -0.032">
             <joint name="right_knee_pitch" type="hinge" axis="0 1 0" range="0.0 1.48"/>
-            <!-- Shin L2 = 32mm, mass 30g -->
-            <geom name="right_shin_geom" type="box" size="0.015 0.0125 0.016" pos="0 0 -0.016" mass="0.030" material="servo_grey"/>
+            <!-- Sculpted Shin (smooth rounded capsule) -->
+            <geom name="right_shin_geom" type="capsule" fromto="0 0 -0.004 0 0 -0.028" size="0.012" mass="0.030" material="servo_grey"/>
 
             <body name="right_foot_link" pos="0 0 -0.032">
-              <!-- Foot 52 x 42 x 8 mm, mass 22g, high friction -->
-              <geom name="right_foot_geom" class="foot" pos="0.008 0 -0.004" mass="0.022" material="duck_orange"/>
-              <site name="right_foot_touch_site" pos="0.008 0 -0.008" size="0.026 0.021 0.004" type="box" rgba="0 1 1 0.5"/>
+              <!-- Flat collision sole plate (flat bottom at Z = -0.008, high friction) -->
+              <geom name="right_foot_geom" class="foot" pos="0.008 0 -0.004" mass="0.022" material="duck_orange" group="3"/>
+
+              <!-- Sculpted Duck Foot Visuals -->
+              <geom name="right_heel" class="visual" type="cylinder" size="0.012 0.003" pos="-0.008 0 -0.005" material="duck_orange"/>
+              <geom name="right_ankle_bracket" class="visual" type="cylinder" size="0.013 0.004" pos="0 0 -0.002" material="servo_grey"/>
+
+              <geom name="right_toe_mid" class="visual" type="capsule" fromto="-0.002 0 -0.0045 0.030 0 -0.0055" size="0.004" material="duck_orange"/>
+              <geom name="right_claw_mid" class="visual" type="ellipsoid" size="0.004 0.0025 0.002" pos="0.033 0 -0.006" material="servo_grey"/>
+
+              <geom name="right_toe_out" class="visual" type="capsule" fromto="-0.002 -0.004 -0.0045 0.026 -0.016 -0.0055" size="0.0038" material="duck_orange"/>
+              <geom name="right_claw_out" class="visual" type="ellipsoid" size="0.0035 0.002 0.0018" pos="0.028 -0.0175 -0.006" quat="0.976 0 0 -0.216" material="servo_grey"/>
+
+              <geom name="right_toe_in" class="visual" type="capsule" fromto="-0.002 0.004 -0.0045 0.026 0.016 -0.0055" size="0.0038" material="duck_orange"/>
+              <geom name="right_claw_in" class="visual" type="ellipsoid" size="0.0035 0.002 0.0018" pos="0.028 0.0175 -0.006" quat="0.976 0 0 0.216" material="servo_grey"/>
+
+              <geom name="right_web_right" class="visual" type="ellipsoid" size="0.015 0.007 0.0015" pos="0.014 -0.008 -0.006" quat="0.991 0 0 -0.13" material="web_orange"/>
+              <geom name="right_web_left" class="visual" type="ellipsoid" size="0.015 0.007 0.0015" pos="0.014 0.008 -0.006" quat="0.991 0 0 0.13" material="web_orange"/>
+              <geom name="right_instep" class="visual" type="ellipsoid" size="0.014 0.012 0.003" pos="0.006 0 -0.0035" material="duck_orange"/>
+
+              <site name="right_foot_touch_site" pos="0.008 0 -0.004" size="0.026 0.021 0.004" type="box" rgba="0 1 1 0"/>
             </body>
           </body>
         </body>

@@ -154,7 +154,7 @@ class ParallelSimRunner:
         d = self.datas[env_idx]
         mujoco.mj_resetData(self.model, d)
 
-        d.qpos[0:3] = [0.0, 0.0, 0.194]
+        d.qpos[0:3] = [0.0, 0.0, 0.128]
         d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
         # Khởi tạo góc khớp ban đầu quanh tư thế danh định đứng cân bằng (chùng gối nhẹ)
         nominal = getattr(self.cfg, "nominal_qpos", DEFAULT_NOMINAL_QPOS)

@@ -159,8 +159,11 @@ def cmd_train(args: argparse.Namespace) -> int:
         cmd.extend(["--resume", str(args.resume)])
     if args.stand_first:
         cmd.append("--stand-first")
+    if getattr(args, "dry_run", False):
+        cmd.append("--dry-run")
 
-    print(f">>> Khởi động huấn luyện PPO ({args.envs} envs, tối đa {args.iterations} iters, target: {getattr(args, 'target', 'rpi5')})...")
+    mode_str = "DRY-RUN" if getattr(args, "dry_run", False) else f"{args.envs} envs, tối đa {args.iterations} iters"
+    print(f">>> Khởi động huấn luyện PPO ({mode_str}, target: {getattr(args, 'target', 'rpi5')})...")
 
     return subprocess.run(cmd).returncode
 
@@ -208,6 +211,7 @@ def main() -> int:
     p_train.add_argument("--iterations", type=int, default=500, help="Số vòng lặp huấn luyện (mặc định: 500)")
     p_train.add_argument("--resume", type=str, default=None, help="Tiếp tục học từ checkpoint")
     p_train.add_argument("--stand-first", action="store_true", help="Ưu tiên học đứng thăng bằng trước")
+    p_train.add_argument("--dry-run", action="store_true", help="Chạy kiểm thử nhanh 1 vòng lặp (Dry-run)")
 
     # export
     p_export = subparsers.add_parser("export", help="Xuất policy sang ONNX (RPi 5 & Pi Zero 2 W) và INT8 C Header (ESP32-S3)")

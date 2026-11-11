@@ -148,13 +148,13 @@ Opens an interactive MuJoCo visualizer with keyboard controls for walking, crouc
 ### Reinforcement learning training (PPO)
 ```bash
 # Train for Raspberry Pi 5
-python duck.py train --target rpi5 --steps 2000000
+python duck.py train --target rpi5 --envs 256 --iterations 500
 
 # Train for Raspberry Pi Zero 2 W
-python duck.py train --target pizero2w --steps 2000000
+python duck.py train --target pizero2w --envs 256 --iterations 500
 
 # Train for Dual ESP32-S3
-python duck.py train --target esp32 --steps 2000000
+python duck.py train --target esp32 --envs 256 --iterations 500
 ```
 
 ### Policy export
@@ -200,6 +200,7 @@ duckV1/
 │       └── docs/pizero2w_hardware_spec.md    # Hardware specifications
 ├── scripts/                                  # Utility scripts
 │   ├── verify_model.py                       # Physical model consistency verification
+│   ├── interactive_viewer.py                 # Interactive 3D visualizer and simulator
 │   ├── export_policy.py                      # Policy export (ONNX or INT8 C++ Header)
 │   └── train_ppo.py                          # Multi-environment PPO training script
 ├── training/                                 # MuJoCo simulation core

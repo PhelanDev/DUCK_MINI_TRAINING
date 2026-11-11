@@ -154,7 +154,7 @@ class ParallelSimRunner:
         d = self.datas[env_idx]
         mujoco.mj_resetData(self.model, d)
 
-        d.qpos[0:3] = [0.0, 0.0, 0.194]
+        d.qpos[0:3] = [0.0, 0.0, 0.128]
         d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
         # Khá»Ÿi táº¡o gĂ³c khá»›p ban Ä‘áº§u quanh tÆ° tháº¿ danh Ä‘á»‹nh Ä‘á»©ng cĂ¢n báº±ng (chĂ¹ng gá»‘i nháº¹)
         nominal = getattr(self.cfg, "nominal_qpos", DEFAULT_NOMINAL_QPOS)
