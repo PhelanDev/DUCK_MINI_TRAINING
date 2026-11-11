@@ -205,9 +205,8 @@ duckV1/
 ├── training/                                 # Lõi mô phỏng MuJoCo
 │   ├── env_config.py                         # Cấu hình không gian trạng thái và hàm thưởng
 │   └── run_parallel_sim.py                   # Mô phỏng song song nhiều môi trường
-├── docs/                                     # Tài liệu thiết kế
-│   └── specs/                                # Các văn bản đặc tả kỹ thuật
-└── viewer_3d.html                            # Giao diện trực quan hóa 3D WebGL
+└── docs/                                     # Tài liệu thiết kế
+    └── specs/                                # Các văn bản đặc tả kỹ thuật
 ```
 
 ---
