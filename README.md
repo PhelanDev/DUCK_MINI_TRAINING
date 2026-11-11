@@ -2,55 +2,55 @@
 
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/PhelanDev/badge.svg)](https://hub.xerj.org/contributors/PhelanDev)
 
-Robot hai chân 8 bậc tự do sử dụng servo kim loại MG996R, phục vụ nghiên cứu và huấn luyện học tăng cường Sim-to-Real trên ba cấu hình phần cứng độc lập: Raspberry Pi 5, Dual ESP32-S3 và Raspberry Pi Zero 2 W.
+MicroDuck is an 8-DOF bipedal robot built with metal-gear MG996R servos for Sim-to-Real reinforcement learning research. It supports three standalone hardware targets: Raspberry Pi 5, Dual ESP32-S3, and Raspberry Pi Zero 2 W.
 
-Mô hình vật lý được đồng bộ song song giữa MuJoCo (MJCF) để huấn luyện mô phỏng và URDF để kiểm định động học, trực quan hóa trên ROS hoặc PyBullet.
-
----
-
-## Mục lục
-
-1. [Cấu hình phần cứng và động học](#1-cấu-hình-phần-cứng-và-động-học)
-2. [Ba cấu hình phần cứng](#2-ba-cấu-hình-phần-cứng)
-3. [Cụm nhận thức đầu vịt](#3-cụm-nhận-thức-đầu-vịt)
-4. [Cài đặt và chạy nhanh](#4-cài-đặt-và-chạy-nhanh)
-5. [Sử dụng CLI duck.py](#5-sử-dụng-cli-duckpy)
-6. [Cấu trúc thư mục](#6-cấu-trúc-thư-mục)
-7. [Giấy phép](#7-giấy-phép)
+Physical models stay in sync between MuJoCo (MJCF) for simulation training and URDF for kinematic validation in ROS or PyBullet.
 
 ---
 
-## 1. Cấu hình phần cứng và động học
+## Table of contents
 
-Robot sử dụng 8 servo MG996R nhông kim loại (mô-men xoắn danh định 1.0 N·m, vận tốc góc 6.0 rad/s). Cấu hình này thay thế cho bản gốc dùng 15 servo Dynamixel nhằm giảm chi phí linh kiện và tăng khả năng chịu va đập khi té ngã.
+1. [Hardware configuration and kinematics](#1-hardware-configuration-and-kinematics)
+2. [Hardware stacks](#2-hardware-stacks)
+3. [Perception suite](#3-perception-suite)
+4. [Installation and quick start](#4-installation-and-quick-start)
+5. [CLI usage (duck.py)](#5-cli-usage-duckpy)
+6. [Repository structure](#6-repository-structure)
+7. [License](#7-license)
 
-### Thông số hình học Chibi Squat
+---
 
-Phiên bản hiện tại sử dụng cấu hình chân ngắn (Chibi Squat) với tỷ lệ đầu, thân và chân xấp xỉ 1 : 0.9 : 1. Chiều cao toàn thân đạt 195 mm, trọng tâm dồn thấp về đáy thân chính:
+## 1. Hardware configuration and kinematics
 
-- Chiều dài đùi ($L_1$): 32 mm (khối lượng 40 g).
-- Chiều dài cẳng chân ($L_2$): 32 mm (khối lượng 30 g).
-- Kích thước bàn chân: 52 × 42 × 8 mm (khối lượng 22 g).
-- Khoảng hở giữa mép trong hai bàn chân: 28 mm đến 58 mm, tránh va chạm cơ học khi bước đi hoặc lắc hông.
-- Vị trí gốc thân chính (`base_link`): $Z = 95\text{ mm}$ ($0.095\text{ m}$).
-- Cánh tay đòn trọng lực ngắn giúp mô-men lật nghiêng khi nghiêng người bước đi giảm xuống dưới 0.35 N·m, nằm an toàn trong giới hạn 1.0 N·m của động cơ MG996R.
+The robot uses 8 metal-gear MG996R servos (rated torque 1.0 N·m, angular velocity 6.0 rad/s). This setup replaces the original 15-servo Dynamixel build to lower build costs and withstand hard impacts during falls.
 
-### Bảng kích thước và khối lượng các khâu
+### Chibi Squat geometric parameters
 
-| Khâu | Khối lượng | Kích thước ($X \times Y \times Z$) | Ghi chú |
+MicroDuck uses a short-leg geometry (Chibi Squat) with a head-to-torso-to-leg ratio of roughly 1 : 0.9 : 1. Standing height is 195 mm, with the center of mass concentrated near the base of the torso:
+
+- Thigh length ($L_1$): 32 mm (mass 40 g).
+- Shin length ($L_2$): 32 mm (mass 30 g).
+- Foot dimensions: 52 × 42 × 8 mm (mass 22 g).
+- Inner foot clearance: 28 mm to 58 mm, preventing foot collision during lateral sway and gait transitions.
+- Torso base frame (`base_link`): $Z = 95\text{ mm}$ ($0.095\text{ m}$).
+- The short gravity lever arm keeps roll overturning torque during single-support gait phases below 0.35 N·m, well inside the 1.0 N·m limit of MG996R servos.
+
+### Link dimensions and mass breakdown
+
+| Link | Mass | Dimensions ($X \times Y \times Z$) | Description |
 | :--- | :---: | :---: | :--- |
-| `base_link` | 275 g - 390 g | 110 × 80 × 70 mm | Thân chính, chứa mạch điều khiển, pin và cảm biến IMU |
-| `neck_link` | 30 g | 35 × 35 × 30 mm | Khớp quay cổ quanh trục thẳng đứng $Z$ |
-| `head_link` | 60 g | 60 × 50 × 45 mm | Đầu vịt, mang camera, microphone và cụm 5 tia LiDAR |
-| `left_hip_roll_link` | 50 g | 45 × 40 × 40 mm | Khớp lắc hông quanh trục $X$ để chuyển trọng tâm |
-| `left_thigh_link` | 40 g | 35 × 30 × 32 mm | Đùi $L_1 = 32\text{ mm}$, gắn servo khớp gối |
-| `left_shin_link` | 30 g | 30 × 25 × 32 mm | Cẳng chân $L_2 = 32\text{ mm}$ |
-| `left_foot_link` | 22 g | 52 × 42 × 8 mm | Bàn chân đế phẳng, mặt dưới gắn cao su tăng ma sát |
-| `right_*_link` | Đối xứng | Đối xứng | Đối xứng với nhánh chân trái qua trục $X$ |
+| `base_link` | 275 g - 390 g | 110 × 80 × 70 mm | Main torso, housing compute boards, battery pack, and 6-DOF IMU |
+| `neck_link` | 30 g | 35 × 35 × 30 mm | Neck yaw joint rotating around the vertical $Z$-axis |
+| `head_link` | 60 g | 60 × 50 × 45 mm | Duck head carrying wide-angle camera, microphone, and 5-beam ToF LiDAR |
+| `left_hip_roll_link` | 50 g | 45 × 40 × 40 mm | Hip roll joint rotating around $X$-axis for lateral weight transfer |
+| `left_thigh_link` | 40 g | 35 × 30 × 32 mm | Thigh $L_1 = 32\text{ mm}$, housing knee pitch servo |
+| `left_shin_link` | 30 g | 30 × 25 × 32 mm | Shin $L_2 = 32\text{ mm}$ |
+| `left_foot_link` | 22 g | 52 × 42 × 8 mm | Flat foot sole with high-friction rubber pads |
+| `right_*_link` | Symmetrical | Symmetrical | Symmetrical to the left leg across the $X$-axis |
 
-### Bảng góc quay và giới hạn các khớp
+### Joint range and limits
 
-| Tên khớp | Trục quay | Giới hạn góc (Radian) | Giới hạn góc (Độ) | Mô-men cực đại | Vận tốc cực đại |
+| Joint | Axis | Limits (rad) | Limits (deg) | Max torque | Max velocity |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | `head_yaw` | $Z$ | $[-1.57, +1.57]$ | $\pm 90^\circ$ | 1.0 N·m | 6.0 rad/s |
 | `head_pitch` | $Y$ | $[-0.52, +0.78]$ | $-30^\circ \to +45^\circ$ | 1.0 N·m | 6.0 rad/s |
@@ -63,43 +63,43 @@ Phiên bản hiện tại sử dụng cấu hình chân ngắn (Chibi Squat) v�
 
 ---
 
-## 2. Ba cấu hình phần cứng
+## 2. Hardware stacks
 
-Dự án tách biệt thành 3 nhánh phần cứng độc lập trong thư mục `pipelines/`. Mỗi nhánh có mô hình vật lý, môi trường huấn luyện và runtime suy luận riêng.
+The project maintains three standalone hardware targets under `pipelines/`. Each stack has its own physics model, training environment, and inference runtime:
 
-| Tiêu chí | Raspberry Pi 5 Stack | Dual ESP32-S3 Stack | Raspberry Pi Zero 2 W Stack |
+| Specification | Raspberry Pi 5 stack | Dual ESP32-S3 stack | Raspberry Pi Zero 2 W stack |
 | :--- | :--- | :--- | :--- |
-| **Thư mục** | `pipelines/rpi5_stack/` | `pipelines/dual_esp32s3_stack/` | `pipelines/pizero2w_stack/` |
-| **Tổng khối lượng** | 764 g (0.764 kg) | 684 g (0.684 kg) | 649 g (0.649 kg) |
-| **Vi xử lý** | Broadcom BCM2712 Quad A76 @ 2.4GHz | 2x ESP32-S3 Dual LX7 @ 240MHz | Broadcom BCM2710A1 Quad A53 @ 1.0GHz |
-| **Bộ nhớ** | 4GB / 8GB LPDDR4X | 2x 512KB SRAM + 8MB PSRAM | 512MB LPDDR2 |
-| **Hệ điều hành** | Raspberry Pi OS 64-bit | FreeRTOS (bare metal) | Raspberry Pi OS Lite 64-bit |
-| **Điều khiển servo** | Mạch mở rộng PCA9685 qua bus I2C | 8 kênh LEDC PWM trực tiếp | Mạch mở rộng PCA9685 qua bus I2C |
-| **Định dạng policy** | Float32 ONNX Runtime (50 Hz) | Mảng C++ lượng tử hóa INT8 ESP-NN (50 Hz) | Float32 ONNX Runtime (50 Hz) |
-| **Giao tiếp liên chip** | Bus nội bộ | UART nhị phân 921,600 bps có mã kiểm tra CRC16 | Bus nội bộ |
-| **Mục đích sử dụng** | Nghiên cứu AI biên, tích hợp xử lý ảnh hoặc NPU | Sản phẩm nhúng chi phí thấp, tiết kiệm pin | Bản Linux độc lập, kích thước gọn nhẹ |
+| **Directory** | `pipelines/rpi5_stack/` | `pipelines/dual_esp32s3_stack/` | `pipelines/pizero2w_stack/` |
+| **Total mass** | 764 g (0.764 kg) | 684 g (0.684 kg) | 649 g (0.649 kg) |
+| **Processor** | Broadcom BCM2712 Quad A76 @ 2.4 GHz | 2× ESP32-S3 Dual LX7 @ 240 MHz | Broadcom BCM2710A1 Quad A53 @ 1.0 GHz |
+| **Memory** | 4 GB / 8 GB LPDDR4X | 2× 512 KB SRAM + 8 MB PSRAM | 512 MB LPDDR2 |
+| **Operating system** | Raspberry Pi OS 64-bit | FreeRTOS (bare metal) | Raspberry Pi OS Lite 64-bit |
+| **Servo control** | PCA9685 I2C PWM driver | 8-channel hardware LEDC PWM | PCA9685 I2C PWM driver |
+| **Policy format** | Float32 ONNX Runtime (50 Hz) | Quantized INT8 ESP-NN C++ Array (50 Hz) | Float32 ONNX Runtime (50 Hz) |
+| **Inter-chip bus** | Internal bus | Binary UART @ 921,600 bps with CRC16 | Internal bus |
+| **Primary use case** | Edge AI research, vision pipelines, or NPU workloads | Low-cost embedded deployment, power efficiency | Compact standalone Linux robot |
 
 ---
 
-## 3. Cụm nhận thức đầu vịt
+## 3. Perception suite
 
-Cả ba mô hình đều tích hợp cụm cảm biến trên đầu (`head_link`) và thân chính (`base_link`):
+Sensors are mounted on the head (`head_link`) and torso (`base_link`):
 
-- **LiDAR 5 tia ToF:** Cảm biến đo khoảng cách đặt theo hình quạt ở góc lệch -30°, -15°, 0°, +15°, +30°, tầm đo tối đa 2.0 m, tần số cập nhật 50 Hz.
-- **Camera góc rộng:** FOV 60°, đặt ở mặt trước đầu vịt (`cam_lens`).
-- **Microphone:** Đặt tại đỉnh đầu để thu nhận âm thanh.
-- **IMU 6-DOF:** Đo gia tốc 3 trục và vận tốc góc 3 trục đặt tại tâm thân chính `base_link`.
+- **5-Beam ToF LiDAR:** Fan-beam distance sensors oriented at -30°, -15°, 0°, +15°, and +30°, maximum range 2.0 m, 50 Hz update rate.
+- **Wide-Angle Camera:** 60° FOV lens on the front of the head (`cam_lens`).
+- **Microphone:** Mounted at the top of the head for audio input.
+- **6-DOF IMU:** 3-axis accelerometer and 3-axis gyroscope centered in the main body (`base_link`).
 
 ---
 
-## 4. Cài đặt và chạy nhanh
+## 4. Installation and quick start
 
-### Yêu cầu môi trường
+### Prerequisites
 
-- Python 3.10 trở lên
-- Hệ điều hành: Linux, macOS hoặc Windows
+- Python 3.10 or higher
+- Linux, macOS, or Windows
 
-### Cài đặt các gói phụ thuộc
+### Dependencies
 
 ```bash
 git clone https://github.com/PhelanDev/DUCK_MINI_TRAINING.git
@@ -107,110 +107,110 @@ cd DUCK_MINI_TRAINING
 pip install numpy pytest onnxruntime
 ```
 
-Nếu môi trường có cài đặt sẵn MuJoCo:
+For local MuJoCo simulation:
 ```bash
 pip install mujoco
 ```
 
-### Kiểm định mô hình vật lý
+### Physical model verification
 
-Chạy script kiểm chứng sự đồng bộ giữa mô hình MuJoCo và URDF:
+Check consistency between the MuJoCo (MJCF) and URDF models:
 
 ```bash
 python scripts/verify_model.py
 ```
 
-Kết quả in ra sẽ đối chiếu thông số khớp, ma trận quán tính, bất đẳng thức tam giác và vị trí trọng tâm CoM trên cả hai mô hình.
+The script checks kinematic dimensions, inertia matrices, triangle inequalities, and center-of-mass alignment across both models.
 
 ---
 
-## 5. Sử dụng CLI duck.py
+## 5. CLI usage (duck.py)
 
-Công cụ dòng lệnh `duck.py` cung cấp các lệnh quản trị và vận hành toàn dự án:
+The `duck.py` CLI handles system status, verification, simulation, training, and policy export:
 
-### Xem trạng thái hệ thống
+### System status
 ```bash
 python duck.py status
 ```
-Hiển thị thông tin kiểm định mô hình, các checkpoint hiện có và tình trạng của 3 cấu hình phần cứng.
+Shows model verification results, policy checkpoints, and stack readiness.
 
-### Kiểm định toàn bộ mô hình
+### Model verification
 ```bash
 python duck.py verify
 ```
 
-### Mở trình xem 3D trực quan
+### Interactive 3D simulation
 ```bash
 python duck.py view
 ```
-Mở giao diện mô phỏng 3D tương tác trên nền MuJoCo với các phím tắt điều khiển dáng đi, ngồi xuống, nằm nghỉ và đứng dậy.
+Opens an interactive MuJoCo visualizer with keyboard controls for walking, crouching, resting, and standing.
 
-### Huấn luyện học tăng cường (PPO) theo target
+### Reinforcement learning training (PPO)
 ```bash
-# Huấn luyện cho Raspberry Pi 5
+# Train for Raspberry Pi 5
 python duck.py train --target rpi5 --steps 2000000
 
-# Huấn luyện cho Raspberry Pi Zero 2 W
+# Train for Raspberry Pi Zero 2 W
 python duck.py train --target pizero2w --steps 2000000
 
-# Huấn luyện cho Dual ESP32-S3
+# Train for Dual ESP32-S3
 python duck.py train --target esp32 --steps 2000000
 ```
 
-### Xuất mô hình phục vụ triển khai
+### Policy export
 ```bash
-# Xuất mô hình ONNX cho Pi 5 hoặc Pi Zero 2 W
+# Export ONNX model for Pi 5 or Pi Zero 2 W
 python duck.py export --target rpi5
 python duck.py export --target pizero2w
 
-# Xuất mảng trọng số C++ INT8 cho Dual ESP32-S3
+# Export quantized INT8 C++ header for Dual ESP32-S3
 python duck.py export --target esp32
 ```
 
 ---
 
-## 6. Cấu trúc thư mục
+## 6. Repository structure
 
 ```text
 duckV1/
-├── duck.py                                   # CLI điều hành dự án
-├── README.md                                 # Tài liệu kỹ thuật
-├── LICENSE                                   # Giấy phép MIT
-├── .gitignore                                # Cấu hình loại trừ file tạm
-├── models/                                   # Mô hình vật lý gốc
-│   ├── mjcf/microduck_8dof.xml               # Mô hình MuJoCo XML gốc
-│   ├── urdf/microduck_8dof.urdf              # Mô hình URDF gốc
-│   ├── microduck_pizero2w_policy.onnx        # Policy ONNX xuất cho Pi Zero 2 W
-│   └── microduck_ppo.pt                      # Checkpoint huấn luyện PyTorch
-├── pipelines/                                # Ba cấu hình phần cứng độc lập
-│   ├── rpi5_stack/                           # Nhánh Raspberry Pi 5
-│   │   ├── models/ (mjcf & urdf)             # Mô hình vật lý 764 g
-│   │   ├── training/                         # Môi trường huấn luyện Float32
-│   │   ├── deployment/ (infer_rpi5.py)       # Runtime suy luận 50Hz qua PCA9685
-│   │   └── docs/rpi5_hardware_spec.md        # Đặc tả kỹ thuật phần cứng
-│   ├── dual_esp32s3_stack/                   # Nhánh Dual ESP32-S3
-│   │   ├── models/ (mjcf & urdf)             # Mô hình vật lý 684 g
-│   │   ├── training/                         # Môi trường huấn luyện tối ưu hóa INT8
-│   │   ├── firmware/                         # Mã nguồn C++/Arduino cho MCU 1 và MCU 2
-│   │   └── docs/dual_esp32_hardware_spec.md  # Đặc tả kỹ thuật phần cứng
-│   └── pizero2w_stack/                       # Nhánh Raspberry Pi Zero 2 W
-│       ├── models/ (mjcf & urdf)             # Mô hình vật lý 649 g
-│       ├── training/                         # Môi trường huấn luyện Pi Zero 2 W
-│       ├── deployment/ (infer_pizero2w.py)   # Runtime suy luận 50Hz qua PCA9685
-│       └── docs/pizero2w_hardware_spec.md    # Đặc tả kỹ thuật phần cứng
-├── scripts/                                  # Scripts tiện ích
-│   ├── verify_model.py                       # Kiểm định tính hợp lệ của mô hình vật lý
-│   ├── export_policy.py                      # Xuất mô hình sang ONNX hoặc C++ INT8
-│   └── train_ppo.py                          # Script huấn luyện thuật toán PPO
-├── training/                                 # Lõi mô phỏng MuJoCo
-│   ├── env_config.py                         # Cấu hình không gian trạng thái và hàm thưởng
-│   └── run_parallel_sim.py                   # Mô phỏng song song nhiều môi trường
-└── docs/                                     # Tài liệu thiết kế
-    └── specs/                                # Các văn bản đặc tả kỹ thuật
+├── duck.py                                   # Unified operations CLI
+├── README.md                                 # Technical documentation
+├── LICENSE                                   # MIT License
+├── .gitignore                                # Git ignore configuration
+├── models/                                   # Base physical models
+│   ├── mjcf/microduck_8dof.xml               # Base MuJoCo XML model
+│   ├── urdf/microduck_8dof.urdf              # Base URDF model
+│   ├── microduck_pizero2w_policy.onnx        # Exported ONNX policy for Pi Zero 2 W
+│   └── microduck_ppo.pt                      # PyTorch training checkpoint
+├── pipelines/                                # Hardware targets
+│   ├── rpi5_stack/                           # Raspberry Pi 5 target
+│   │   ├── models/ (mjcf & urdf)             # 764 g physical model
+│   │   ├── training/                         # Float32 training environment
+│   │   ├── deployment/ (infer_rpi5.py)       # 50 Hz inference runtime via PCA9685
+│   │   └── docs/rpi5_hardware_spec.md        # Hardware specifications
+│   ├── dual_esp32s3_stack/                   # Dual ESP32-S3 target
+│   │   ├── models/ (mjcf & urdf)             # 684 g physical model
+│   │   ├── training/                         # INT8 training environment
+│   │   ├── firmware/                         # C++/Arduino firmware for MCU 1 and MCU 2
+│   │   └── docs/dual_esp32_hardware_spec.md  # Hardware specifications
+│   └── pizero2w_stack/                       # Raspberry Pi Zero 2 W target
+│       ├── models/ (mjcf & urdf)             # 649 g physical model
+│       ├── training/                         # Pi Zero 2 W training environment
+│       ├── deployment/ (infer_pizero2w.py)   # 50 Hz inference runtime via PCA9685
+│       └── docs/pizero2w_hardware_spec.md    # Hardware specifications
+├── scripts/                                  # Utility scripts
+│   ├── verify_model.py                       # Physical model consistency verification
+│   ├── export_policy.py                      # Policy export (ONNX or INT8 C++ Header)
+│   └── train_ppo.py                          # Multi-environment PPO training script
+├── training/                                 # MuJoCo simulation core
+│   ├── env_config.py                         # Observation space and reward function
+│   └── run_parallel_sim.py                   # Parallel multi-environment simulation
+└── docs/                                     # Architecture documentation
+    └── specs/                                # Engineering specifications
 ```
 
 ---
 
-## 7. Giấy phép
+## 7. License
 
-Dự án được phân phối theo giấy phép mã nguồn mở [MIT License](LICENSE). Bản quyền thuộc về PhelanDev (2026).
+Distributed under the [MIT License](LICENSE). Copyright (c) 2026 PhelanDev.
