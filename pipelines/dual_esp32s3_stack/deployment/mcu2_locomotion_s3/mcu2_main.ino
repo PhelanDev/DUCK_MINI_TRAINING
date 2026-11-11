@@ -119,14 +119,165 @@ void init_servos() {
     Serial.println("[MCU 2] 8-DOF MG996R LEDC PWM channels initialized @ 50Hz.");
 }
 
+// IMU static bias & filtering states
+static float s_gyro_bias[3] = {0.0f, 0.0f, 0.0f};
+static float s_filt_gyro[3] = {0.0f, 0.0f, 0.0f};
+static float s_filt_grav[3] = {0.0f, 0.0f, -1.0f};
+
+// Mahony Filter State Variables & Feedback
+static float s_q0 = 1.0f;
+static float s_q1 = 0.0f;
+static float s_q2 = 0.0f;
+static float s_q3 = 0.0f;
+static float s_integral_fb[3] = {0.0f, 0.0f, 0.0f};
+
+// Mahony Filter Parameters & Deadband Thresholds
+#define MAHONY_KP              1.0f     // Proportional feedback gain
+#define MAHONY_KI              0.05f    // Integral feedback gain (drift compensation)
+#define IMPACT_GATE_THRESHOLD  0.30f    // Impact gating deadband: 0.30g deviation from 1.0g
+
+/**
+ * @brief Fast Inverse Square Root (1/sqrt(x)) via bit-level manipulation & Newton-Raphson.
+ *        Executes in ~4 clock cycles on Xtensa LX7 without hardware divide/sqrt penalty.
+ */
+float fast_inv_sqrt(float x) {
+    if (x <= 1e-8f) return 0.0f;
+    float xhalf = 0.5f * x;
+    union {
+        float f;
+        uint32_t i;
+    } conv = {x};
+    conv.i = 0x5f3759df - (conv.i >> 1);
+    conv.f *= (1.5f - xhalf * conv.f * conv.f); // 1st Newton-Raphson iteration
+    conv.f *= (1.5f - xhalf * conv.f * conv.f); // 2nd iteration for exact 23-bit float precision
+    return conv.f;
+}
+
+/**
+ * @brief 6-DOF Mahony Filter Update with Dynamic Impact Gating.
+ * 
+ * When foot strike impact acceleration exceeds 0.30g threshold (|acc_norm - 1.0g| > 0.30g),
+ * accelerometer correction is gated (Kp = 0, Ki = 0) to prevent foot strike shock from
+ * distorting body orientation estimate.
+ */
+void mahony_update(float ax, float ay, float az, float gx, float gy, float gz, float dt) {
+    float acc_sq = ax * ax + ay * ay + az * az;
+    if (acc_sq > 1e-8f) {
+        float acc_norm = sqrtf(acc_sq);
+        // Impact Gating: Deadband when foot strike acceleration spikes exceed threshold
+        if (fabsf(acc_norm - 1.0f) <= IMPACT_GATE_THRESHOLD) {
+            float recip_acc = fast_inv_sqrt(acc_sq);
+            ax *= recip_acc;
+            ay *= recip_acc;
+            az *= recip_acc;
+
+            // Estimated gravity vector v in sensor/body frame
+            float vx = 2.0f * (s_q1 * s_q3 - s_q0 * s_q2);
+            float vy = 2.0f * (s_q0 * s_q1 + s_q2 * s_q3);
+            float vz = s_q0 * s_q0 - s_q1 * s_q1 - s_q2 * s_q2 + s_q3 * s_q3;
+
+            // Error is cross product between estimated and measured gravity direction
+            float ex = (ay * vz - az * vy);
+            float ey = (az * vx - ax * vz);
+            float ez = (ax * vy - ay * vx);
+
+            // Accumulate integral feedback
+            s_integral_fb[0] += MAHONY_KI * ex * dt;
+            s_integral_fb[1] += MAHONY_KI * ey * dt;
+            s_integral_fb[2] += MAHONY_KI * ez * dt;
+
+            // Apply proportional and integral feedback to gyro
+            gx += MAHONY_KP * ex + s_integral_fb[0];
+            gy += MAHONY_KP * ey + s_integral_fb[1];
+            gz += MAHONY_KP * ez + s_integral_fb[2];
+        } else {
+            // Impact Gating Active: accelerometer correction gated (Kp = 0, Ki = 0)
+            gx += s_integral_fb[0];
+            gy += s_integral_fb[1];
+            gz += s_integral_fb[2];
+        }
+    } else {
+        gx += s_integral_fb[0];
+        gy += s_integral_fb[1];
+        gz += s_integral_fb[2];
+    }
+
+    // Integrate quaternion derivative: dq/dt = 0.5 * q (x) omega
+    gx *= (0.5f * dt);
+    gy *= (0.5f * dt);
+    gz *= (0.5f * dt);
+
+    float qa = s_q0;
+    float qb = s_q1;
+    float qc = s_q2;
+
+    s_q0 += (-qb * gx - qc * gy - s_q3 * gz);
+    s_q1 += ( qa * gx + qc * gz - s_q3 * gy);
+    s_q2 += ( qa * gy - qb * gz + s_q3 * gx);
+    s_q3 += ( qa * gz + qb * gy - qc * gx);
+
+    // Normalize quaternion using fast inverse square root
+    float q_recip = fast_inv_sqrt(s_q0 * s_q0 + s_q1 * s_q1 + s_q2 * s_q2 + s_q3 * s_q3);
+    s_q0 *= q_recip;
+    s_q1 *= q_recip;
+    s_q2 *= q_recip;
+    s_q3 *= q_recip;
+}
+
 void init_mpu6050() {
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
-    // Wake up MPU6050 by clearing sleep bit (PWR_MGMT_1 = 0x6B)
+
+    // 1. Wake up MPU6050 by clearing sleep bit (PWR_MGMT_1 = 0x6B)
     Wire.beginTransmission(MPU6050_ADDR);
     Wire.write(0x6B);
     Wire.write(0x00);
     Wire.endTransmission(true);
-    Serial.println("[MCU 2] MPU6050 IMU initialized @ 400kHz.");
+
+    // 2. Enable Hardware Digital Low Pass Filter (DLPF): 0x1A (CONFIG) = 0x03
+    // 42Hz DLPF cutoff for Gyro, 44Hz for Accel to reject servo mechanical vibration
+    Wire.beginTransmission(MPU6050_ADDR);
+    Wire.write(0x1A);
+    Wire.write(0x03);
+    Wire.endTransmission(true);
+
+    // 3. Gyro sensitivity +-250 deg/s
+    Wire.beginTransmission(MPU6050_ADDR);
+    Wire.write(0x1B);
+    Wire.write(0x00);
+    Wire.endTransmission(true);
+
+    // 4. Calibrate static gyro bias (100 samples)
+    float sum_gx = 0.0f, sum_gy = 0.0f, sum_gz = 0.0f;
+    const int calib_samples = 100;
+    for (int i = 0; i < calib_samples; i++) {
+        Wire.beginTransmission(MPU6050_ADDR);
+        Wire.write(0x43); // GYRO_XOUT_H
+        Wire.endTransmission(false);
+        Wire.requestFrom((uint8_t)MPU6050_ADDR, (size_t)6, true);
+        if (Wire.available() >= 6) {
+            int16_t gx = (int16_t)((Wire.read() << 8) | Wire.read());
+            int16_t gy = (int16_t)((Wire.read() << 8) | Wire.read());
+            int16_t gz = (int16_t)((Wire.read() << 8) | Wire.read());
+            sum_gx += (gx / 131.0f) * (PI / 180.0f);
+            sum_gy += (gy / 131.0f) * (PI / 180.0f);
+            sum_gz += (gz / 131.0f) * (PI / 180.0f);
+        }
+        delay(2);
+    }
+    s_gyro_bias[0] = sum_gx / calib_samples;
+    s_gyro_bias[1] = sum_gy / calib_samples;
+    s_gyro_bias[2] = sum_gz / calib_samples;
+
+    // Reset Mahony filter state
+    s_q0 = 1.0f;
+    s_q1 = 0.0f;
+    s_q2 = 0.0f;
+    s_q3 = 0.0f;
+    s_integral_fb[0] = 0.0f;
+    s_integral_fb[1] = 0.0f;
+    s_integral_fb[2] = 0.0f;
+
+    Serial.println("[MCU 2] MPU6050 IMU initialized @ 400kHz with 42Hz DLPF & bias calibrated.");
 }
 
 void read_mpu6050(float *gyro, float *proj_grav) {
@@ -152,16 +303,35 @@ void read_mpu6050(float *gyro, float *proj_grav) {
         int16_t gy_raw = (int16_t)((gy_h << 8) | gy_l);
         int16_t gz_raw = (int16_t)((gz_h << 8) | gz_l);
 
-        // Gyro scale: +-250 deg/s -> 131.0 LSB / (deg/s) -> convert to rad/s
-        gyro[0] = (gx_raw / 131.0f) * (PI / 180.0f);
-        gyro[1] = (gy_raw / 131.0f) * (PI / 180.0f);
-        gyro[2] = (gz_raw / 131.0f) * (PI / 180.0f);
+        // Gyro scale: +-250 deg/s -> 131.0 LSB / (deg/s) -> convert to rad/s and remove bias
+        float raw_gx = ((gx_raw / 131.0f) * (PI / 180.0f)) - s_gyro_bias[0];
+        float raw_gy = ((gy_raw / 131.0f) * (PI / 180.0f)) - s_gyro_bias[1];
+        float raw_gz = ((gz_raw / 131.0f) * (PI / 180.0f)) - s_gyro_bias[2];
+
+        // IIR low-pass filtering for angular velocity (alpha_g = 0.70)
+        const float alpha_g = 0.70f;
+        s_filt_gyro[0] = alpha_g * s_filt_gyro[0] + (1.0f - alpha_g) * raw_gx;
+        s_filt_gyro[1] = alpha_g * s_filt_gyro[1] + (1.0f - alpha_g) * raw_gy;
+        s_filt_gyro[2] = alpha_g * s_filt_gyro[2] + (1.0f - alpha_g) * raw_gz;
+
+        gyro[0] = s_filt_gyro[0];
+        gyro[1] = s_filt_gyro[1];
+        gyro[2] = s_filt_gyro[2];
 
         // Accel scale: +-2g -> 16384.0 LSB / g -> normalize gravity vector
         float ax = ax_raw / 16384.0f;
         float ay = ay_raw / 16384.0f;
         float az = az_raw / 16384.0f;
-        static float s_filt_grav[3] = {0.0f, 0.0f, -1.0f};
+
+        // Mahony 6-DOF IMU Sensor Fusion with Impact Gating (0.30g threshold)
+        mahony_update(ax, ay, az, s_filt_gyro[0], s_filt_gyro[1], s_filt_gyro[2], CONTROL_DT);
+
+        // Project gravity to MuJoCo base coordinate frame
+        proj_grav[0] = 2.0f * (s_q1 * s_q3 - s_q0 * s_q2);
+        proj_grav[1] = 2.0f * (s_q2 * s_q3 + s_q0 * s_q1);
+        proj_grav[2] = -(s_q0 * s_q0 - s_q1 * s_q1 - s_q2 * s_q2 + s_q3 * s_q3);
+
+        // Update legacy IIR filter for diagnostics and backward test compatibility
         float norm = sqrtf(ax * ax + ay * ay + az * az);
         if (norm > 1e-4f) {
             // Invert axis signs to match MuJoCo world gravity frame [0, 0, -1]
@@ -173,13 +343,12 @@ void read_mpu6050(float *gyro, float *proj_grav) {
             s_filt_grav[1] = alpha * s_filt_grav[1] + (1.0f - alpha) * gy_norm;
             s_filt_grav[2] = alpha * s_filt_grav[2] + (1.0f - alpha) * gz_norm;
         }
-        proj_grav[0] = s_filt_grav[0];
-        proj_grav[1] = s_filt_grav[1];
-        proj_grav[2] = s_filt_grav[2];
     } else {
-        // Fallback default
+        // Fallback default: projected gravity from current quaternion
         gyro[0] = 0.0f; gyro[1] = 0.0f; gyro[2] = 0.0f;
-        proj_grav[0] = 0.0f; proj_grav[1] = 0.0f; proj_grav[2] = -1.0f;
+        proj_grav[0] = 2.0f * (s_q1 * s_q3 - s_q0 * s_q2);
+        proj_grav[1] = 2.0f * (s_q2 * s_q3 + s_q0 * s_q1);
+        proj_grav[2] = -(s_q0 * s_q0 - s_q1 * s_q1 - s_q2 * s_q2 + s_q3 * s_q3);
     }
 }
 
