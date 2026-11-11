@@ -138,6 +138,202 @@ class HardwarePCA9685:
         self.bus.write_i2c_block_data(self.address, reg_base, data)
 
 
+class MPU6050FilterReader:
+    """Hardware I2C driver for MPU6050 with 42Hz DLPF, Mahony AHRS sensor fusion, and impact gating."""
+
+    MPU6050_ADDR = 0x68
+    PWR_MGMT_1 = 0x6B
+    CONFIG = 0x1A
+    GYRO_CONFIG = 0x1B
+    ACCEL_XOUT_H = 0x3B
+    GYRO_XOUT_H = 0x43
+
+    def __init__(
+        self,
+        bus_num: int = 1,
+        address: int = 0x68,
+        mock: bool = False,
+        dt: float = 0.02,
+        kp: float = 1.0,
+        ki: float = 0.05,
+        impact_threshold: float = 0.30,
+    ):
+        self.address = address
+        self.mock = mock or (smbus is None)
+        self.dt = float(dt)
+        self.kp = float(kp)
+        self.ki = float(ki)
+        self.impact_threshold = float(impact_threshold)
+
+        # Mahony AHRS quaternion [qw, qx, qy, qz] & integral feedback error
+        self.q = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        self.integral_fb = np.zeros(3, dtype=np.float32)
+
+        self.gyro_bias = np.zeros(3, dtype=np.float32)
+        self.filt_gyro = np.zeros(3, dtype=np.float32)
+        self.filt_grav = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        self.alpha_gyro = 0.70
+        self.alpha_grav = 0.80
+
+        if not self.mock:
+            try:
+                self.bus = smbus.SMBus(bus_num)
+                # Wake up MPU6050
+                self.bus.write_byte_data(self.address, self.PWR_MGMT_1, 0x00)
+                # 42Hz hardware DLPF cutoff to filter servo motor vibration
+                self.bus.write_byte_data(self.address, self.CONFIG, 0x03)
+                # Gyro sensitivity +-250 deg/s
+                self.bus.write_byte_data(self.address, self.GYRO_CONFIG, 0x00)
+                self._calibrate_gyro()
+            except Exception as e:
+                print(f"[IMU] Real I2C MPU6050 unavailable ({e}), using mock/fallback.")
+                self.mock = True
+
+    def _calibrate_gyro(self, samples: int = 100) -> None:
+        """Calibrate gyro zero-rate offset while standing still."""
+        print("[IMU] Calibrating MPU6050 gyro bias...")
+        acc = np.zeros(3, dtype=np.float64)
+        count = 0
+        for _ in range(samples):
+            try:
+                data = self.bus.read_i2c_block_data(self.address, self.GYRO_XOUT_H, 6)
+                gx = (np.int16((data[0] << 8) | data[1]) / 131.0) * (np.pi / 180.0)
+                gy = (np.int16((data[2] << 8) | data[3]) / 131.0) * (np.pi / 180.0)
+                gz = (np.int16((data[4] << 8) | data[5]) / 131.0) * (np.pi / 180.0)
+                acc += [gx, gy, gz]
+                count += 1
+                time.sleep(0.002)
+            except Exception:
+                pass
+        if count > 0:
+            self.gyro_bias = (acc / count).astype(np.float32)
+
+    def update(
+        self,
+        ax: float,
+        ay: float,
+        az: float,
+        gx: float,
+        gy: float,
+        gz: float,
+        dt: Optional[float] = None,
+    ) -> None:
+        """Vectorized Mahony AHRS update with dynamic impact gating."""
+        if dt is None:
+            dt = self.dt
+
+        acc = np.array([ax, ay, az], dtype=np.float32)
+        acc_sq = float(np.sum(acc * acc))
+
+        corr_gx = float(gx)
+        corr_gy = float(gy)
+        corr_gz = float(gz)
+
+        if acc_sq > 1e-8:
+            acc_norm = float(np.sqrt(acc_sq))
+            # Dynamic Foot-Strike Impact Gating: gate correction if |norm - 1.0g| > 0.30g
+            if abs(acc_norm - 1.0) <= self.impact_threshold:
+                inv_norm = 1.0 / acc_norm
+                ax_n = acc[0] * inv_norm
+                ay_n = acc[1] * inv_norm
+                az_n = acc[2] * inv_norm
+
+                qw, qx, qy, qz = self.q
+                # Estimated gravity direction in body frame
+                vx = 2.0 * (qx * qz - qw * qy)
+                vy = 2.0 * (qw * qx + qy * qz)
+                vz = qw * qw - qx * qx - qy * qy + qz * qz
+
+                # Error is cross product between estimated and measured direction of gravity
+                ex = ay_n * vz - az_n * vy
+                ey = az_n * vx - ax_n * vz
+                ez = ax_n * vy - ay_n * vx
+
+                # Accumulate integral feedback
+                self.integral_fb[0] += self.ki * ex * dt
+                self.integral_fb[1] += self.ki * ey * dt
+                self.integral_fb[2] += self.ki * ez * dt
+
+                # Apply proportional and integral feedback to angular rates
+                corr_gx += self.kp * ex + self.integral_fb[0]
+                corr_gy += self.kp * ey + self.integral_fb[1]
+                corr_gz += self.kp * ez + self.integral_fb[2]
+            else:
+                # Gated: use integral feedback only (no accelerometer correction)
+                corr_gx += self.integral_fb[0]
+                corr_gy += self.integral_fb[1]
+                corr_gz += self.integral_fb[2]
+        else:
+            corr_gx += self.integral_fb[0]
+            corr_gy += self.integral_fb[1]
+            corr_gz += self.integral_fb[2]
+
+        # Integrate rate of change of quaternion: q_dot = 0.5 * q * omega
+        hdt = 0.5 * dt
+        corr_gx *= hdt
+        corr_gy *= hdt
+        corr_gz *= hdt
+
+        qw, qx, qy, qz = self.q
+        dq_w = -qx * corr_gx - qy * corr_gy - qz * corr_gz
+        dq_x =  qw * corr_gx + qy * corr_gz - qz * corr_gy
+        dq_y =  qw * corr_gy - qx * corr_gz + qz * corr_gx
+        dq_z =  qw * corr_gz + qx * corr_gy - qy * corr_gx
+
+        new_q = np.array([qw + dq_w, qx + dq_x, qy + dq_y, qz + dq_z], dtype=np.float32)
+        q_norm = float(np.linalg.norm(new_q))
+        if q_norm > 1e-8:
+            self.q = new_q / q_norm
+        else:
+            self.q = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+        self.filt_grav = self.get_proj_grav()
+
+    mahony_update = update
+
+    def get_proj_grav(self) -> np.ndarray:
+        """Compute projected gravity vector in robot base frame matching MuJoCo convention [0, 0, -1]."""
+        qw, qx, qy, qz = self.q
+        return np.array([
+            2.0 * (qx * qz - qw * qy),
+            2.0 * (qy * qz + qw * qx),
+            -(qw * qw - qx * qx - qy * qy + qz * qz),
+        ], dtype=np.float32)
+
+    def read(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Read and return filtered (base_ang_vel, proj_grav)."""
+        if self.mock:
+            return self.filt_gyro.copy(), self.get_proj_grav()
+
+        try:
+            data = self.bus.read_i2c_block_data(self.address, self.ACCEL_XOUT_H, 14)
+            ax_raw = np.int16((data[0] << 8) | data[1])
+            ay_raw = np.int16((data[2] << 8) | data[3])
+            az_raw = np.int16((data[4] << 8) | data[5])
+            gx_raw = np.int16((data[8] << 8) | data[9])
+            gy_raw = np.int16((data[10] << 8) | data[11])
+            gz_raw = np.int16((data[12] << 8) | data[13])
+
+            raw_gx = ((gx_raw / 131.0) * (np.pi / 180.0)) - self.gyro_bias[0]
+            raw_gy = ((gy_raw / 131.0) * (np.pi / 180.0)) - self.gyro_bias[1]
+            raw_gz = ((gz_raw / 131.0) * (np.pi / 180.0)) - self.gyro_bias[2]
+
+            self.filt_gyro = self.alpha_gyro * self.filt_gyro + (1.0 - self.alpha_gyro) * np.array(
+                [raw_gx, raw_gy, raw_gz], dtype=np.float32
+            )
+
+            ax = float(ax_raw) / 16384.0
+            ay = float(ay_raw) / 16384.0
+            az = float(az_raw) / 16384.0
+
+            self.update(ax, ay, az, self.filt_gyro[0], self.filt_gyro[1], self.filt_gyro[2], dt=self.dt)
+
+        except Exception:
+            pass
+
+        return self.filt_gyro.copy(), self.get_proj_grav()
+
+
 class PiZero2WInferenceEngine:
     """Raspberry Pi Zero 2 W Real-Time Locomotion Engine for MicroDuck 8-DOF."""
 
@@ -163,6 +359,11 @@ class PiZero2WInferenceEngine:
                 print(f"[Warning] Failed to initialize hardware I2C ({e}). Falling back to Mock PCA9685.")
                 self.mock = True
                 self.servo_controller = MockPCA9685(bus=i2c_bus)
+
+        # IMU sensor & filter setup
+        self.imu_reader = MPU6050FilterReader(
+            bus_num=i2c_bus, mock=self.mock, dt=self.dt
+        )
 
         # ONNX Model setup (optimized for Quad-core Cortex-A53)
         self.model_path = model_path
@@ -244,8 +445,6 @@ class PiZero2WInferenceEngine:
         step_count = 0
         target_period = self.dt
 
-        base_ang_vel = [0.0, 0.0, 0.0]
-        proj_grav = [0.0, 0.0, -1.0]
         commands = [0.2, 0.0, 0.0]
         foot_contact = [1.0, 1.0, 0.0, 0.0]
         lidar_ranges = [1.5, 1.5, 1.5, 1.5, 1.5]
@@ -253,6 +452,9 @@ class PiZero2WInferenceEngine:
         try:
             while steps is None or step_count < steps:
                 t0 = time.perf_counter()
+
+                # Read filtered IMU angular velocity and gravity vector
+                base_ang_vel, proj_grav = self.imu_reader.read()
 
                 obs = pack_pizero2w_observation(
                     base_ang_vel=base_ang_vel,
