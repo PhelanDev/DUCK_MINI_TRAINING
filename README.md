@@ -1,5 +1,7 @@
 # MicroDuck 8-DOF
 
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/PhelanDev/badge.svg)](https://hub.xerj.org/contributors/PhelanDev)
+
 Robot hai chân 8 bậc tự do sử dụng servo kim loại MG996R, phục vụ nghiên cứu và huấn luyện học tăng cường Sim-to-Real trên ba cấu hình phần cứng độc lập: Raspberry Pi 5, Dual ESP32-S3 và Raspberry Pi Zero 2 W.
 
 Mô hình vật lý được đồng bộ song song giữa MuJoCo (MJCF) để huấn luyện mô phỏng và URDF để kiểm định động học, trực quan hóa trên ROS hoặc PyBullet.
