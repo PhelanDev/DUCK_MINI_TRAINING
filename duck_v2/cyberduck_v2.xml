@@ -64,6 +64,8 @@
     <body name="trunk_base" pos="0 0 0.125" childclass="cyberduck_v2">
       <freejoint name="trunk_freejoint" />
       <inertial pos="0.002 0.000 -0.012" mass="0.36" diaginertia="0.00038 0.00048 0.00032" />
+      <site name="imu" pos="0 0 0" size="0.005" rgba="1 0 0 1" />
+      <site name="imu_site" pos="0 0 0" size="0.005" rgba="1 0 0 1" />
 
       <!-- Chest Armor, Reactor Core, Thruster Backpack -->
       <geom type="mesh" mesh="cyber_chest" material="mecha_white" class="visual" />
@@ -89,7 +91,8 @@
           <geom type="mesh" mesh="cyber_visor" material="mecha_cyan_glow" class="visual" />
           <geom type="mesh" mesh="cyber_beak" material="mecha_gold" class="visual" />
           <geom type="mesh" mesh="cyber_beak" class="collision" />
-          <site name="imu" pos="0.02 0 0.01" />
+          <camera name="head_camera" pos="0.040 0 0.022" fovy="60" xyaxes="0 -1 0 0 0 1" />
+          <site name="camera_site" pos="0.040 0 0.022" size="0.003" rgba="0 1 0 0" />
         </body>
       </body>
 
@@ -114,6 +117,7 @@
 
             <body name="left_foot" pos="0.004 0 -0.036">
               <inertial pos="0.005 0 0.006" mass="0.038" diaginertia="0.00002 0.00002 0.00002" />
+              <site name="left_foot_touch_site" pos="0.005 0 -0.004" size="0.025 0.013 0.004" type="box" rgba="0 1 1 0" />
               <!-- 3-Claw Tactical Gold Foot & Rubber Tread Sole -->
               <geom type="mesh" mesh="cyber_foot_left" material="mecha_gold" class="visual" />
               <geom name="left_sole_geom" type="mesh" mesh="cyber_sole_left" material="mecha_sole_rubber" class="collision" />
@@ -144,6 +148,7 @@
 
             <body name="right_foot" pos="0.004 0 -0.036">
               <inertial pos="0.005 0 0.006" mass="0.038" diaginertia="0.00002 0.00002 0.00002" />
+              <site name="right_foot_touch_site" pos="0.005 0 -0.004" size="0.025 0.013 0.004" type="box" rgba="0 1 1 0" />
               <!-- 3-Claw Tactical Gold Foot & Rubber Tread Sole -->
               <geom type="mesh" mesh="cyber_foot_right" material="mecha_gold" class="visual" />
               <geom name="right_sole_geom" type="mesh" mesh="cyber_sole_right" material="mecha_sole_rubber" class="collision" />
@@ -168,9 +173,26 @@
   </actuator>
 
   <sensor>
-    <framequat name="orientation" objtype="site" objname="imu" noise="0.001" />
-    <gyro name="angular-velocity" site="imu" noise="0.005" />
-    <accelerometer name="imu_accel" site="imu" />
-    <velocimeter name="imu_lin_vel" site="imu" />
+    <accelerometer name="base_accel" site="imu" />
+    <gyro name="base_gyro" site="imu" />
+    <framequat name="base_quat" objtype="site" objname="imu" />
+    <touch name="left_foot_touch" site="left_foot_touch_site" />
+    <touch name="right_foot_touch" site="right_foot_touch_site" />
+    <jointpos name="head_yaw_pos" joint="head_yaw" />
+    <jointpos name="head_pitch_pos" joint="head_pitch" />
+    <jointpos name="left_hip_roll_pos" joint="left_hip_roll" />
+    <jointpos name="left_hip_pitch_pos" joint="left_hip_pitch" />
+    <jointpos name="left_knee_pitch_pos" joint="left_knee_pitch" />
+    <jointpos name="right_hip_roll_pos" joint="right_hip_roll" />
+    <jointpos name="right_hip_pitch_pos" joint="right_hip_pitch" />
+    <jointpos name="right_knee_pitch_pos" joint="right_knee_pitch" />
+    <jointvel name="head_yaw_vel" joint="head_yaw" />
+    <jointvel name="head_pitch_vel" joint="head_pitch" />
+    <jointvel name="left_hip_roll_vel" joint="left_hip_roll" />
+    <jointvel name="left_hip_pitch_vel" joint="left_hip_pitch" />
+    <jointvel name="left_knee_pitch_vel" joint="left_knee_pitch" />
+    <jointvel name="right_hip_roll_vel" joint="right_hip_roll" />
+    <jointvel name="right_hip_pitch_vel" joint="right_hip_pitch" />
+    <jointvel name="right_knee_pitch_vel" joint="right_knee_pitch" />
   </sensor>
 </mujoco>

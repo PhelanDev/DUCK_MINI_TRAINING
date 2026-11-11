@@ -209,3 +209,56 @@ void loop() {
     delay(1);
 }
 
+// ============================================================================
+// Visual Servoing & Color Blob Tracking Implementation (Yellow / Face Target)
+// ============================================================================
+void process_color_tracking(const uint8_t* fb_buf, size_t fb_len, int width, int height) {
+    if (!fb_buf || width <= 0 || height <= 0) return;
+
+    int sum_x = 0;
+    int sum_y = 0;
+    int match_count = 0;
+
+    // Fast sub-sampled scan (every 4th pixel) for yellow target (RGB565 or RGB888)
+    for (int y = 0; y < height; y += 4) {
+        for (int x = 0; x < width; x += 4) {
+            size_t idx = (y * width + x) * 2;
+            if (idx + 1 >= fb_len) break;
+            uint16_t pixel = (fb_buf[idx] << 8) | fb_buf[idx + 1];
+            uint8_t r = (pixel >> 11) & 0x1F;
+            uint8_t g = (pixel >> 5) & 0x3F;
+            uint8_t b = pixel & 0x1F;
+
+            // Yellow target condition in 5-6-5: high R, high G, low B
+            if (r > 20 && g > 40 && b < 10) {
+                sum_x += x;
+                sum_y += y;
+                match_count++;
+            }
+        }
+    }
+
+    if (match_count > 30) {
+        int cx = sum_x / match_count;
+        int cy = sum_y / match_count;
+        float norm_x = (float)(cx - (width / 2)) / (float)(width / 2);
+        float norm_y = (float)(cy - (height / 2)) / (float)(height / 2);
+
+        // Anti-jitter deadband
+        if (fabsf(norm_x) > 0.08f || fabsf(norm_y) > 0.08f) {
+            int16_t yaw_target_deg10 = (int16_t)(-norm_x * 450.0f);  // ±45 deg
+            int16_t pitch_target_deg10 = (int16_t)(norm_y * 250.0f); // ±25 deg
+
+            // Construct 8-byte sync packet [0xAA, 0x55, 0x10, yaw_deg10, pitch_deg10, checksum]
+            uint8_t head_pkt[8] = {
+                0xAA, 0x55, 0x10,
+                (uint8_t)(yaw_target_deg10 & 0xFF), (uint8_t)((yaw_target_deg10 >> 8) & 0xFF),
+                (uint8_t)(pitch_target_deg10 & 0xFF), (uint8_t)((pitch_target_deg10 >> 8) & 0xFF),
+                (uint8_t)((yaw_target_deg10 + pitch_target_deg10) & 0xFF)
+            };
+            UartLink.write(head_pkt, sizeof(head_pkt));
+        }
+    }
+}
+
+

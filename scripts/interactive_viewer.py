@@ -86,6 +86,27 @@ try:
 except ImportError:
     _CV2_AVAILABLE = False
 
+try:
+    from training.advanced_gaits import (
+        BipedalGaitGenerator,
+        GaitPattern,
+        AdvancedBehaviorController,
+    )
+    _ADVANCED_GAITS_AVAILABLE = True
+except Exception:
+    _ADVANCED_GAITS_AVAILABLE = False
+
+try:
+    from training.vision_tracker import (
+        TargetColor,
+        ColorBlobTracker,
+        VisualServoingHeadController,
+        render_head_camera,
+    )
+    _VISION_TRACKER_AVAILABLE = True
+except Exception:
+    _VISION_TRACKER_AVAILABLE = False
+
 
 # Joint names matching MuJoCo MJCF and URDF specifications
 JOINT_NAMES = [
@@ -223,15 +244,45 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disable automatic reset on fall",
     )
+    parser.add_argument(
+        "--gait",
+        type=str,
+        default="waddle",
+        choices=["waddle", "walk", "spot_turn", "head_dance"],
+        help="Bipedal gait demonstration pattern (waddle, walk, spot_turn, head_dance)",
+    )
+    parser.add_argument(
+        "--track",
+        action="store_true",
+        help="Enable AI Vision Visual Servoing to track target using onboard head camera",
+    )
+    parser.add_argument(
+        "--target-color",
+        type=str,
+        default="yellow",
+        choices=["yellow", "red", "green", "blue"],
+        help="Color target to track with visual servoing (default: yellow)",
+    )
     return parser
 
 
-def compute_gait_targets(t: float, frequency: float = 1.0) -> np.ndarray:
-    """Generate periodic joint angles for bipedal stepping demonstration.
-    
-    Generates coordinated hip roll (lateral weight shifting), hip pitch (sagittal leg swing),
-    and knee pitch (foot ground clearance) trajectories centered around nominal stance.
-    """
+_SHARED_GAIT_GEN = BipedalGaitGenerator() if _ADVANCED_GAITS_AVAILABLE else None
+
+
+def compute_gait_targets(t: float, frequency: float = 1.0, pattern: str = "waddle") -> np.ndarray:
+    """Generate periodic joint angles for bipedal stepping demonstration."""
+    if _SHARED_GAIT_GEN is not None:
+        pat = GaitPattern.WADDLE
+        if pattern in ("walk", "walking"):
+            pat = GaitPattern.WALK
+        elif pattern in ("spot_turn", "spot_turn_left", "turn"):
+            pat = GaitPattern.SPOT_TURN_LEFT
+        elif pattern in ("spot_turn_right",):
+            pat = GaitPattern.SPOT_TURN_RIGHT
+        elif pattern in ("head_dance", "dance"):
+            pat = GaitPattern.HEAD_DANCE
+        return _SHARED_GAIT_GEN.compute_gait(t, pattern=pat, freq=frequency)
+
     omega = 2.0 * math.pi * frequency
     phase = omega * t
     s = math.sin(phase)
@@ -556,6 +607,9 @@ def run_simulation_headless(
     stage: int = 0,
     stairs: bool = False,
     auto_reset: bool = True,
+    gait: str = "waddle",
+    track: bool = False,
+    target_color: str = "yellow",
 ) -> Dict[str, Any]:
     """Execute a headless simulation without GUI window for verification and testing."""
     if not _MUJOCO_AVAILABLE:
@@ -593,6 +647,16 @@ def run_simulation_headless(
     last_targets = np.array(data.qpos[7:15], dtype=np.float32)
     targets = target_pose
 
+    # Setup visual servoing if requested
+    blob_tracker = ColorBlobTracker(target_color) if (track and _VISION_TRACKER_AVAILABLE) else None
+    servo_ctrl = VisualServoingHeadController() if (track and _VISION_TRACKER_AVAILABLE) else None
+    cam_renderer = None
+    if track and _VISION_TRACKER_AVAILABLE:
+        try:
+            cam_renderer = mujoco.Renderer(model, height=120, width=160)
+        except Exception:
+            cam_renderer = None
+
     for step_idx in range(total_steps):
         if policy is not None:
             if step_idx % decimation == 0:
@@ -615,7 +679,16 @@ def run_simulation_headless(
                 last_targets = targets
                 last_actions = actions
         elif gait_demo:
-            targets = compute_gait_targets(sim_time)
+            targets = compute_gait_targets(sim_time, pattern=gait)
+            if blob_tracker is not None and servo_ctrl is not None and cam_renderer is not None:
+                try:
+                    rgb = render_head_camera(model, data, camera_name="head_camera", renderer=cam_renderer)
+                    res = blob_tracker.track(rgb)
+                    y_tgt, p_tgt = servo_ctrl.update(res["norm_x"], res["norm_y"], res["detected"], dt=dt)
+                    targets[0] = y_tgt
+                    targets[1] = p_tgt
+                except Exception:
+                    pass
         else:
             targets = target_pose
 
@@ -675,6 +748,9 @@ def run_interactive_viewer(
     stage: int = 0,
     stairs: bool = False,
     auto_reset: bool = True,
+    gait: str = "waddle",
+    track: bool = False,
+    target_color: str = "yellow",
 ):
     """Launch passive 3D MuJoCo viewer or fall back to headless/CLI mode."""
     if not _MUJOCO_AVAILABLE:
@@ -782,7 +858,7 @@ def run_interactive_viewer(
                         last_targets = targets
                         last_actions = actions
                 elif gait_demo:
-                    targets = compute_gait_targets(elapsed)
+                    targets = compute_gait_targets(elapsed, pattern=gait)
                 else:
                     targets = target_qpos
 
@@ -866,6 +942,9 @@ def run_opencv_viewer(
     stage: int = 0,
     record_path: Optional[Union[str, Path]] = None,
     auto_reset: bool = True,
+    gait: str = "waddle",
+    track: bool = False,
+    target_color: str = "yellow",
 ) -> None:
     """Launch resilient 3D viewer using MuJoCo offscreen Renderer + OpenCV native window.
 
@@ -948,6 +1027,16 @@ def run_opencv_viewer(
     sim_time = 0.0
     step_count = 0
     paused = False
+    current_gait = gait
+
+    blob_tracker = ColorBlobTracker(target_color) if (track and _VISION_TRACKER_AVAILABLE) else None
+    servo_ctrl = VisualServoingHeadController() if (track and _VISION_TRACKER_AVAILABLE) else None
+    cam_renderer = None
+    if track and _VISION_TRACKER_AVAILABLE:
+        try:
+            cam_renderer = mujoco.Renderer(model, height=120, width=160)
+        except Exception:
+            cam_renderer = None
 
     try:
         while True:
@@ -982,7 +1071,16 @@ def run_opencv_viewer(
                             last_targets = targets
                             last_actions = actions
                     elif gait_demo:
-                        targets = compute_gait_targets(sim_time)
+                        targets = compute_gait_targets(sim_time, pattern=current_gait)
+                        if blob_tracker is not None and servo_ctrl is not None and cam_renderer is not None:
+                            try:
+                                rgb_cam = render_head_camera(model, data, camera_name="head_camera", renderer=cam_renderer)
+                                blob_res = blob_tracker.track(rgb_cam)
+                                y_t, p_t = servo_ctrl.update(blob_res["norm_x"], blob_res["norm_y"], blob_res["detected"], dt=dt)
+                                targets[0] = y_t
+                                targets[1] = p_t
+                            except Exception:
+                                pass
                     else:
                         targets = target_qpos
 
@@ -1240,6 +1338,9 @@ def main() -> int:
             stage=args.stage,
             stairs=args.stairs,
             auto_reset=args.auto_reset,
+            gait=args.gait,
+            track=args.track,
+            target_color=args.target_color,
         )
         print("Kết quả mô phỏng:")
         print(f"  - Tổng số bước      : {metrics['completed_steps']}")
@@ -1259,6 +1360,9 @@ def main() -> int:
             stage=args.stage,
             record_path=args.record,
             auto_reset=args.auto_reset,
+            gait=args.gait,
+            track=args.track,
+            target_color=args.target_color,
         )
     else:
         run_interactive_viewer(
@@ -1272,6 +1376,9 @@ def main() -> int:
             stage=args.stage,
             stairs=args.stairs,
             auto_reset=args.auto_reset,
+            gait=args.gait,
+            track=args.track,
+            target_color=args.target_color,
         )
     return 0
 

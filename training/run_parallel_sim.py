@@ -167,6 +167,8 @@ class ParallelSimRunner:
         # Floor geom and base body for domain randomization (friction and torso mass)
         self.floor_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
         self.base_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
+        if self.base_body_id == -1:
+            self.base_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "trunk_base")
         self.default_base_mass = float(self.model.body_mass[self.base_body_id]) if self.base_body_id != -1 else 0.32
 
         # Curriculum stage

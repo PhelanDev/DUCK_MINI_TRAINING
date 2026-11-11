@@ -88,6 +88,23 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"  • Pi Zero 2 W ONNX      : {'[CÓ SẴN]' if pizero_onnx_file.exists() else '[CHƯA XUẤT]'} ({pizero_onnx_file.name})")
     print(f"  • ESP32-S3 INT8 C-Header: {'[CÓ SẴN]' if esp32_h.exists() else '[CHƯA XUẤT]'} ({esp32_h.name})")
 
+    # 5. CyberDuck V2 Pro Status
+    v2_xml = REPO_ROOT / "duck_v2" / "cyberduck_v2.xml"
+    v2_cad = REPO_ROOT / "duck_v2" / "cad" / "cyberduck_v2_assembly.obj"
+    v2_zip = REPO_ROOT / "duck_v2" / "cad" / "cyberduck_v2_stl_parts.zip"
+    print("\n[5] MÔ HÌNH THỂ THAO CYBERDUCK V2 PRO (ATHLETIC BIONIC DROID)")
+    print(f"  • Mô hình vật lý MuJoCo : {'[SẴN SÀNG]' if v2_xml.exists() else '[CHƯA TẠO]'} ({v2_xml.name})")
+    print(f"  • Bản vẽ lắp ráp 3D CAD : {'[SẴN SÀNG]' if v2_cad.exists() else '[CHƯA XUẤT]'} ({v2_cad.name})")
+    print(f"  • Gói 17 File STL In 3D : {'[SẴN SÀNG]' if v2_zip.exists() else '[CHƯA NÉN]'} ({v2_zip.name})")
+    print("  • Tiếp xúc sàn          : Phẳng tuyệt đối tại Z = 0.000m (Khớp cổ các-đăng & bàn chân 50mm)")
+
+    # 6. Advanced Gaits & AI Vision Status
+    print("\n[6] KỸ NĂNG VẬN ĐỘNG NÂNG CAO & AI VISION (BEHAVIORS & TRACKING)")
+    print("  • Waddling Gait (Dáng đi vịt bionic) : [SẴN SÀNG] (Lắc hông nhịp nhàng 2 bên & gật đầu)")
+    print("  • Spot Turn (Xoay tròn tại chỗ)      : [SẴN SÀNG] (Xoay 360 độ tại chỗ không tịnh tiến)")
+    print("  • Fall Recovery (Tự đứng dậy khi ngã): [SẴN SÀNG] (FSM 3 pha: Lật sấp -> Ngồi -> Đứng)")
+    print("  • AI Vision Head Tracking           : [SẴN SÀNG] (Visual Servoing bám bóng vàng/mặt người)")
+
     print("\n" + "=" * 72)
     return 0
 
@@ -104,7 +121,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print("\n>>> [2/2] Đang chạy bộ kiểm thử tự động (pytest)...")
         pytest_args = [sys.executable, "-m", "pytest"]
         if args.fast:
-            pytest_args.extend(["tests/test_eplen_suicide_fix.py", "tests/test_interactive_viewer.py", "-q"])
+            pytest_args.extend([
+                "tests/test_eplen_suicide_fix.py",
+                "tests/test_interactive_viewer.py",
+                "tests/test_cyberduck.py",
+                "tests/test_advanced_gaits.py",
+                "tests/test_vision_tracker.py",
+                "-q"
+            ])
         else:
             pytest_args.extend(["tests/", "-q"])
         res_tests = subprocess.run(pytest_args)
@@ -127,12 +151,32 @@ def cmd_view(args: argparse.Namespace) -> int:
         "--stage",
         str(args.stage),
     ]
+
+    # Model resolution (supports baseline MicroDuck and CyberDuck V2)
+    model_path = None
+    if getattr(args, "v2", False) or getattr(args, "model", None) in ("v2", "cyberduck_v2"):
+        model_path = REPO_ROOT / "duck_v2" / "cyberduck_v2.xml"
+    elif getattr(args, "model", None):
+        model_path = Path(args.model)
+
+    if model_path:
+        cmd.extend(["--model", str(model_path)])
+
+    if getattr(args, "gait", None):
+        cmd.extend(["--gait", str(args.gait)])
+        cmd.append("--gait-demo")
+    if getattr(args, "track", False):
+        cmd.append("--track")
+    if getattr(args, "target_color", None):
+        cmd.extend(["--target-color", str(args.target_color)])
+
     if args.policy:
         cmd.extend(["--policy", str(args.policy)])
     if args.headless:
         cmd.append("--headless")
 
-    print(f">>> Khởi chạy Interactive 3D Viewer (Stage {args.stage})...")
+    target_desc = "CyberDuck V2 Pro" if getattr(args, "v2", False) or getattr(args, "model", None) in ("v2", "cyberduck_v2") else "MicroDuck 8-DOF"
+    print(f">>> Khởi chạy Interactive 3D Viewer ({target_desc}, Stage {args.stage})...")
     return subprocess.run(cmd).returncode
 
 
@@ -151,6 +195,7 @@ def cmd_train(args: argparse.Namespace) -> int:
         "rpi5": REPO_ROOT / "pipelines" / "rpi5_stack" / "models" / "mjcf" / "microduck_rpi5_8dof.xml",
         "pizero2w": REPO_ROOT / "pipelines" / "pizero2w_stack" / "models" / "mjcf" / "microduck_pizero2w_8dof.xml",
         "esp32": REPO_ROOT / "pipelines" / "dual_esp32s3_stack" / "models" / "mjcf" / "microduck_esp32_8dof.xml",
+        "v2": REPO_ROOT / "duck_v2" / "cyberduck_v2.xml",
     }
     if getattr(args, "target", None) and args.target in target_models:
         cmd.extend(["--model-path", str(target_models[args.target])])
@@ -203,10 +248,15 @@ def main() -> int:
     p_view.add_argument("--stage", type=int, default=0, choices=[0, 1, 2, 3], help="Giai đoạn địa hình (0-3)")
     p_view.add_argument("--policy", type=str, default=None, help="Đường dẫn file checkpoint policy (.pt)")
     p_view.add_argument("--headless", action="store_true", help="Chạy chế độ giả lập không cửa sổ")
+    p_view.add_argument("--model", type=str, default=None, help="Đường dẫn file mô hình XML hoặc alias ('v2')")
+    p_view.add_argument("--v2", action="store_true", help="Xem trực tiếp mô hình CyberDuck V2 Pro")
+    p_view.add_argument("--gait", choices=["waddle", "walk", "spot_turn", "head_dance"], default=None, help="Trình diễn dáng đi mới (waddle, walk, spot_turn, head_dance)")
+    p_view.add_argument("--track", action="store_true", help="Kích hoạt Visual Servoing theo dõi mục tiêu qua camera đầu")
+    p_view.add_argument("--target-color", choices=["yellow", "red", "green", "blue"], default="yellow", help="Màu sắc mục tiêu theo dõi (mặc định: yellow)")
 
     # train
     p_train = subparsers.add_parser("train", help="Huấn luyện mô hình bước đi bằng PPO đa môi trường")
-    p_train.add_argument("--target", choices=["rpi5", "pizero2w", "esp32"], default="rpi5", help="Nhánh phần cứng mục tiêu (mặc định: rpi5)")
+    p_train.add_argument("--target", choices=["rpi5", "pizero2w", "esp32", "v2"], default="rpi5", help="Nhánh phần cứng/mô hình mục tiêu (rpi5, pizero2w, esp32, v2 - mặc định: rpi5)")
     p_train.add_argument("--envs", type=int, default=256, help="Số lượng môi trường song song (mặc định: 256)")
     p_train.add_argument("--iterations", type=int, default=500, help="Số vòng lặp huấn luyện (mặc định: 500)")
     p_train.add_argument("--resume", type=str, default=None, help="Tiếp tục học từ checkpoint")
