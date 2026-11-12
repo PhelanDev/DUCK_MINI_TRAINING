@@ -669,7 +669,7 @@ class ParallelSimRunner:
             np.where(is_sit, 0.050, walk_z_thresh),
         )
 
-        tilt_thresh = np.where(is_lie, 0.0, np.where(is_sit, -0.707, -0.707))
+        tilt_thresh = np.where(is_lie, 0.0, -0.707)
         exceeding_tilt = (grav_z > tilt_thresh)
         severe_tilt = (grav_z > -0.50)
 

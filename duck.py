@@ -184,13 +184,14 @@ def cmd_view(args: argparse.Namespace) -> int:
 
 def cmd_train(args: argparse.Namespace) -> int:
     """Launch PPO reinforcement learning training pipeline."""
+    iters = args.iterations if args.iterations is not None else (1 if getattr(args, "dry_run", False) else 500)
     cmd = [
         sys.executable,
         str(REPO_ROOT / "scripts" / "train_ppo.py"),
         "--num-envs",
         str(args.envs),
         "--max-iterations",
-        str(args.iterations),
+        str(iters),
     ]
 
     target_models = {
@@ -229,8 +230,8 @@ def cmd_train(args: argparse.Namespace) -> int:
     if getattr(args, "dry_run", False):
         cmd.append("--dry-run")
 
-    mode_str = "DRY-RUN" if getattr(args, "dry_run", False) else f"{args.envs} envs, tối đa {args.iterations} iters"
-    print(f">>> Khởi động huấn luyện PPO ({mode_str}, target: {getattr(args, 'target', 'rpi5')})...")
+    mode_str = "DRY-RUN" if getattr(args, "dry_run", False) else f"{args.envs} envs, tối đa {iters} iters"
+    print(f">>> Khởi động huấn luyện PPO ({mode_str}, target: {getattr(args, 'target', 'rpi5')})...", flush=True)
 
     return subprocess.run(cmd).returncode
 
@@ -280,7 +281,7 @@ def main() -> int:
     p_train = subparsers.add_parser("train", help="Huấn luyện mô hình bước đi bằng PPO đa môi trường")
     p_train.add_argument("--target", choices=["rpi5", "pizero2w", "esp32", "v2"], default="rpi5", help="Nhánh phần cứng/mô hình mục tiêu (rpi5, pizero2w, esp32, v2 - mặc định: rpi5)")
     p_train.add_argument("--envs", type=int, default=256, help="Số lượng môi trường song song (mặc định: 256)")
-    p_train.add_argument("--iterations", type=int, default=500, help="Số vòng lặp huấn luyện (mặc định: 500)")
+    p_train.add_argument("--iterations", "--iters", type=int, default=None, help="Số vòng lặp huấn luyện (mặc định: 500 khi train, 1 khi dry-run)")
     p_train.add_argument("--resume", type=str, default=None, nargs="?", const="true", help="Tiếp tục học từ checkpoint")
     p_train.add_argument("--stand-first", action="store_true", help="Ưu tiên học đứng thăng bằng trước")
     p_train.add_argument("--dry-run", action="store_true", help="Chạy kiểm thử nhanh 1 vòng lặp (Dry-run)")

@@ -225,7 +225,7 @@ def train_ppo(
     model_path: Union[str, Path] = DEFAULT_MODEL_PATH,
     num_envs: int = 64,
     rollout_steps: int = 128,
-    max_iterations: int = 100,
+    max_iterations: Optional[int] = None,
     learning_rate: float = 3e-4,
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
@@ -266,14 +266,17 @@ def train_ppo(
     current_stage = int(start_stage)
     hold_count = 0
 
-    # In dry-run mode, configure fast 1-iteration lightweight execution
+    if max_iterations is None:
+        max_iterations = 1 if dry_run else 100
+
+    # In dry-run mode, configure fast lightweight execution
     if dry_run:
         num_envs = min(num_envs, 4)
         rollout_steps = min(rollout_steps, 4)
-        max_iterations = 1
+        max_iterations = max(1, max_iterations)
         num_epochs = 1
         if verbose:
-            print("[PPO] Dry-run mode enabled: 1 iteration, 4 envs, 4 rollout steps.")
+            print(f"[PPO] Dry-run mode enabled: {max_iterations} iteration(s), {num_envs} envs, {rollout_steps} rollout steps.")
 
     save_path = Path(save_path).resolve()
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -749,14 +752,14 @@ def main():
     )
     parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel MuJoCo environments (default: 64)")
     parser.add_argument("--rollout-steps", type=int, default=128, help="Rollout steps per iteration (default: 128)")
-    parser.add_argument("--max-iterations", type=int, default=100, help="Maximum PPO training iterations (default: 100)")
+    parser.add_argument("--max-iterations", "--iters", type=int, default=None, help="Maximum PPO training iterations (default: 100, or 1 in dry-run)")
     parser.add_argument("--learning-rate", type=float, default=3e-4, help="Adam optimizer learning rate (default: 3e-4)")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor (default: 0.99)")
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda parameter (default: 0.95)")
     parser.add_argument("--clip-epsilon", type=float, default=0.2, help="PPO clipping epsilon (default: 0.2)")
     parser.add_argument("--entropy-coef", type=float, default=0.01, help="Entropy loss weight (default: 0.01)")
     parser.add_argument("--value-loss-coef", type=float, default=0.5, help="Value loss weight (default: 0.5)")
-    parser.add_argument("--dry-run", action="store_true", help="Run 1 quick iteration for CI/CD testing")
+    parser.add_argument("--dry-run", action="store_true", help="Run quick lightweight iterations for CI/CD testing")
     parser.add_argument("--device", type=str, default=None, help="Device to run on ('cpu', 'cuda')")
     parser.add_argument("--start-stage", type=int, default=0, help="Initial terrain curriculum stage (0 to 3)")
     parser.add_argument("--resume", action="store_true", help="Resume training from existing save-path checkpoint")
@@ -770,13 +773,17 @@ def main():
 
     args = parser.parse_args()
 
+    max_iters = args.max_iterations
+    if max_iters is None:
+        max_iters = 1 if args.dry_run else 100
+
     train_ppo(
         model_path=args.model_path,
         save_path=args.save_path,
         best_save_path=args.best_save_path,
         num_envs=args.num_envs,
         rollout_steps=args.rollout_steps,
-        max_iterations=args.max_iterations,
+        max_iterations=max_iters,
         learning_rate=args.learning_rate,
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,

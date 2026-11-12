@@ -403,8 +403,6 @@ class ParallelSimRunner:
             infos[i]["timeout"] = bool(timeouts[i])
             infos[i]["time_outs"] = bool(timeouts[i] and not fallen[i])
             infos[i]["fallen"] = bool(fallen[i])
-        for i in range(self.num_envs):
-            infos[i]["timeout"] = bool(timeouts[i])
 
         self.last_actions[:] = actions
         if np.any(dones):
