@@ -391,19 +391,18 @@ void process_uart_packets() {
                     uint8_t seq = 0;
 
                     if (p_type == PKT_TYPE_VELOCITY_CMD) {
-                        decode_velocity_packet(g_rx_ring, total_len, &g_cmd_pkt, &seq);
-                        g_last_mcu1_pkt_time = millis();
-                        if (g_emergency_stop && (g_cmd_pkt.vx != 0.0f || g_cmd_pkt.wz != 0.0f)) {
-                            g_emergency_stop = false;
-                            Serial.println("[MCU 2] Resuming normal operation after emergency stop.");
+                        if (decode_velocity_packet(g_rx_ring, total_len, &g_cmd_pkt, &seq)) {
+                            g_last_mcu1_pkt_time = millis();
                         }
                     } else if (p_type == PKT_TYPE_LIDAR_PERCEPTION) {
-                        decode_lidar_packet(g_rx_ring, total_len, &g_lidar_pkt, &seq);
-                        g_last_mcu1_pkt_time = millis();
+                        if (decode_lidar_packet(g_rx_ring, total_len, &g_lidar_pkt, &seq)) {
+                            g_last_mcu1_pkt_time = millis();
+                        }
                     } else if (p_type == PKT_TYPE_HEARTBEAT) {
                         HeartbeatPacket hb;
-                        decode_heartbeat_packet(g_rx_ring, total_len, &hb, &seq);
-                        g_last_mcu1_pkt_time = millis();
+                        if (decode_heartbeat_packet(g_rx_ring, total_len, &hb, &seq)) {
+                            g_last_mcu1_pkt_time = millis();
+                        }
                     } else if (p_type == PKT_TYPE_VOICE_INTENT_CMD) {
                         if (payload_len >= sizeof(VoiceIntentCmdPacket)) {
                             VoiceIntentCmdPacket voice_cmd;
@@ -421,17 +420,20 @@ void process_uart_packets() {
                             }
                         }
                     } else if (p_type == PKT_TYPE_EMERGENCY_STOP) {
-                        g_emergency_stop = true;
-                        g_cmd_pkt.vx = 0.0f;
-                        g_cmd_pkt.vy = 0.0f;
-                        g_cmd_pkt.wz = 0.0f;
-                        for (int i = 0; i < 8; ++i) {
-                            set_servo_angle(i, JOINT_NOMINAL_POS[i]);
-                            g_last_targets[i] = JOINT_NOMINAL_POS[i];
-                            g_current_joint_pos[i] = JOINT_NOMINAL_POS[i];
-                            ledcWrite(SERVO_PINS[i], 0);
+                        uint16_t out_len = 0;
+                        if (decode_packet(g_rx_ring, total_len, &p_type, &seq, NULL, 0, &out_len)) {
+                            g_emergency_stop = true;
+                            g_cmd_pkt.vx = 0.0f;
+                            g_cmd_pkt.vy = 0.0f;
+                            g_cmd_pkt.wz = 0.0f;
+                            for (int i = 0; i < 8; ++i) {
+                                set_servo_angle(i, JOINT_NOMINAL_POS[i]);
+                                g_last_targets[i] = JOINT_NOMINAL_POS[i];
+                                g_current_joint_pos[i] = JOINT_NOMINAL_POS[i];
+                                ledcWrite(SERVO_PINS[i], 0);
+                            }
+                            Serial.println("[MCU 2 ALERT] EMERGENCY STOP triggered via UART! Servos neutralized.");
                         }
-                        Serial.println("[MCU 2 ALERT] EMERGENCY STOP triggered via UART! Servos neutralized.");
                     }
 
                     // Shift remaining bytes in buffer instead of dropping them
