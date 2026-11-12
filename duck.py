@@ -225,8 +225,12 @@ def cmd_train(args: argparse.Namespace) -> int:
             cmd.extend(["--load-checkpoint", str(args.resume)])
         else:
             cmd.append("--resume")
-    if args.stand_first:
+    if getattr(args, "stand_first", False):
         cmd.append("--stand-first")
+    if getattr(args, "device", None):
+        cmd.extend(["--device", str(args.device)])
+    if getattr(args, "rollout_steps", None):
+        cmd.extend(["--rollout-steps", str(args.rollout_steps)])
     if getattr(args, "dry_run", False):
         cmd.append("--dry-run")
 
@@ -285,6 +289,8 @@ def main() -> int:
     p_train.add_argument("--resume", type=str, default=None, nargs="?", const="true", help="Tiếp tục học từ checkpoint")
     p_train.add_argument("--stand-first", action="store_true", help="Ưu tiên học đứng thăng bằng trước")
     p_train.add_argument("--dry-run", action="store_true", help="Chạy kiểm thử nhanh 1 vòng lặp (Dry-run)")
+    p_train.add_argument("--device", type=str, default=None, choices=["cpu", "cuda"], help="Thiết bị tính toán ('cpu', 'cuda' - mặc định: tự động nhận diện)")
+    p_train.add_argument("--rollout-steps", "--rollout", type=int, default=None, help="Số bước rollout mỗi vòng lặp (mặc định: 128)")
 
     # export
     p_export = subparsers.add_parser("export", help="Xuất policy sang ONNX (RPi 5 & Pi Zero 2 W) và INT8 C Header (ESP32-S3)")
