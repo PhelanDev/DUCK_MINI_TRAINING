@@ -44,6 +44,7 @@ typedef enum {
     PKT_TYPE_IMU_DATA          = 0x04,
     PKT_TYPE_JOINT_TELEMETRY   = 0x05,
     PKT_TYPE_VOICE_INTENT_CMD  = 0x06,
+    PKT_TYPE_COLOR_TARGET      = 0x10,
     PKT_TYPE_EMERGENCY_STOP    = 0xFF
 } PacketType_t;
 
@@ -104,6 +105,15 @@ typedef struct {
     float wz;        // Target yaw angular velocity (rad/s)
 } VoiceIntentCmdPacket;
 
+/**
+ * @brief Visual Servoing Color Target Tracking Packet (MCU 1 -> MCU 2)
+ */
+typedef struct {
+    int16_t yaw_target_deg10;   // Target yaw angle in 0.1 deg (-450 to 450 = -45 to 45 deg)
+    int16_t pitch_target_deg10; // Target pitch angle in 0.1 deg (-250 to 250 = -25 to 25 deg)
+    uint8_t target_detected;    // 1 if target detected and tracked, 0 otherwise
+} ColorTargetPacket;
+
 #pragma pack(pop)
 
 /**
@@ -157,6 +167,20 @@ static inline uint16_t encode_packet(
     out_buffer[PACKET_HEADER_SIZE + payload_len + 1] = (uint8_t)((crc >> 8) & 0xFF);
 
     return total_len;
+}
+
+/**
+ * @brief Pack arbitrary frame into wire buffer with standard header and CRC16.
+ */
+static inline uint16_t uart_pack_frame(
+    uint8_t packet_type,
+    uint8_t seq_id,
+    const void *payload,
+    uint16_t payload_len,
+    uint8_t *out_buffer,
+    uint16_t max_len
+) {
+    return encode_packet(packet_type, seq_id, payload, payload_len, out_buffer, max_len);
 }
 
 /**
@@ -234,6 +258,26 @@ static inline uint16_t encode_voice_intent_packet(
         seq,
         pkt,
         sizeof(VoiceIntentCmdPacket),
+        out_buffer,
+        max_len
+    );
+}
+
+/**
+ * @brief Helper: Encode Color Target Packet (C pointer API)
+ */
+static inline uint16_t encode_color_target_packet(
+    const ColorTargetPacket *pkt,
+    uint8_t seq,
+    uint8_t *out_buffer,
+    uint16_t max_len
+) {
+    if (!pkt) return 0;
+    return encode_packet(
+        PKT_TYPE_COLOR_TARGET,
+        seq,
+        pkt,
+        sizeof(ColorTargetPacket),
         out_buffer,
         max_len
     );
@@ -391,6 +435,31 @@ static inline bool decode_voice_intent_packet(
     return true;
 }
 
+/**
+ * @brief Decode ColorTargetPacket with CRC check and buffer bounds validation.
+ */
+static inline bool decode_color_target_packet(
+    const uint8_t *buffer,
+    uint16_t len,
+    ColorTargetPacket *out_target,
+    uint8_t *out_seq
+) {
+    uint8_t p_type = 0;
+    uint16_t p_len = 0;
+    ColorTargetPacket payload;
+
+    if (!decode_packet(buffer, len, &p_type, out_seq, (uint8_t *)&payload, sizeof(payload), &p_len)) {
+        return false;
+    }
+    if (p_type != PKT_TYPE_COLOR_TARGET || p_len != sizeof(ColorTargetPacket)) {
+        return false;
+    }
+    if (out_target) {
+        memcpy(out_target, &payload, sizeof(ColorTargetPacket));
+    }
+    return true;
+}
+
 #ifdef __cplusplus
 }
 
@@ -429,6 +498,15 @@ static inline uint16_t encode_voice_intent_packet(
     uint16_t max_len
 ) {
     return encode_voice_intent_packet(&pkt, seq, out_buffer, max_len);
+}
+
+static inline uint16_t encode_color_target_packet(
+    const ColorTargetPacket &pkt,
+    uint8_t seq,
+    uint8_t *out_buffer,
+    uint16_t max_len
+) {
+    return encode_color_target_packet(&pkt, seq, out_buffer, max_len);
 }
 
 #endif

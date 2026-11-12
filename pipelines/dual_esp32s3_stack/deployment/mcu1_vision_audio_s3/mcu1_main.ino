@@ -51,6 +51,7 @@ static uint8_t g_seq_id = 0;
 static uint32_t g_last_lidar_time = 0;
 static uint32_t g_last_heartbeat_time = 0;
 static uint32_t g_last_cmd_time = 0;
+static uint32_t g_last_vision_time = 0;
 
 static uint8_t g_tx_buffer[128];
 
@@ -205,6 +206,12 @@ void loop() {
                       now, g_obstacle_detected ? "OBSTACLE!" : "CLEAR");
     }
 
+    // 4. Visual Servoing & Color Blob Tracking Task @ 20 Hz (50ms)
+    if (now - g_last_vision_time >= 50) {
+        g_last_vision_time = now;
+        process_color_tracking();
+    }
+
     // Yield CPU time to background tasks
     delay(1);
 }
@@ -212,6 +219,13 @@ void loop() {
 // ============================================================================
 // Visual Servoing & Color Blob Tracking Implementation (Yellow / Face Target)
 // ============================================================================
+
+void process_color_tracking() {
+    // Acquire frame from camera DVP buffer (in production: camera_fb_t* fb = esp_camera_fb_get())
+    // When real camera frame is available, process buffer and release:
+    // if (fb) { process_color_tracking(fb->buf, fb->len, fb->width, fb->height); esp_camera_fb_return(fb); }
+}
+
 void process_color_tracking(const uint8_t* fb_buf, size_t fb_len, int width, int height) {
     if (!fb_buf || width <= 0 || height <= 0) return;
 
@@ -249,14 +263,22 @@ void process_color_tracking(const uint8_t* fb_buf, size_t fb_len, int width, int
             int16_t yaw_target_deg10 = (int16_t)(-norm_x * 450.0f);  // ±45 deg
             int16_t pitch_target_deg10 = (int16_t)(norm_y * 250.0f); // ±25 deg
 
-            // Construct 8-byte sync packet [0xAA, 0x55, 0x10, yaw_deg10, pitch_deg10, checksum]
-            uint8_t head_pkt[8] = {
-                0xAA, 0x55, 0x10,
-                (uint8_t)(yaw_target_deg10 & 0xFF), (uint8_t)((yaw_target_deg10 >> 8) & 0xFF),
-                (uint8_t)(pitch_target_deg10 & 0xFF), (uint8_t)((pitch_target_deg10 >> 8) & 0xFF),
-                (uint8_t)((yaw_target_deg10 + pitch_target_deg10) & 0xFF)
-            };
-            UartLink.write(head_pkt, sizeof(head_pkt));
+            ColorTargetPacket target_pkt;
+            target_pkt.yaw_target_deg10 = yaw_target_deg10;
+            target_pkt.pitch_target_deg10 = pitch_target_deg10;
+            target_pkt.target_detected = 1;
+
+            uint16_t len = uart_pack_frame(
+                PKT_TYPE_COLOR_TARGET,
+                g_seq_id++,
+                &target_pkt,
+                sizeof(ColorTargetPacket),
+                g_tx_buffer,
+                sizeof(g_tx_buffer)
+            );
+            if (len > 0) {
+                UartLink.write(g_tx_buffer, len);
+            }
         }
     }
 }

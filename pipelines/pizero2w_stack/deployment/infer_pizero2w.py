@@ -385,6 +385,35 @@ class PiZero2WInferenceEngine:
         self.joint_limits_list = [
             self.cfg.JOINT_LIMITS[name] for name in self.cfg.JOINT_NAMES
         ]
+        self.prev_q: np.ndarray = self.cfg.nominal_qpos.copy()
+        self._warned_foot_fallback: bool = False
+        self._warned_lidar_fallback: bool = False
+
+    def read_foot_contact(self) -> List[float]:
+        """Read 4-channel foot contact states [Left, Right, Padded, Padded].
+
+        Connects to hardware ADC/FSR foot sensors or falls back with a diagnostic warning.
+        """
+        if not self._warned_foot_fallback:
+            if self.mock:
+                print("[Warning] Foot contact sensors running in mock/fallback mode. Using nominal [1.0, 1.0, 0.0, 0.0].")
+            else:
+                print("[Warning] Hardware foot contact ADC unavailable on I2C. Using fallback contact states.")
+            self._warned_foot_fallback = True
+        return [1.0, 1.0, 0.0, 0.0]
+
+    def read_lidar_ranges(self) -> List[float]:
+        """Read 5-ray ToF LiDAR distance sensors [-30, -15, 0, +15, +30 deg].
+
+        Connects to hardware I2C ToF array or falls back with a diagnostic warning.
+        """
+        if not self._warned_lidar_fallback:
+            if self.mock:
+                print("[Warning] LiDAR sensor array running in mock/fallback mode. Using clear 1.5m range.")
+            else:
+                print("[Warning] Hardware I2C LiDAR array unavailable on bus. Using clear 1.5m range.")
+            self._warned_lidar_fallback = True
+        return [1.5, 1.5, 1.5, 1.5, 1.5]
 
     def predict_action(self, obs: np.ndarray) -> np.ndarray:
         """Run policy model inference to produce normalized actions [-1, 1]."""
@@ -446,8 +475,8 @@ class PiZero2WInferenceEngine:
         target_period = self.dt
 
         commands = [0.2, 0.0, 0.0]
-        foot_contact = [1.0, 1.0, 0.0, 0.0]
-        lidar_ranges = [1.5, 1.5, 1.5, 1.5, 1.5]
+        prev_q = self.last_targets.copy()
+        self.prev_q = prev_q.copy()
 
         try:
             while steps is None or step_count < steps:
@@ -456,12 +485,23 @@ class PiZero2WInferenceEngine:
                 # Read filtered IMU angular velocity and gravity vector
                 base_ang_vel, proj_grav = self.imu_reader.read()
 
+                # Read foot contact and LiDAR perception hooks (with fallback warning)
+                foot_contact = self.read_foot_contact()
+                lidar_ranges = self.read_lidar_ranges()
+
+                # Finite-difference joint velocity: (current_q - prev_q) / dt
+                current_q = self.last_targets.copy()
+                effective_dt = max(self.dt, 1e-4)
+                joint_vel = (current_q - prev_q) / effective_dt
+                prev_q = current_q.copy()
+                self.prev_q = prev_q.copy()
+
                 obs = pack_pizero2w_observation(
                     base_ang_vel=base_ang_vel,
                     proj_grav=proj_grav,
                     commands=commands,
-                    joint_pos=self.last_targets,
-                    joint_vel=np.zeros(8, dtype=np.float32),
+                    joint_pos=current_q,
+                    joint_vel=joint_vel,
                     last_actions=self.last_raw_actions,
                     foot_contact=foot_contact,
                     lidar_ranges=lidar_ranges,

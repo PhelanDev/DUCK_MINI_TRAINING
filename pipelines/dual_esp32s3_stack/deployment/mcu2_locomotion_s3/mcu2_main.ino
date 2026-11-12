@@ -78,7 +78,11 @@ float g_last_raw_actions[8]         = {0};
 // Telemetry from MCU 1
 static VelocityCmdPacket g_cmd_pkt = {0.20f, 0.0f, 0.0f};
 static LidarPerceptionPacket g_lidar_pkt = {{1.5f, 1.5f, 1.5f, 1.5f, 1.5f}, 0};
+static ColorTargetPacket g_color_target_pkt = {0, 0, 0};
 static uint32_t g_last_mcu1_pkt_time = 0;
+static bool g_emergency_stop = false;
+static bool s_warned_contact_fallback = false;
+static bool s_warned_lidar_fallback = false;
 
 // UART RX State Machine Buffer
 static uint8_t g_rx_ring[256];
@@ -389,6 +393,10 @@ void process_uart_packets() {
                     if (p_type == PKT_TYPE_VELOCITY_CMD) {
                         decode_velocity_packet(g_rx_ring, total_len, &g_cmd_pkt, &seq);
                         g_last_mcu1_pkt_time = millis();
+                        if (g_emergency_stop && (g_cmd_pkt.vx != 0.0f || g_cmd_pkt.wz != 0.0f)) {
+                            g_emergency_stop = false;
+                            Serial.println("[MCU 2] Resuming normal operation after emergency stop.");
+                        }
                     } else if (p_type == PKT_TYPE_LIDAR_PERCEPTION) {
                         decode_lidar_packet(g_rx_ring, total_len, &g_lidar_pkt, &seq);
                         g_last_mcu1_pkt_time = millis();
@@ -396,6 +404,34 @@ void process_uart_packets() {
                         HeartbeatPacket hb;
                         decode_heartbeat_packet(g_rx_ring, total_len, &hb, &seq);
                         g_last_mcu1_pkt_time = millis();
+                    } else if (p_type == PKT_TYPE_VOICE_INTENT_CMD) {
+                        if (payload_len >= sizeof(VoiceIntentCmdPacket)) {
+                            VoiceIntentCmdPacket voice_cmd;
+                            if (decode_voice_intent_packet(g_rx_ring, total_len, &voice_cmd, &seq)) {
+                                g_cmd_pkt.vx = voice_cmd.vx;
+                                g_cmd_pkt.vy = voice_cmd.vy;
+                                g_cmd_pkt.wz = voice_cmd.wz;
+                                g_last_mcu1_pkt_time = millis();
+                            }
+                        }
+                    } else if (p_type == PKT_TYPE_COLOR_TARGET) {
+                        if (payload_len >= sizeof(ColorTargetPacket)) {
+                            if (decode_color_target_packet(g_rx_ring, total_len, &g_color_target_pkt, &seq)) {
+                                g_last_mcu1_pkt_time = millis();
+                            }
+                        }
+                    } else if (p_type == PKT_TYPE_EMERGENCY_STOP) {
+                        g_emergency_stop = true;
+                        g_cmd_pkt.vx = 0.0f;
+                        g_cmd_pkt.vy = 0.0f;
+                        g_cmd_pkt.wz = 0.0f;
+                        for (int i = 0; i < 8; ++i) {
+                            set_servo_angle(i, JOINT_NOMINAL_POS[i]);
+                            g_last_targets[i] = JOINT_NOMINAL_POS[i];
+                            g_current_joint_pos[i] = JOINT_NOMINAL_POS[i];
+                            ledcWrite(SERVO_PINS[i], 0);
+                        }
+                        Serial.println("[MCU 2 ALERT] EMERGENCY STOP triggered via UART! Servos neutralized.");
                     }
 
                     // Shift remaining bytes in buffer instead of dropping them
@@ -419,6 +455,36 @@ void process_uart_packets() {
 // ============================================================================
 // 42-Dimensional Observation Assembly & Policy Evaluation
 // ============================================================================
+
+void read_foot_contacts(float *contact_out) {
+    // MicroDuck foot contacts: Left foot (ADC pin / FSR), Right foot (ADC pin / FSR)
+    // If hardware pin unconfigured or floating, fallback to default [1, 1, 0, 0] with throttled log
+    if (!s_warned_contact_fallback) {
+        Serial.println("[MCU 2 Warning] Foot contact ADC unconfigured/floating. Using fallback ground contact [1.0, 1.0, 0.0, 0.0].");
+        s_warned_contact_fallback = true;
+    }
+    contact_out[0] = 1.0f; // Left foot contact
+    contact_out[1] = 1.0f; // Right foot contact
+    contact_out[2] = 0.0f; // Padded
+    contact_out[3] = 0.0f; // Padded
+}
+
+void read_lidar_distances(float *ranges_out) {
+    if (g_last_mcu1_pkt_time == 0 || (millis() - g_last_mcu1_pkt_time > 500)) {
+        if (!s_warned_lidar_fallback) {
+            Serial.println("[MCU 2 Warning] LiDAR telemetry from MCU 1 unavailable/timeout. Using default clear 1.5m range.");
+            s_warned_lidar_fallback = true;
+        }
+        for (int i = 0; i < 5; ++i) {
+            ranges_out[i] = 1.50f;
+        }
+    } else {
+        s_warned_lidar_fallback = false;
+        for (int i = 0; i < 5; ++i) {
+            ranges_out[i] = g_lidar_pkt.ranges[i];
+        }
+    }
+}
 
 void assemble_observation(float *obs_out) {
     float gyro[3];
@@ -445,9 +511,10 @@ void assemble_observation(float *obs_out) {
         obs_out[9 + i] = g_current_joint_pos[i];
     }
 
-    // [17..24]: Joint velocities (8)
+    // [17..24]: Joint velocities (8) - finite-difference (q - prev_q) / dt
+    float dt = (CONTROL_DT > 1e-4f) ? CONTROL_DT : 0.02f;
     for (int i = 0; i < 8; ++i) {
-        obs_out[17 + i] = (g_current_joint_pos[i] - g_last_joint_pos[i]) / CONTROL_DT;
+        obs_out[17 + i] = (g_current_joint_pos[i] - g_last_joint_pos[i]) / dt;
         g_last_joint_pos[i] = g_current_joint_pos[i];
     }
 
@@ -456,16 +523,11 @@ void assemble_observation(float *obs_out) {
         obs_out[25 + i] = g_last_raw_actions[i];
     }
 
-    // [33..36]: Feet contact sensors (4) - [Left, Right, Padded, Padded] to match training
-    obs_out[33] = 1.0f; // Left foot contact
-    obs_out[34] = 1.0f; // Right foot contact
-    obs_out[35] = 0.0f; // Padded (zeroed in training)
-    obs_out[36] = 0.0f; // Padded (zeroed in training)
+    // [33..36]: Feet contact sensors (4) - [Left, Right, Padded, Padded]
+    read_foot_contacts(&obs_out[33]);
 
     // [37..41]: 5-Ray ToF LiDAR rangefinder distances from MCU 1 (5)
-    for (int i = 0; i < 5; ++i) {
-        obs_out[37 + i] = g_lidar_pkt.ranges[i];
-    }
+    read_lidar_distances(&obs_out[37]);
 }
 
 void evaluate_locomotion_policy(const float *obs, float *target_angles_out) {
@@ -520,6 +582,12 @@ void setup() {
 void loop() {
     // 1. Ingest packets from MCU 1 as fast as they arrive
     process_uart_packets();
+
+    // In emergency stop state, do not evaluate policy or move servos
+    if (g_emergency_stop) {
+        yield();
+        return;
+    }
 
     // 2. Strict 50 Hz (20ms) Real-Time Locomotion Loop
     uint32_t now = millis();
