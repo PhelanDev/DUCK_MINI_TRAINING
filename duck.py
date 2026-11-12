@@ -231,6 +231,10 @@ def cmd_train(args: argparse.Namespace) -> int:
         cmd.extend(["--device", str(args.device)])
     if getattr(args, "rollout_steps", None):
         cmd.extend(["--rollout-steps", str(args.rollout_steps)])
+    if getattr(args, "save_interval", None):
+        cmd.extend(["--save-interval", str(args.save_interval)])
+    if getattr(args, "terrain", None):
+        cmd.extend(["--terrain", str(args.terrain)])
     if getattr(args, "dry_run", False):
         cmd.append("--dry-run")
 
@@ -291,6 +295,8 @@ def main() -> int:
     p_train.add_argument("--dry-run", action="store_true", help="Chạy kiểm thử nhanh 1 vòng lặp (Dry-run)")
     p_train.add_argument("--device", type=str, default=None, choices=["cpu", "cuda"], help="Thiết bị tính toán ('cpu', 'cuda' - mặc định: tự động nhận diện)")
     p_train.add_argument("--rollout-steps", "--rollout", type=int, default=None, help="Số bước rollout mỗi vòng lặp (mặc định: 128)")
+    p_train.add_argument("--save-interval", type=int, default=50, help="Chu kỳ lưu checkpoint định kỳ (mặc định: 50 iters)")
+    p_train.add_argument("--terrain", choices=["hurdles", "stairs"], default="hurdles", help="Loại giáo trình địa hình ('hurdles', 'stairs' - mặc định: hurdles)")
 
     # export
     p_export = subparsers.add_parser("export", help="Xuất policy sang ONNX (RPi 5 & Pi Zero 2 W) và INT8 C Header (ESP32-S3)")
