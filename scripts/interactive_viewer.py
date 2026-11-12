@@ -919,6 +919,11 @@ def run_interactive_viewer(
                 cmd_vel=cmd_vel,
                 dt=dt,
                 stage=stage,
+                stairs=stairs,
+                auto_reset=auto_reset,
+                gait=gait,
+                track=track,
+                target_color=target_color,
             )
             return
 
@@ -933,6 +938,11 @@ def run_interactive_viewer(
             cmd_vel=cmd_vel,
             dt=dt,
             stage=stage,
+            stairs=stairs,
+            auto_reset=auto_reset,
+            gait=gait,
+            track=track,
+            target_color=target_color,
         )
         print(f"  Tổng bước chạy      : {metrics['completed_steps']}")
         print(f"  Thời gian mô phỏng  : {metrics['sim_time']:.2f} s")
@@ -950,6 +960,7 @@ def run_opencv_viewer(
     cmd_vel: Union[Tuple[float, float, float], List[float], np.ndarray] = (0.2, 0.0, 0.0),
     dt: float = 0.002,
     stage: int = 0,
+    stairs: bool = False,
     record_path: Optional[Union[str, Path]] = None,
     auto_reset: bool = True,
     gait: str = "waddle",
@@ -975,7 +986,9 @@ def run_opencv_viewer(
 
     model = mujoco.MjModel.from_xml_path(model_path)
     model.opt.timestep = dt
-    if apply_stage is not None and stage > 0:
+    if stairs and apply_stair_stage is not None:
+        apply_stair_stage(model, stage)
+    elif apply_stage is not None and stage > 0:
         apply_stage(model, stage)
     data = mujoco.MjData(model)
 

@@ -154,13 +154,13 @@ duckV1/
 ├── duck_v2/                                  # CyberDuck V2 Pro
 │   ├── cyberduck_v2.xml                      # MuJoCo MJCF model with full sensor suite
 │   ├── cad/                                  # 3D CAD Assembly OBJ, MTL & STL Zip
-│   ├── meshes/                               # 13 high-definition STL meshes
+│   ├── meshes/                               # 17 high-definition STL meshes
 │   └── media/                                # High-res renders (ISO, front, exploded)
 ├── models/                                   # Base physical models
 │   ├── mjcf/microduck_8dof.xml               # Base MuJoCo XML model
 │   ├── urdf/microduck_8dof.urdf              # Base URDF model
 │   ├── microduck_pizero2w_policy.onnx        # Exported ONNX policy for Pi Zero 2 W
-│   └── microduck_ppo.pt                      # PyTorch training checkpoint
+│   └── checkpoints/microduck_ppo.pt          # PyTorch training checkpoint
 ├── pipelines/                                # Hardware targets
 │   ├── rpi5_stack/                           # Raspberry Pi 5 target
 │   ├── dual_esp32s3_stack/                   # Dual ESP32-S3 target

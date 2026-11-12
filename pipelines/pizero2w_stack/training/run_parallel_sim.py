@@ -52,6 +52,7 @@ class ParallelSimRunner:
         kd: Optional[float] = None,
         max_episode_steps: int = 500,
         stand_still: bool = False,
+        walk_min_z: float = 0.060,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -62,6 +63,7 @@ class ParallelSimRunner:
         self.decimation = max(1, int(decimation))
         self.kp = float(kp) if kp is not None else float(self.cfg.KP)
         self.kd = float(kd) if kd is not None else float(self.cfg.KD)
+        self.walk_min_z = float(walk_min_z)
 
         # Load shared MuJoCo model and instantiate per-env data
         self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
@@ -384,7 +386,7 @@ class ParallelSimRunner:
 
         self.episode_steps += 1
         timeouts = self.episode_steps >= self.max_episode_steps
-        fallen = (root_z < 0.08) | (grav_z > -0.707) | diverged
+        fallen = (root_z < self.walk_min_z) | (grav_z > -0.707) | diverged
         fall_penalty = float(self.cfg.REWARD_WEIGHTS.get("fall_penalty", -5.0))
         if np.any(fallen):
             rewards = rewards.copy()
@@ -401,8 +403,6 @@ class ParallelSimRunner:
             infos[i]["timeout"] = bool(timeouts[i])
             infos[i]["time_outs"] = bool(timeouts[i] and not fallen[i])
             infos[i]["fallen"] = bool(fallen[i])
-        for i in range(self.num_envs):
-            infos[i]["timeout"] = bool(timeouts[i])
 
         self.last_actions[:] = actions
         if np.any(dones):

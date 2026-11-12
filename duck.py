@@ -253,19 +253,61 @@ def cmd_train(args: argparse.Namespace) -> int:
 
 def cmd_export(args: argparse.Namespace) -> int:
     """Export trained policy to ONNX and INT8 C header."""
-    cmd = [sys.executable, str(REPO_ROOT / "scripts" / "export_policy.py")]
-    ckpt_path = args.checkpoint
+    target = getattr(args, "target", "all")
+    ckpt_path = getattr(args, "checkpoint", None)
     if not ckpt_path:
         best_ckpt = REPO_ROOT / "models" / "checkpoints" / "microduck_best.pt"
         if best_ckpt.exists():
             ckpt_path = str(best_ckpt)
-    if ckpt_path:
-        cmd.extend(["--checkpoint", ckpt_path])
-    print(f">>> Đang xuất mô hình ra ONNX (RPi 5 & Pi Zero 2 W) và INT8 Header (ESP32-S3) từ {ckpt_path or 'mặc định'}...")
-    return subprocess.run(cmd).returncode
+        else:
+            default_ckpt = REPO_ROOT / "models" / "checkpoints" / "microduck_ppo.pt"
+            if default_ckpt.exists():
+                ckpt_path = str(default_ckpt)
+
+    from scripts.export_policy import (
+        export_onnx,
+        export_esp32_headers,
+        DEFAULT_ONNX_PATH,
+        DEFAULT_PIZERO2W_ONNX_PATH,
+        DEFAULT_ESP32_WEIGHTS_PATH,
+        DEFAULT_ESP32_CONFIG_PATH,
+    )
+
+    if not ckpt_path or not Path(ckpt_path).exists():
+        print(f"[LỖI] Không tìm thấy file checkpoint: {ckpt_path}")
+        return 1
+
+    opset = getattr(args, "opset", 13)
+    custom_out = getattr(args, "output", None)
+
+    print(f">>> Đang xuất mô hình (target: {target}) từ {ckpt_path}...")
+
+    if target in ("rpi5", "all"):
+        out_rpi5 = custom_out or getattr(args, "onnx_output", None) or DEFAULT_ONNX_PATH
+        onnx_file = export_onnx(ckpt_path, output_path=out_rpi5, opset=opset)
+        print(f"[Export] Exported Float32 ONNX model (RPi 5): {onnx_file}")
+
+    if target in ("pizero2w", "all"):
+        out_pi0 = (custom_out if target == "pizero2w" else None) or getattr(args, "pizero_onnx_output", None) or DEFAULT_PIZERO2W_ONNX_PATH
+        pizero_onnx = export_onnx(ckpt_path, output_path=out_pi0, opset=opset)
+        print(f"[Export] Exported Float32 ONNX model (Pi Zero 2 W): {pizero_onnx}")
+
+    if target in ("esp32", "all"):
+        out_w = (custom_out if target == "esp32" else None) or getattr(args, "esp32_weights_output", None) or DEFAULT_ESP32_WEIGHTS_PATH
+        out_c = getattr(args, "esp32_config_output", None) or DEFAULT_ESP32_CONFIG_PATH
+        weights_file, config_file = export_esp32_headers(
+            ckpt_path,
+            weights_output_path=out_w,
+            config_output_path=out_c,
+        )
+        print(f"[Export] Exported ESP32-S3 INT8 weights header: {weights_file}")
+        print(f"[Export] Exported ESP32-S3 quant config header: {config_file}")
+
+    print("[Export] Xuất mô hình thành công.")
+    return 0
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="🦆 MicroDuck 8-DOF Bipedal Robot - Unified Operations CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -308,9 +350,21 @@ def main() -> int:
 
     # export
     p_export = subparsers.add_parser("export", help="Xuất policy sang ONNX (RPi 5 & Pi Zero 2 W) và INT8 C Header (ESP32-S3)")
+    p_export.add_argument("--target", choices=["rpi5", "pizero2w", "esp32", "all"], default="all", help="Phần cứng mục tiêu cần xuất (rpi5, pizero2w, esp32, all - mặc định: all)")
     p_export.add_argument("--checkpoint", type=str, default=None, help="Đường dẫn checkpoint cần xuất")
+    p_export.add_argument("--output", type=str, default=None, help="Đường dẫn file đầu ra tùy chỉnh")
+    p_export.add_argument("--onnx-output", type=str, default=None, help="Đường dẫn file xuất ONNX (RPi 5)")
+    p_export.add_argument("--pizero-onnx-output", type=str, default=None, help="Đường dẫn file xuất ONNX (Pi Zero 2 W)")
+    p_export.add_argument("--esp32-weights-output", type=str, default=None, help="Đường dẫn file xuất weights ESP32-S3")
+    p_export.add_argument("--esp32-config-output", type=str, default=None, help="Đường dẫn file xuất config ESP32-S3")
+    p_export.add_argument("--opset", type=int, default=13, help="Phiên bản ONNX opset (mặc định: 13)")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     if not args.command:
         parser.print_help()
