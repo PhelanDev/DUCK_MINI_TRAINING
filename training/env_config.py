@@ -163,7 +163,7 @@ class MicroDuck8DoFConfig:
     # Balanced reward weights
     REWARD_WEIGHTS: Dict[str, float] = field(
         default_factory=lambda: {
-            "tracking_lin_vel": 1.0,
+            "tracking_lin_vel": 1.5,
             "tracking_ang_vel": 0.5,
             "upright": 1.5,
             "orientation_penalty": -2.0,
@@ -191,8 +191,8 @@ class MicroDuck8DoFConfig:
             "lying_pose": 2.0,
             "joint_limit_penalty": -0.2,
             "heading_penalty": -2.0,
-            "leg_pose_penalty": -0.4,
-            "gait_sync": 0.8,
+            "leg_pose_penalty": -0.10,
+            "gait_sync": 1.2,
         }
     )
 
@@ -904,7 +904,7 @@ def compute_rewards(
         q_legs = q_pos[..., 2:8]
         nom_legs = DEFAULT_NOMINAL_QPOS[2:8]
         leg_err_sq = np.sum(np.square(q_legs - nom_legs), axis=-1)
-        w_leg_pose = weights.get("leg_pose_penalty", -0.4)
+        w_leg_pose = weights.get("leg_pose_penalty", -0.10)
         if is_batch:
             r_leg_pose = (w_leg_pose * leg_err_sq * walk_mode_mask).astype(np.float32)
         else:
@@ -929,13 +929,13 @@ def compute_rewards(
         desired_L = np.where(c_sin < 0.0, 1.0, 0.0)
         desired_R = np.where(c_sin >= 0.0, 1.0, 0.0)
         sync_score = (1.0 - np.abs(left_c - desired_L)) + (1.0 - np.abs(right_c - desired_R))
-        w_gait_sync = weights.get("gait_sync", 0.8)
+        w_gait_sync = weights.get("gait_sync", 1.2)
         if is_batch:
-            fwd_gate = (vel_x > 0.03).astype(np.float32)
+            fwd_gate = ((vel_x >= 0.0) & is_moving_cmd).astype(np.float32)
             mode_gate = walk_mode_mask.astype(np.float32)
             r_gait_sync = (w_gait_sync * sync_score * fwd_gate * mode_gate).astype(np.float32)
         else:
-            fwd_gate = 1.0 if float(vel_x) > 0.03 else 0.0
+            fwd_gate = 1.0 if (float(vel_x) >= 0.0 and bool(is_moving_cmd)) else 0.0
             mode_gate = 1.0 if walk_mode_mask else 0.0
             r_gait_sync = float(w_gait_sync * sync_score * fwd_gate * mode_gate)
     else:
@@ -945,10 +945,10 @@ def compute_rewards(
     limit_scale = -w_limit if w_limit < 0 else w_limit
 
     total = (
-        weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
+        weights.get("tracking_lin_vel", 1.5) * r_track_lin_vel
+        + weights.get("upright", 1.5) * r_upright
         + forward_gate * (
             weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
-            + weights.get("upright", 1.5) * r_upright
             + weights.get("foot_contact", 1.0) * r_foot_contact
             + weights.get("emotion_tracking", 0.5) * r_emotion
         )

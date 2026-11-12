@@ -57,11 +57,13 @@ class ParallelSimRunner:
         kd: Optional[float] = None,
         max_episode_steps: int = 500,
         stand_still: bool = False,
+        walk_min_z: float = 0.060,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
             raise FileNotFoundError(f"MuJoCo model not found at {self.model_path}")
 
+        self.walk_min_z = float(walk_min_z)
         self.cfg = cfg if cfg is not None else _DEFAULT_CFG
         self.num_envs = int(num_envs)
         self.decimation = max(1, int(decimation))
@@ -389,7 +391,7 @@ class ParallelSimRunner:
 
         self.episode_steps += 1
         timeouts = self.episode_steps >= self.max_episode_steps
-        fallen = (root_z < 0.08) | (grav_z > -0.707) | diverged
+        fallen = (root_z < self.walk_min_z) | (grav_z > -0.707) | diverged
         fall_penalty = float(self.cfg.REWARD_WEIGHTS.get("fall_penalty", -5.0))
         if np.any(fallen):
             rewards = rewards.copy()

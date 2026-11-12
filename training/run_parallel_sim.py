@@ -64,7 +64,7 @@ class ParallelSimRunner:
         stand_still: bool = False,
         include_emotions: bool = False,
         enable_auto_recovery: bool = False,
-        walk_min_z: float = 0.080,
+        walk_min_z: float = 0.060,
         friction_range: Tuple[float, float] = (1.1, 1.6),
     ):
         self.model_path = Path(model_path).resolve()
@@ -660,15 +660,16 @@ class ParallelSimRunner:
 
         is_sitting_legs = (joint_pos[:, 4] > 0.9) | (joint_pos[:, 7] > 0.9)
         walk_moving = is_walk & (self.episode_steps > 1) & (base_lin_vel_body[:, 0] >= 0.03) & (~is_sitting_legs)
-        configured_min_z = getattr(self, "walk_min_z", 0.080)
-        walk_z_thresh = np.where(walk_moving, min(0.065, configured_min_z), configured_min_z)
+        configured_min_z = getattr(self, "walk_min_z", 0.060)
+        sit_collapse_z = np.where(is_walk & is_sitting_legs, 0.080, configured_min_z)
+        walk_z_thresh = np.where(walk_moving, min(0.055, configured_min_z), sit_collapse_z)
         z_fall_threshold = np.where(
             is_lie,
             0.025,
             np.where(is_sit, 0.050, walk_z_thresh),
         )
 
-        tilt_thresh = np.where(is_lie, 0.0, np.where(is_sit, -0.707, -0.81915))
+        tilt_thresh = np.where(is_lie, 0.0, np.where(is_sit, -0.707, -0.707))
         exceeding_tilt = (grav_z > tilt_thresh)
         severe_tilt = (grav_z > -0.50)
 
@@ -730,10 +731,7 @@ class ParallelSimRunner:
         fall_penalty = float(self.cfg.REWARD_WEIGHTS.get("fall_penalty", -5.0))
         if np.any(fallen):
             rewards = rewards.copy()
-            # If episode is an early multi-step collapse (< 60 steps and step > 1), add -10.0 early fall penalty
-            early_suicide_mask = fallen & (self.episode_steps < 60) & (self.episode_steps > 1)
             rewards[fallen] += fall_penalty
-            rewards[early_suicide_mask] += -10.0
 
         dones = fallen | timeouts
 

@@ -79,7 +79,7 @@ class MicroDuck8DoFConfig:
     # Balanced reward weights
     REWARD_WEIGHTS: Dict[str, float] = field(
         default_factory=lambda: {
-            "tracking_lin_vel": 1.0,
+            "tracking_lin_vel": 1.5,
             "tracking_ang_vel": 0.5,
             "upright": 1.5,
             "orientation_penalty": -2.0,
@@ -98,6 +98,8 @@ class MicroDuck8DoFConfig:
             "fall_penalty": -5.0,
             "standstill_penalty": -0.5,
             "feet_air_time": 2.0,
+            "leg_pose_penalty": -0.10,
+            "gait_sync": 1.2,
         }
     )
 
@@ -438,9 +440,9 @@ def compute_rewards(
     r_alive = np.ones(base_lin.shape[0], dtype=np.float32) if is_batch else 1.0
 
     total = (
-        weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
+        weights.get("tracking_lin_vel", 1.5) * r_track_lin_vel
         + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
-        + weights.get("upright", 1.0) * r_upright
+        + weights.get("upright", 1.5) * r_upright
         + weights.get("torque_penalty", -0.001) * r_torque_penalty
         + weights.get("joint_vel_penalty", -0.0001) * r_joint_vel_penalty
         + weights.get("action_rate_penalty", -0.01) * r_action_rate_penalty
