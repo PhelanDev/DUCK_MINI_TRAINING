@@ -1,6 +1,8 @@
 <mujoco model="cyberduck_v2_pro">
   <compiler angle="radian" meshdir="meshes" autolimits="true" />
 
+  <option timestep="0.002" iterations="50" solver="PGS" gravity="0 0 -9.81"/>
+
   <visual>
     <global offwidth="1024" offheight="768" />
     <quality shadowsize="4096" />
@@ -11,7 +13,6 @@
   <default>
     <default class="cyberduck_v2">
       <joint frictionloss="0.1" armature="0.005" damping="0.05" />
-      <position kp="50" dampratio="1" forcerange="-2.5 2.5" />
       <default class="visual">
         <geom contype="0" conaffinity="0" group="2" />
       </default>
@@ -65,8 +66,25 @@
     <light directional="true" diffuse="0.50 0.52 0.60" specular="0.1 0.1 0.1" pos="0.0 -1.8 1.0" dir="0.0 1.8 -0.6" castshadow="false" />
     <geom name="floor" type="plane" size="5 5 0.1" material="floor_mat" friction="1.0" />
 
+    <!-- Slalom Pillars (3-layer course) -->
+    <geom name="pillar_l1_left" type="cylinder" size="0.06 0.15" pos="0.45 0.35 0.15" rgba="0.8 0.2 0.2 1.0" contype="1" conaffinity="1"/>
+    <geom name="pillar_l1_right" type="cylinder" size="0.06 0.15" pos="0.45 -0.35 0.15" rgba="0.8 0.2 0.2 1.0" contype="1" conaffinity="1"/>
+    <geom name="pillar_l2_center" type="cylinder" size="0.07 0.15" pos="0.80 0.08 0.15" rgba="0.8 0.2 0.2 1.0" contype="1" conaffinity="1"/>
+    <geom name="pillar_l3_left" type="cylinder" size="0.06 0.15" pos="1.15 0.25 0.15" rgba="0.8 0.2 0.2 1.0" contype="1" conaffinity="1"/>
+    <geom name="pillar_l3_right" type="cylinder" size="0.06 0.15" pos="1.15 -0.25 0.15" rgba="0.8 0.2 0.2 1.0" contype="1" conaffinity="1"/>
+    <geom name="pillar_back" type="cylinder" size="0.08 0.15" pos="-0.75 0.0 0.15" rgba="0.8 0.2 0.2 1.0" contype="1" conaffinity="1"/>
+
+    <!-- Staircase & Landing Platform -->
+    <geom name="stair_step_1" type="box" size="0.06 0.40 0.0075" pos="1.40 0.0 0.0075" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_step_2" type="box" size="0.06 0.40 0.015" pos="1.52 0.0 0.015" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_step_3" type="box" size="0.06 0.40 0.0225" pos="1.64 0.0 0.0225" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_platform" type="box" size="0.16 0.40 0.0225" pos="1.86 0.0 0.0225" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_dn_1" type="box" size="0.06 0.40 0.015" pos="2.08 0.0 0.015" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="stair_dn_2" type="box" size="0.06 0.40 0.0075" pos="2.20 0.0 0.0075" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+    <geom name="floor_exit" type="box" size="0.40 0.40 0.005" pos="2.66 0.0 0.005" rgba="0.3 0.5 0.6 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
+
     <!-- Main Torso Body -->
-    <body name="trunk_base" pos="0 0 0.125" childclass="cyberduck_v2">
+    <body name="trunk_base" pos="0 0 0.128" childclass="cyberduck_v2">
       <freejoint name="trunk_freejoint" />
       <inertial pos="0.002 0.000 -0.012" mass="0.36" diaginertia="0.00038 0.00048 0.00032" />
       <site name="imu" pos="0.016 0.012 0.006" size="0.003" rgba="1.0 0.4 0.0 0.95" group="2" />
@@ -74,17 +92,17 @@
 
       <!-- Chest Armor, Reactor Core, Thruster Backpack -->
       <geom type="mesh" mesh="cyber_chest" material="mecha_white" class="visual" />
-      <geom type="mesh" mesh="cyber_chest" class="collision" />
+      <geom type="box" pos="0.005 0 0.001" size="0.033 0.046 0.038" class="collision" />
       <geom type="mesh" mesh="cyber_reactor" material="mecha_cyan_glow" class="visual" />
       <geom type="mesh" mesh="cyber_thruster_pack" material="mecha_thruster" class="visual" />
-      <geom type="mesh" mesh="cyber_thruster_pack" class="collision" />
+      <geom type="box" pos="-0.032 0 0.008" size="0.017 0.026 0.034" class="collision" />
 
       <!-- Neck & Head Assembly -->
       <body name="neck" pos="0.012 0 0.038">
         <joint name="head_yaw" type="hinge" axis="0 0 1" range="-1.57 1.57" />
         <inertial pos="0 0 0.008" mass="0.030" diaginertia="0.00001 0.00001 0.00001" />
         <geom type="mesh" mesh="cyber_neck" material="mecha_carbon" class="visual" />
-        <geom type="mesh" mesh="cyber_neck" class="collision" />
+        <geom type="capsule" fromto="0 0 0.004 0 0 0.020" size="0.012" class="collision" />
 
         <body name="head" pos="0 0 0.016">
           <joint name="head_pitch" type="hinge" axis="0 1 0" range="-0.52 0.78" />
@@ -92,10 +110,10 @@
 
           <!-- Aero Helm, Glowing Cyber Visor, Metallic Gold Beak -->
           <geom type="mesh" mesh="cyber_helm" material="mecha_white" class="visual" />
-          <geom type="mesh" mesh="cyber_helm" class="collision" />
+          <geom type="box" pos="0.002 0 0.017" size="0.028 0.028 0.022" class="collision" />
           <geom type="mesh" mesh="cyber_visor" material="mecha_cyan_glow" class="visual" />
           <geom type="mesh" mesh="cyber_beak" material="mecha_gold" class="visual" />
-          <geom type="mesh" mesh="cyber_beak" class="collision" />
+          <geom type="box" pos="0.037 0 0.003" size="0.020 0.016 0.006" class="collision" />
           <camera name="head_camera" pos="0.040 0 0.022" fovy="60" xyaxes="0 -1 0 0 0 1" />
           <site name="camera_site" pos="0.026 0 0.024" size="0.002" rgba="0.0 0.95 1.0 0.95" group="2" />
 
@@ -113,19 +131,19 @@
         <joint name="left_hip_roll" type="hinge" axis="1 0 0" range="-0.44 0.44" />
         <inertial pos="0 0.008 -0.010" mass="0.05" diaginertia="0.00002 0.00002 0.00002" />
         <geom type="mesh" mesh="cyber_hip_left" material="mecha_carbon" class="visual" />
-        <geom type="mesh" mesh="cyber_hip_left" class="collision" />
+        <geom type="box" pos="0 0.004 -0.008" size="0.010 0.012 0.015" class="collision" />
 
         <body name="left_thigh" pos="0 0.012 -0.015">
           <joint name="left_hip_pitch" type="hinge" axis="0 1 0" range="-0.87 0.87" />
           <inertial pos="0.002 0 -0.020" mass="0.05" diaginertia="0.00003 0.00003 0.00002" />
           <geom type="mesh" mesh="cyber_thigh_left" material="mecha_white" class="visual" />
-          <geom type="mesh" mesh="cyber_thigh_left" class="collision" />
+          <geom type="capsule" fromto="0.003 0 0.006 0.003 0 -0.028" size="0.011" class="collision" />
 
           <body name="left_shin" pos="0 0 -0.044">
             <joint name="left_knee_pitch" type="hinge" axis="0 1 0" range="0.0 1.48" />
             <inertial pos="0 0 -0.018" mass="0.04" diaginertia="0.00002 0.00002 0.00001" />
             <geom type="mesh" mesh="cyber_shin_left" material="mecha_carbon" class="visual" />
-            <geom type="mesh" mesh="cyber_shin_left" class="collision" />
+            <geom type="capsule" fromto="0.006 0 0.000 0.006 0 -0.030" size="0.010" class="collision" />
 
             <body name="left_foot" pos="0.004 0 -0.036">
               <inertial pos="0.005 0 0.006" mass="0.038" diaginertia="0.00002 0.00002 0.00002" />
@@ -144,19 +162,19 @@
         <joint name="right_hip_roll" type="hinge" axis="1 0 0" range="-0.44 0.44" />
         <inertial pos="0 -0.008 -0.010" mass="0.05" diaginertia="0.00002 0.00002 0.00002" />
         <geom type="mesh" mesh="cyber_hip_right" material="mecha_carbon" class="visual" />
-        <geom type="mesh" mesh="cyber_hip_right" class="collision" />
+        <geom type="box" pos="0 -0.004 -0.008" size="0.010 0.012 0.015" class="collision" />
 
         <body name="right_thigh" pos="0 -0.012 -0.015">
           <joint name="right_hip_pitch" type="hinge" axis="0 1 0" range="-0.87 0.87" />
           <inertial pos="0.002 0 -0.020" mass="0.05" diaginertia="0.00003 0.00003 0.00002" />
           <geom type="mesh" mesh="cyber_thigh_right" material="mecha_white" class="visual" />
-          <geom type="mesh" mesh="cyber_thigh_right" class="collision" />
+          <geom type="capsule" fromto="0.003 0 0.006 0.003 0 -0.028" size="0.011" class="collision" />
 
           <body name="right_shin" pos="0 0 -0.044">
             <joint name="right_knee_pitch" type="hinge" axis="0 1 0" range="0.0 1.48" />
             <inertial pos="0 0 -0.018" mass="0.04" diaginertia="0.00002 0.00002 0.00001" />
             <geom type="mesh" mesh="cyber_shin_right" material="mecha_carbon" class="visual" />
-            <geom type="mesh" mesh="cyber_shin_right" class="collision" />
+            <geom type="capsule" fromto="0.006 0 0.000 0.006 0 -0.030" size="0.010" class="collision" />
 
             <body name="right_foot" pos="0.004 0 -0.036">
               <inertial pos="0.005 0 0.006" mass="0.038" diaginertia="0.00002 0.00002 0.00002" />
@@ -173,15 +191,30 @@
     </body>
   </worldbody>
 
+  <contact>
+    <exclude body1="trunk_base" body2="neck"/>
+    <exclude body1="neck" body2="head"/>
+    <exclude body1="trunk_base" body2="left_hip"/>
+    <exclude body1="left_hip" body2="left_thigh"/>
+    <exclude body1="left_thigh" body2="left_shin"/>
+    <exclude body1="left_shin" body2="left_foot"/>
+    <exclude body1="trunk_base" body2="right_hip"/>
+    <exclude body1="right_hip" body2="right_thigh"/>
+    <exclude body1="right_thigh" body2="right_shin"/>
+    <exclude body1="right_shin" body2="right_foot"/>
+    <exclude body1="left_hip" body2="right_hip"/>
+    <exclude body1="left_thigh" body2="right_thigh"/>
+  </contact>
+
   <actuator>
-    <motor name="head_yaw" joint="head_yaw" gear="1" ctrlrange="-1.0 1.0" forcerange="-2.5 2.5"/>
-    <motor name="head_pitch" joint="head_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-2.5 2.5"/>
-    <motor name="left_hip_roll" joint="left_hip_roll" gear="1" ctrlrange="-1.0 1.0" forcerange="-2.5 2.5"/>
-    <motor name="left_hip_pitch" joint="left_hip_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-2.5 2.5"/>
-    <motor name="left_knee_pitch" joint="left_knee_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-2.5 2.5"/>
-    <motor name="right_hip_roll" joint="right_hip_roll" gear="1" ctrlrange="-1.0 1.0" forcerange="-2.5 2.5"/>
-    <motor name="right_hip_pitch" joint="right_hip_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-2.5 2.5"/>
-    <motor name="right_knee_pitch" joint="right_knee_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-2.5 2.5"/>
+    <motor name="head_yaw" joint="head_yaw" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="head_pitch" joint="head_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="left_hip_roll" joint="left_hip_roll" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="left_hip_pitch" joint="left_hip_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="left_knee_pitch" joint="left_knee_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="right_hip_roll" joint="right_hip_roll" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="right_hip_pitch" joint="right_hip_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
+    <motor name="right_knee_pitch" joint="right_knee_pitch" gear="1" ctrlrange="-1.0 1.0" forcerange="-1.0 1.0"/>
   </actuator>
 
   <sensor>
@@ -208,10 +241,10 @@
     <jointvel name="right_knee_pitch_vel" joint="right_knee_pitch" />
 
     <!-- 5-Ray LiDAR rangefinder sensors for Obstacle Navigation -->
-    <rangefinder name="lidar_ray_m30" site="site_lidar_m30"/>
-    <rangefinder name="lidar_ray_m15" site="site_lidar_m15"/>
-    <rangefinder name="lidar_ray_0" site="site_lidar_0"/>
-    <rangefinder name="lidar_ray_p15" site="site_lidar_p15"/>
-    <rangefinder name="lidar_ray_p30" site="site_lidar_p30"/>
+    <rangefinder name="lidar_ray_m30" site="site_lidar_m30" cutoff="2.0"/>
+    <rangefinder name="lidar_ray_m15" site="site_lidar_m15" cutoff="2.0"/>
+    <rangefinder name="lidar_ray_0" site="site_lidar_0" cutoff="2.0"/>
+    <rangefinder name="lidar_ray_p15" site="site_lidar_p15" cutoff="2.0"/>
+    <rangefinder name="lidar_ray_p30" site="site_lidar_p30" cutoff="2.0"/>
   </sensor>
 </mujoco>
