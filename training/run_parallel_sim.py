@@ -45,6 +45,14 @@ from training.terrain_curriculum import apply_stage, apply_stair_stage, STAIR_ST
 from training.self_righting import FallClassifier, SelfRightingController
 
 
+def _find_first_id(model: mujoco.MjModel, obj_type: mujoco.mjtObj, candidates: Tuple[str, ...]) -> int:
+    """Find ID of first existing named object from candidate names."""
+    for name in candidates:
+        obj_id = mujoco.mj_name2id(model, obj_type, name)
+        if obj_id != -1:
+            return obj_id
+    return -1
+
 
 class ParallelSimRunner:
     """Vectorized / batched simulation runner for MicroDuck 8-DOF."""
@@ -158,18 +166,17 @@ class ParallelSimRunner:
         self.d_min = np.zeros(self.num_envs, dtype=np.float32)
         self.d_min_dot = np.zeros(self.num_envs, dtype=np.float32)
 
-        # Foot bodies and geoms for clearance reward and stumble detection
-        self.left_foot_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "left_foot_geom")
-        self.right_foot_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "right_foot_geom")
-        self.left_foot_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "left_foot_link")
-        self.right_foot_bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "right_foot_link")
+        # Foot bodies and geoms for clearance reward and stumble detection (supporting V1 & V2 MJCF)
+        self.left_foot_gid = _find_first_id(self.model, mujoco.mjtObj.mjOBJ_GEOM, ("left_foot_geom", "left_sole_geom"))
+        self.right_foot_gid = _find_first_id(self.model, mujoco.mjtObj.mjOBJ_GEOM, ("right_foot_geom", "right_sole_geom"))
+        self.left_foot_bid = _find_first_id(self.model, mujoco.mjtObj.mjOBJ_BODY, ("left_foot_link", "left_foot"))
+        self.right_foot_bid = _find_first_id(self.model, mujoco.mjtObj.mjOBJ_BODY, ("right_foot_link", "right_foot"))
 
         # Floor geom and base body for domain randomization (friction and torso mass)
         self.floor_gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
-        self.base_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
-        if self.base_body_id == -1:
-            self.base_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "trunk_base")
+        self.base_body_id = _find_first_id(self.model, mujoco.mjtObj.mjOBJ_BODY, ("base_link", "trunk_base"))
         self.default_base_mass = float(self.model.body_mass[self.base_body_id]) if self.base_body_id != -1 else 0.32
+        self._randomize_model_dynamics()
 
         # Curriculum stage
         self.curriculum_stage = int(stage)
@@ -308,18 +315,26 @@ class ParallelSimRunner:
             dist = np.linalg.norm(diff, axis=-1) - obs_radii[None, :]
             return np.clip(np.min(dist, axis=-1), 0.0, None).astype(np.float32)
 
-    def reset_env(self, env_idx: int) -> np.ndarray:
-        """Reset a single environment with domain randomization and random velocity commands."""
-        d = self.datas[env_idx]
-        mujoco.mj_resetData(self.model, d)
-
-        # Domain randomization: floor friction mu and torso mass +-5%
+    def _randomize_model_dynamics(self):
+        """Synchronously randomize floor friction and torso mass on shared model outside worker threads."""
         if self.floor_gid != -1:
             self.model.geom_friction[self.floor_gid, 0] = float(
                 self.rng.uniform(self.friction_range[0], self.friction_range[1])
             )
         if self.base_body_id != -1:
-            self.model.body_mass[self.base_body_id] = float(self.default_base_mass * self.rng.uniform(0.95, 1.05))
+            self.model.body_mass[self.base_body_id] = float(
+                self.default_base_mass * self.rng.uniform(0.95, 1.05)
+            )
+
+    def reset_env(self, env_idx: int) -> np.ndarray:
+        """Reset a single environment with random velocity commands."""
+        d = self.datas[env_idx]
+        mujoco.mj_resetData(self.model, d)
+
+        # Domain randomization on shared self.model is performed synchronously in
+        # reset() / _randomize_model_dynamics() outside worker thread execution to avoid data races.
+        if self.num_envs == 1:
+            self._randomize_model_dynamics()
 
         if self.include_emotions:
             self.current_emotions[env_idx] = self.rng.integers(0, NUM_EMOTIONS)
@@ -373,6 +388,7 @@ class ParallelSimRunner:
 
     def reset(self, env_ids: Optional[Union[List[int], np.ndarray]] = None) -> np.ndarray:
         """Reset specified environments or all if None. Returns array of observations."""
+        self._randomize_model_dynamics()
         if env_ids is None:
             indices = range(self.num_envs)
         else:

@@ -884,7 +884,7 @@ def compute_rewards(
     else:
         r_alive = np.ones(base_lin.shape[0], dtype=np.float32) if is_batch else 1.0
 
-    # Heading penalty (locks heading yaw to target_yaw in WALK mode)
+    # Heading penalty (locks heading yaw to target_yaw in WALK mode when straight walking is commanded)
     if current_yaw is not None:
         yaw_cur = np.asarray(current_yaw, dtype=np.float32)
         yaw_tgt = np.asarray(target_yaw, dtype=np.float32)
@@ -892,9 +892,11 @@ def compute_rewards(
         yaw_diff = np.arctan2(np.sin(yaw_diff), np.cos(yaw_diff))
         w_heading = weights.get("heading_penalty", -2.0)
         if is_batch:
-            r_heading = (w_heading * np.square(yaw_diff) * walk_mode_mask).astype(np.float32)
+            straight_turn_mask = (np.abs(cmd_yaw_rate) < 0.05)
+            r_heading = (w_heading * np.square(yaw_diff) * walk_mode_mask * straight_turn_mask).astype(np.float32)
         else:
-            r_heading = float(w_heading * np.square(yaw_diff)) if walk_mode_mask else 0.0
+            straight_turn_mask = bool(np.abs(cmd_yaw_rate) < 0.05)
+            r_heading = float(w_heading * np.square(yaw_diff)) if (walk_mode_mask and straight_turn_mask) else 0.0
     else:
         r_heading = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
