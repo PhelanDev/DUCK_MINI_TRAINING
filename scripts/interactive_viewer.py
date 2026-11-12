@@ -823,6 +823,7 @@ def run_interactive_viewer(
             # Only enable group 3 for baseline model when stage >= 2 (where stairs are assigned to group 3)
             is_v2 = "cyberduck_v2" in str(model_path).lower()
             viewer.opt.geomgroup[3] = 0 if is_v2 else (1 if stage >= 2 else 0)
+            viewer.opt.sitegroup[4] = 0
             viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
             viewer.sync()
 
