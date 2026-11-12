@@ -28,17 +28,66 @@ from training.env_config import _DEFAULT_CFG
 from training.run_parallel_sim import ParallelSimRunner
 
 
+def get_xml_supported_stage(xml_path: Path, requested_stage: int) -> int:
+    """Return requested_stage if XML contains obstacle/stair geometry, else fallback to 0."""
+    if requested_stage <= 0:
+        return 0
+    try:
+        import mujoco
+        m = mujoco.MjModel.from_xml_path(str(xml_path))
+        has_stairs = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "stair_step_1") != -1
+        return requested_stage if has_stairs else 0
+    except Exception:
+        return 0
+
+
 def load_actor(checkpoint_path: Path) -> nn.Module:
-    cp = torch.load(checkpoint_path, map_location="cpu")
+    cp = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    state_dict = cp.get("actor_state_dict", cp.get("model_state_dict", cp))
+
+    obs_dim = 42
+    hidden_dim = 256
+    action_dim = 8
+
+    if isinstance(cp, dict):
+        obs_dim = cp.get("obs_dim", obs_dim)
+        hidden_dim = cp.get("hidden_dim", hidden_dim)
+        action_dim = cp.get("action_dim", action_dim)
+
+    # Infer from state_dict keys/shapes if available
+    if "0.weight" in state_dict:
+        obs_dim = int(state_dict["0.weight"].shape[1])
+        hidden_dim = int(state_dict["0.weight"].shape[0])
+    elif "actor.0.weight" in state_dict:
+        obs_dim = int(state_dict["actor.0.weight"].shape[1])
+        hidden_dim = int(state_dict["actor.0.weight"].shape[0])
+
+    for key in ("4.weight", "actor.4.weight", "2.weight", "actor.2.weight"):
+        if key in state_dict:
+            action_dim = int(state_dict[key].shape[0])
+            break
+
     actor = nn.Sequential(
-        nn.Linear(42, 256),
+        nn.Linear(obs_dim, hidden_dim),
         nn.ELU(),
-        nn.Linear(256, 256),
+        nn.Linear(hidden_dim, hidden_dim),
         nn.ELU(),
-        nn.Linear(256, 8),
+        nn.Linear(hidden_dim, action_dim),
     )
-    actor.load_state_dict(cp["actor_state_dict"])
+
+    if "actor_state_dict" in cp:
+        actor.load_state_dict(cp["actor_state_dict"])
+    elif "model_state_dict" in cp:
+        sub = {k.replace("actor.", ""): v for k, v in cp["model_state_dict"].items() if k.startswith("actor.")}
+        actor.load_state_dict(sub if sub else cp["model_state_dict"])
+    else:
+        actor.load_state_dict(state_dict)
+
     actor.eval()
+    actor.obs_dim = obs_dim
+    actor.hidden_dim = hidden_dim
+    actor.action_dim = action_dim
+    actor.stage = int(cp.get("stage", 0)) if isinstance(cp, dict) else 0
     return actor
 
 
@@ -67,9 +116,19 @@ def run_benchmark_scenario(
     # Initial positions
     start_x = np.array([d.qpos[0] for d in runner.datas], dtype=np.float32)
 
+    actor_in_dim = getattr(actor, "obs_dim", None)
+    if actor_in_dim is None and hasattr(actor, "__getitem__") and hasattr(actor[0], "in_features"):
+        actor_in_dim = actor[0].in_features
+
     for step in range(max_steps):
         with torch.no_grad():
-            actions = actor(torch.from_numpy(obs).float()).numpy()
+            inp = torch.from_numpy(obs).float()
+            if actor_in_dim is not None and inp.shape[1] != actor_in_dim:
+                if inp.shape[1] > actor_in_dim:
+                    inp = inp[:, :actor_in_dim]
+                else:
+                    inp = torch.nn.functional.pad(inp, (0, actor_in_dim - inp.shape[1]))
+            actions = actor(inp).numpy()
 
         next_obs, rewards, dones, infos = runner.step(actions)
 
@@ -155,11 +214,12 @@ def main():
     for sc in scenarios:
         print(f"\n>>> Running Scenario: {sc['name']} ...")
         # Run V1
+        stage_v1 = get_xml_supported_stage(v1_model_path, sc.get("stage", 0))
         r_v1 = ParallelSimRunner(
             model_path=v1_model_path,
             num_envs=16,
             max_episode_steps=sc["steps"],
-            stage=sc["stage"],
+            stage=stage_v1,
         )
         try:
             res_v1 = run_benchmark_scenario(
@@ -171,11 +231,12 @@ def main():
             r_v1.close()
 
         # Run V2
+        stage_v2 = get_xml_supported_stage(v2_model_path, sc.get("stage", 0))
         r_v2 = ParallelSimRunner(
             model_path=v2_model_path,
             num_envs=16,
             max_episode_steps=sc["steps"],
-            stage=sc["stage"],
+            stage=stage_v2,
         )
         try:
             res_v2 = run_benchmark_scenario(

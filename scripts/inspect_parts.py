@@ -18,7 +18,7 @@ for i in range(model.ngeom):
         
         vert_adr = model.mesh_vertadr[mesh_id]
         vert_num = model.mesh_vertnum[mesh_id]
-        verts = model.mesh_vert[vert_adr*3 : (vert_adr+vert_num)*3].reshape(-1, 3)
+        verts = model.mesh_vert[vert_adr : vert_adr + vert_num]
         
         bbox_min = verts.min(axis=0) * 1000.0
         bbox_max = verts.max(axis=0) * 1000.0

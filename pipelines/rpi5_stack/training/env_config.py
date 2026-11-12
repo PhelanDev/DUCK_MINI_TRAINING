@@ -15,7 +15,7 @@ class MicroDuck8DoFConfig:
     """Configuration dataclass for MicroDuck 8-DOF on Raspberry Pi 5 Stack."""
 
     STACK_NAME: str = "rpi5_stack"
-    TARGET_MASS: float = 0.860  # kg (~860g total weight)
+    TARGET_MASS: float = 0.764  # kg (~764g total weight)
     POLICY_DTYPE: str = "float32"
 
     OBS_DIM: int = 42

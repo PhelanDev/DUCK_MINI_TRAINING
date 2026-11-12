@@ -50,7 +50,7 @@
     <geom name="stair_dn_2" type="box" size="0.06 0.40 0.0075" pos="2.20 0.0 0.0075" rgba="0.4 0.6 0.7 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
     <geom name="floor_exit" type="box" size="0.40 0.40 0.005" pos="2.66 0.0 0.005" rgba="0.3 0.5 0.6 1.0" friction="1.5 0.01 0.0005" contype="1" conaffinity="1" group="3"/>
 
-    <body name="base_link" pos="0 0 0.095">
+    <body name="base_link" pos="0 0 0.128">
       <freejoint name="root"/>
       <site name="imu_site" pos="0 0 0.003" size="0.005" rgba="1 0 0 1"/>
       <!-- Sculpted Chibi Belly (ellipsoid) -->
@@ -76,7 +76,7 @@
           <geom name="beak_geom" type="ellipsoid" size="0.020 0.018 0.006" pos="0.046 0 0.011" mass="0.004" material="duck_orange"/>
           <!-- Eyes -->
           <geom name="left_eye" class="visual" type="sphere" size="0.004" pos="0.030 0.022 0.022" material="black"/>
-          <geom name="right_eye" class="visual" type="sphere" size="0.030 -0.022 0.022" material="black"/>
+          <geom name="right_eye" class="visual" type="sphere" size="0.004" pos="0.030 -0.022 0.022" material="black"/>
           <geom name="left_eye_pupil" class="visual" type="sphere" size="0.0015" pos="0.032 0.0225 0.0235" material="white"/>
           <geom name="right_eye_pupil" class="visual" type="sphere" size="0.0015" pos="0.032 -0.0215 0.0235" material="white"/>
 

@@ -16,7 +16,7 @@ class MicroDuck8DoFConfig:
     """Configuration dataclass for MicroDuck 8-DOF on Dual ESP32-S3 Stack."""
 
     STACK_NAME: str = "dual_esp32s3_stack"
-    TARGET_MASS: float = 0.780  # kg (~780g total weight)
+    TARGET_MASS: float = 0.684  # kg (~684g total weight)
     POLICY_DTYPE: str = "int8"  # Quantized for ESP32-S3 PIE vector instructions
 
     OBS_DIM: int = 42
