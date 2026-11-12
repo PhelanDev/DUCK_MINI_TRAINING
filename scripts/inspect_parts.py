@@ -1,7 +1,10 @@
+from pathlib import Path
 import mujoco
 import numpy as np
 
-model = mujoco.MjModel.from_xml_path('models/mjcf/microduck_cad.xml')
+REPO_ROOT = Path(__file__).resolve().parent.parent
+xml_path = str(REPO_ROOT / 'models' / 'mjcf' / 'microduck_cad.xml')
+model = mujoco.MjModel.from_xml_path(xml_path)
 data = mujoco.MjData(model)
 mujoco.mj_forward(model, data)
 

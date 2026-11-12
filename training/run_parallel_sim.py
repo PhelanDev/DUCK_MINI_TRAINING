@@ -74,6 +74,7 @@ class ParallelSimRunner:
         enable_auto_recovery: bool = False,
         walk_min_z: float = 0.060,
         friction_range: Tuple[float, float] = (1.1, 1.6),
+        embed_phase_clock: Optional[bool] = None,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -83,6 +84,11 @@ class ParallelSimRunner:
         self.include_emotions = bool(include_emotions)
         self.walk_min_z = float(walk_min_z)
         self.friction_range = (float(friction_range[0]), float(friction_range[1]))
+        self.cfg = cfg if cfg is not None else _DEFAULT_CFG
+        if embed_phase_clock is not None:
+            self.embed_phase_clock = bool(embed_phase_clock)
+        else:
+            self.embed_phase_clock = (getattr(self.cfg, "STACK_NAME", "microduck_8dof") == "microduck_8dof")
         self.cfg = cfg if cfg is not None else _DEFAULT_CFG
         self.num_envs = int(num_envs)
         self.decimation = max(1, int(decimation))
@@ -450,10 +456,13 @@ class ParallelSimRunner:
             else None
         )
 
-        _, clock_sin, clock_cos = compute_gait_phase(
-            self.episode_steps[env_idx], dt_control=self.control_dt, period=0.8
-        )
-        phase_clock = np.array([clock_sin, clock_cos], dtype=np.float32)
+        if self.embed_phase_clock:
+            _, clock_sin, clock_cos = compute_gait_phase(
+                self.episode_steps[env_idx], dt_control=self.control_dt, period=0.8
+            )
+            phase_clock = np.array([clock_sin, clock_cos], dtype=np.float32)
+        else:
+            phase_clock = None
 
         return compute_observations(
             base_ang_vel=base_ang_vel,

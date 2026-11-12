@@ -69,7 +69,7 @@ def render_exploded():
     mujoco.mj_forward(model, data)
 
     media_dir = "assets/media"
-    brain_dir = r"C:\Users\LEGION\.gemini\antigravity\brain\eac089d5-7756-4b70-896e-d09247ae73c7"
+    brain_dir = os.environ.get("BRAIN_DIR", os.environ.get("GEMINI_BRAIN_DIR", ""))
 
     renderer = mujoco.Renderer(model, width=640, height=480)
     
@@ -83,7 +83,7 @@ def render_exploded():
 
     out_path = os.path.join(media_dir, "microduck_exploded_3d.png")
     Image.fromarray(img).save(out_path)
-    if os.path.exists(brain_dir):
+    if brain_dir and os.path.exists(brain_dir):
         shutil.copy2(out_path, os.path.join(brain_dir, "microduck_exploded_3d.png"))
 
     print(f"Rendered exploded view: {out_path}")

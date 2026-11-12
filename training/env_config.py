@@ -7,6 +7,7 @@ and balanced reward calculations for bipedal locomotion.
 
 from dataclasses import dataclass, field
 from enum import IntEnum
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 
@@ -87,8 +88,14 @@ def get_emotion_one_hot(state: Union[EmotionState, int]) -> np.ndarray:
 class MicroDuck8DoFConfig:
     """Configuration dataclass for MicroDuck 8-DOF robot."""
 
+    STACK_NAME: str = "microduck_8dof"
+    TARGET_MASS: float = 0.694
+    POLICY_DTYPE: str = "float32"
+
     OBS_DIM: int = 37
     ACTION_DIM: int = 8
+    LIDAR_RAYS: int = 5
+    LIDAR_MIN_RANGE: float = 0.05
 
     JOINT_NAMES: List[str] = field(
         default_factory=lambda: [
@@ -1049,3 +1056,144 @@ def compute_rewards(
         "leg_pose_penalty": r_leg_pose.astype(np.float32),
         "gait_sync": r_gait_sync.astype(np.float32),
     }
+
+
+# ==============================================================================
+# INT8 Quantization Utilities for Embedded Microcontrollers (ESP32-S3 PIE)
+# ==============================================================================
+
+# Physical maximum normalization bounds for 42-dimensional observation vector
+DEFAULT_OBS_BOUNDS: np.ndarray = np.array(
+    [
+        # [0..2] Base angular velocity (rad/s, max ~6.0)
+        6.0, 6.0, 6.0,
+        # [3..5] Projected gravity (unit vector in [-1, 1])
+        1.0, 1.0, 1.0,
+        # [6..8] Commanded velocity [vx, vy, wz] (m/s, rad/s)
+        1.0, 1.0, 1.0,
+        # [9..16] Joint positions (rad) - physical travel limits of 8 MG996R servos
+        1.57, 0.78, 0.44, 0.87, 1.48, 0.44, 0.87, 1.48,
+        # [17..24] Joint velocities (rad/s, max ~6.0)
+        6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0,
+        # [25..32] Last actions (normalized target in [-1, 1])
+        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        # [33..36] Foot contact sensors (binary 0 or 1)
+        1.0, 1.0, 1.0, 1.0,
+        # [37..41] 5-ray LiDAR rangefinder distances (m, max range 2.0m)
+        2.0, 2.0, 2.0, 2.0, 2.0,
+    ],
+    dtype=np.float32,
+)
+
+DEFAULT_OBS_SCALES: np.ndarray = (127.0 / DEFAULT_OBS_BOUNDS).astype(np.float32)
+
+
+def quantize_obs_int8(
+    obs: np.ndarray,
+    scale: Union[float, np.ndarray] = 127.0,
+    obs_bounds: Optional[Union[float, np.ndarray]] = DEFAULT_OBS_BOUNDS,
+    normalize: bool = True,
+) -> np.ndarray:
+    """Quantize float32 observation vector(s) into symmetric INT8 [-128, 127].
+
+    Supports both 1D (42,) and 2D (N, 42) arrays.
+    """
+    obs_float = np.asarray(obs, dtype=np.float32)
+    if normalize and obs_bounds is not None:
+        bounds = np.asarray(obs_bounds, dtype=np.float32)
+        norm_obs = np.clip(obs_float / bounds, -1.0, 1.0)
+    else:
+        norm_obs = obs_float
+    scaled = np.round(norm_obs * scale)
+    return np.clip(scaled, -128.0, 127.0).astype(np.int8)
+
+
+def dequantize_obs_int8(
+    obs_int8: np.ndarray,
+    scale: Union[float, np.ndarray] = 127.0,
+    obs_bounds: Optional[Union[float, np.ndarray]] = DEFAULT_OBS_BOUNDS,
+) -> np.ndarray:
+    """Dequantize INT8 observation vector(s) back to physical float32 values."""
+    arr = np.asarray(obs_int8, dtype=np.float32)
+    norm = arr / scale
+    if obs_bounds is not None:
+        bounds = np.asarray(obs_bounds, dtype=np.float32)
+        return (norm * bounds).astype(np.float32)
+    return norm.astype(np.float32)
+
+
+def dequantize_act_int8(
+    act_int8: np.ndarray,
+    scale: float = 127.0,
+) -> np.ndarray:
+    """Dequantize INT8 policy actions [-128, 127] back to float32 targets in [-1.0, 1.0]."""
+    act_arr = np.asarray(act_int8, dtype=np.float32)
+    return np.clip(act_arr / scale, -1.0, 1.0).astype(np.float32)
+
+
+def generate_esp32_quant_header(
+    scale_obs: float = 127.0,
+    scale_act: float = 127.0,
+    output_path: Optional[Union[str, Path]] = None,
+    obs_dim: Optional[int] = None,
+) -> str:
+    """Generate C/C++ header for ESP32-S3 firmware with dimensions and quantization scales."""
+    actual_obs_dim = int(obs_dim) if obs_dim is not None else len(DEFAULT_OBS_BOUNDS)
+    bounds = DEFAULT_OBS_BOUNDS[:actual_obs_dim]
+    bounds_formatted = ", ".join(f"{b:.2f}f" for b in bounds)
+    scales_formatted = ", ".join(f"{s:.4f}f" for s in (float(scale_obs) / bounds))
+    lidar_rays = max(0, actual_obs_dim - 37)
+    header_content = f"""#ifndef ESP32_QUANT_CONFIG_H
+#define ESP32_QUANT_CONFIG_H
+
+/**
+ * MicroDuck 8-DOF (Dual ESP32-S3 Stack) - INT8 Quantization & Dimension Config
+ * Automatically generated for Xtensa LX7 PIE Vector Accelerator.
+ */
+
+#define OBS_DIM {actual_obs_dim}
+#define ACTION_DIM 8
+#define LIDAR_RAYS {lidar_rays}
+
+#define OBS_SCALE {float(scale_obs):.1f}f
+#define ACT_SCALE {float(scale_act):.1f}f
+#define OBS_INV_SCALE (1.0f / {float(scale_obs):.1f}f)
+#define ACT_INV_SCALE (1.0f / {float(scale_act):.1f}f)
+
+// Physical maximum normalization bounds for {actual_obs_dim} observation dimensions
+static const float OBS_MAX_BOUNDS[OBS_DIM] = {{
+    {bounds_formatted}
+}};
+
+// Effective INT8 scale per observation channel: (scale_obs / OBS_MAX_BOUNDS[i])
+static const float OBS_CHANNEL_SCALES[OBS_DIM] = {{
+    {scales_formatted}
+}};
+
+// Servo Joint Angle Boundaries for MG996R (Radians)
+#define HEAD_YAW_MIN -1.57f
+#define HEAD_YAW_MAX 1.57f
+#define HEAD_PITCH_MIN -0.52f
+#define HEAD_PITCH_MAX 0.78f
+#define LEFT_HIP_ROLL_MIN -0.44f
+#define LEFT_HIP_ROLL_MAX 0.44f
+#define LEFT_HIP_PITCH_MIN -0.87f
+#define LEFT_HIP_PITCH_MAX 0.87f
+#define LEFT_KNEE_PITCH_MIN 0.0f
+#define LEFT_KNEE_PITCH_MAX 1.48f
+#define RIGHT_HIP_ROLL_MIN -0.44f
+#define RIGHT_HIP_ROLL_MAX 0.44f
+#define RIGHT_HIP_PITCH_MIN -0.87f
+#define RIGHT_HIP_PITCH_MAX 0.87f
+#define RIGHT_KNEE_PITCH_MIN 0.0f
+#define RIGHT_KNEE_PITCH_MAX 1.48f
+
+#endif // ESP32_QUANT_CONFIG_H
+"""
+    if output_path is not None:
+        p = Path(output_path).resolve()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(header_content, encoding="utf-8")
+
+    return header_content
+

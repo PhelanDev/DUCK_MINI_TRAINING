@@ -1,18 +1,24 @@
-"""Reinforcement Learning Environment Configuration for MicroDuck 8-DOF (Pi Zero 2 W Stack).
+"""Reinforcement Learning Environment Configuration for MicroDuck 8-DOF (RPi Zero 2 W Stack).
 
-Defines 42-dimensional perception observation space (including 5-ray LiDAR scanner),
-8-DOF MG996R action scaling, rate limiting, and balanced multi-objective reward
-calculation with obstacle avoidance for autonomous bipedal navigation.
-Optimized for the ultra-lightweight ~745g Raspberry Pi Zero 2 W platform.
+Thin parameterized wrapper delegating common training environment logic to training.env_config.
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 
+from training.env_config import (
+    MicroDuck8DoFConfig as BaseConfig,
+    compute_observations,
+    scale_actions,
+    clip_action_rates,
+    quat_rotate_inverse,
+    compute_rewards,
+)
+
 
 @dataclass
-class MicroDuck8DoFConfig:
+class MicroDuck8DoFConfig(BaseConfig):
     """Configuration dataclass for MicroDuck 8-DOF on Raspberry Pi Zero 2 W Stack."""
 
     STACK_NAME: str = "pizero2w_stack"
@@ -26,34 +32,6 @@ class MicroDuck8DoFConfig:
     LIDAR_MAX_RANGE: float = 2.0
     OBSTACLE_THRESHOLD: float = 0.35  # meters
 
-    JOINT_NAMES: List[str] = field(
-        default_factory=lambda: [
-            "head_yaw",
-            "head_pitch",
-            "left_hip_roll",
-            "left_hip_pitch",
-            "left_knee_pitch",
-            "right_hip_roll",
-            "right_hip_pitch",
-            "right_knee_pitch",
-        ]
-    )
-
-    # Physical limits for MG996R servo joints (radians)
-    JOINT_LIMITS: Dict[str, Tuple[float, float]] = field(
-        default_factory=lambda: {
-            "head_yaw": (-1.57, 1.57),
-            "head_pitch": (-0.52, 0.78),
-            "left_hip_roll": (-0.44, 0.44),
-            "left_hip_pitch": (-0.87, 0.87),
-            "left_knee_pitch": (0.0, 1.48),
-            "right_hip_roll": (-0.44, 0.44),
-            "right_hip_pitch": (-0.87, 0.87),
-            "right_knee_pitch": (0.0, 1.48),
-        }
-    )
-
-    # Nominal standing joint angles (radians) for natural balanced posture
     NOMINAL_JOINT_POS: Dict[str, float] = field(
         default_factory=lambda: {
             "head_yaw": 0.0,
@@ -67,69 +45,11 @@ class MicroDuck8DoFConfig:
         }
     )
 
-    # MG996R specifications
-    TORQUE_LIMIT: float = 1.0  # N.m (stall torque rating)
-    MAX_VELOCITY: float = 6.0  # rad/s (~344 deg/s)
-    DEFAULT_DT: float = 0.02  # 50 Hz control loop frequency
-
-    # PD controller gains for simulated MG996R position servos
-    KP: float = 25.0  # Joint position proportional gain (N*m/rad)
-    KD: float = 0.8  # Joint velocity derivative gain (N*m*s/rad)
-
-    # Balanced reward weights
-    REWARD_WEIGHTS: Dict[str, float] = field(
-        default_factory=lambda: {
-            "tracking_lin_vel": 1.0,
-            "tracking_ang_vel": 0.5,
-            "upright": 1.5,
-            "orientation_penalty": -2.0,
-            "head_pos_penalty": -1.0,
-            "torque_penalty": -0.001,
-            "joint_vel_penalty": -0.0001,
-            "joint_acc_penalty": -0.01,
-            "action_rate_penalty": -0.10,
-            "foot_contact": 1.0,
-            "double_support_penalty": -0.5,
-            "backward_vel_penalty": -2.0,
-            "foot_slip_penalty": -0.8,
-            "obstacle_avoidance": 0.2,
-            "stair_ascent": 1.5,
-            "alive_bonus": 0.05,
-            "fall_penalty": -5.0,
-            "standstill_penalty": -0.5,
-            "feet_air_time": 2.0,
-        }
-    )
-
-    def __post_init__(self):
-        self.low_limits = np.array(
-            [self.JOINT_LIMITS[name][0] for name in self.JOINT_NAMES],
-            dtype=np.float32,
-        )
-        self.high_limits = np.array(
-            [self.JOINT_LIMITS[name][1] for name in self.JOINT_NAMES],
-            dtype=np.float32,
-        )
-        self.nominal_qpos = np.array(
-            [self.NOMINAL_JOINT_POS.get(name, 0.0) for name in self.JOINT_NAMES],
-            dtype=np.float32,
-        )
-
 
 # Module-level cached configuration for simulation steps
 _DEFAULT_CFG = MicroDuck8DoFConfig()
 
-DEFAULT_NOMINAL_JOINT_POS: Dict[str, float] = {
-    "head_yaw": 0.0,
-    "head_pitch": 0.0,
-    "left_hip_roll": 0.0,
-    "left_hip_pitch": -0.15,
-    "left_knee_pitch": 0.35,
-    "right_hip_roll": 0.0,
-    "right_hip_pitch": -0.15,
-    "right_knee_pitch": 0.35,
-}
-
+DEFAULT_NOMINAL_JOINT_POS: Dict[str, float] = _DEFAULT_CFG.NOMINAL_JOINT_POS
 DEFAULT_NOMINAL_QPOS: np.ndarray = _DEFAULT_CFG.nominal_qpos
 
 DEFAULT_OBS_BOUNDS: np.ndarray = np.array(
@@ -145,335 +65,3 @@ DEFAULT_OBS_BOUNDS: np.ndarray = np.array(
     ],
     dtype=np.float32,
 )
-
-
-def compute_observations(
-    base_ang_vel: np.ndarray,
-    proj_grav: np.ndarray,
-    commands: np.ndarray,
-    joint_pos: np.ndarray,
-    joint_vel: np.ndarray,
-    last_actions: np.ndarray,
-    foot_contact: np.ndarray,
-    lidar_ranges: np.ndarray,
-) -> np.ndarray:
-    """Pack raw state tensors into standard 42-dimensional observation vector.
-
-    Dimensions:
-    - Base angular velocity (3)
-    - Projected gravity vector (3)
-    - Velocity commands [vx, vy, wz] (3)
-    - Joint positions (8)
-    - Joint velocities (8)
-    - Previous actions (8)
-    - Feet contact sensors (4)
-    - 5-ray LiDAR rangefinder distances (5)
-    Total = 42 dimensions.
-    """
-    obs = np.concatenate(
-        [
-            np.asarray(base_ang_vel, dtype=np.float32).ravel(),
-            np.asarray(proj_grav, dtype=np.float32).ravel(),
-            np.asarray(commands, dtype=np.float32).ravel(),
-            np.asarray(joint_pos, dtype=np.float32).ravel(),
-            np.asarray(joint_vel, dtype=np.float32).ravel(),
-            np.asarray(last_actions, dtype=np.float32).ravel(),
-            np.asarray(foot_contact, dtype=np.float32).ravel(),
-            np.asarray(lidar_ranges, dtype=np.float32).ravel(),
-        ],
-        axis=-1,
-    ).astype(np.float32)
-
-    assert obs.shape == (42,), f"Expected observation shape (42,), got {obs.shape}"
-    return obs
-
-
-def scale_actions(
-    raw_actions: np.ndarray,
-    cfg: Optional[MicroDuck8DoFConfig] = None,
-    nominal_centered: bool = False,
-) -> np.ndarray:
-    """Scale raw normalized actions [-1, 1] into physical joint target angles."""
-    if cfg is None:
-        cfg = _DEFAULT_CFG
-
-    actions = np.asarray(raw_actions, dtype=np.float32)
-    clipped_actions = np.clip(actions, -1.0, 1.0)
-
-    if not nominal_centered:
-        scaled = cfg.low_limits + (clipped_actions + 1.0) * 0.5 * (
-            cfg.high_limits - cfg.low_limits
-        )
-    else:
-        nom = cfg.nominal_qpos
-        scaled = np.where(
-            clipped_actions >= 0.0,
-            nom + clipped_actions * (cfg.high_limits - nom),
-            nom + clipped_actions * (nom - cfg.low_limits),
-        )
-    return np.clip(scaled, cfg.low_limits, cfg.high_limits).astype(np.float32)
-
-
-def clip_action_rates(
-    current_targets: np.ndarray,
-    last_targets: np.ndarray,
-    dt: float = 0.02,
-    max_velocity: float = 6.0,
-) -> np.ndarray:
-    """Limit rate of angle target change to prevent exceeding max servo velocity."""
-    current = np.asarray(current_targets, dtype=np.float32)
-    last = np.asarray(last_targets, dtype=np.float32)
-
-    max_delta = float(max_velocity * dt)
-    delta = np.clip(current - last, -max_delta, max_delta)
-    return (last + delta).astype(np.float32)
-
-
-def quat_rotate_inverse(q: np.ndarray, v: np.ndarray) -> np.ndarray:
-    """Rotate 3D vector v from World Frame into Body Frame using quaternion q = [w, x, y, z]."""
-    q_arr = np.asarray(q, dtype=np.float32)
-    v_arr = np.asarray(v, dtype=np.float32)
-
-    qw = q_arr[..., 0:1]
-    qv = -q_arr[..., 1:4]
-
-    t = 2.0 * np.cross(qv, v_arr)
-    return (v_arr + qw * t + np.cross(qv, t)).astype(np.float32)
-
-
-def compute_rewards(
-    base_lin_vel: np.ndarray,
-    cmd_lin_vel: np.ndarray,
-    base_ang_vel: np.ndarray,
-    cmd_ang_vel: Union[float, np.ndarray],
-    proj_gravity: np.ndarray,
-    joint_torques: np.ndarray,
-    joint_vel: np.ndarray,
-    foot_contact: np.ndarray,
-    lidar_ranges: Optional[np.ndarray] = None,
-    actions: Optional[np.ndarray] = None,
-    last_actions: Optional[np.ndarray] = None,
-    weights: Optional[Dict[str, float]] = None,
-    root_x: Optional[Union[float, np.ndarray]] = None,
-    root_z: Optional[Union[float, np.ndarray]] = None,
-    cmd_mode: Optional[Union[int, np.ndarray]] = 0,
-    double_support_time: Optional[Union[float, np.ndarray]] = None,
-    last_joint_vel: Optional[np.ndarray] = None,
-    feet_air_time: Optional[np.ndarray] = None,
-    feet_touchdown: Optional[np.ndarray] = None,
-) -> Dict[str, Union[float, np.ndarray]]:
-    """Compute balanced reward terms and total reward for 42-dim RL training."""
-    if weights is None:
-        weights = _DEFAULT_CFG.REWARD_WEIGHTS
-
-    base_lin = np.asarray(base_lin_vel, dtype=np.float32)
-    cmd_lin = np.asarray(cmd_lin_vel, dtype=np.float32)
-    base_ang = np.asarray(base_ang_vel, dtype=np.float32)
-    grav = np.asarray(proj_gravity, dtype=np.float32)
-    torques = np.asarray(joint_torques, dtype=np.float32)
-    j_vel = np.asarray(joint_vel, dtype=np.float32)
-    f_contact = np.asarray(foot_contact, dtype=np.float32)
-
-    is_batch = base_lin.ndim > 1
-
-    # Target yaw rate
-    if is_batch:
-        if isinstance(cmd_ang_vel, np.ndarray) and cmd_ang_vel.ndim > 1:
-            target_yaw = cmd_ang_vel[:, 2] if cmd_ang_vel.shape[-1] >= 3 else cmd_ang_vel[:, 0]
-        elif isinstance(cmd_ang_vel, np.ndarray) and cmd_ang_vel.shape[0] == base_lin.shape[0]:
-            target_yaw = cmd_ang_vel
-        else:
-            target_yaw = float(cmd_ang_vel)
-    else:
-        if hasattr(cmd_ang_vel, "__len__"):
-            cmd_ang_arr = np.asarray(cmd_ang_vel, dtype=np.float32).ravel()
-            target_yaw = float(cmd_ang_arr[2] if len(cmd_ang_arr) >= 3 else cmd_ang_arr[0])
-        else:
-            target_yaw = float(cmd_ang_vel)
-
-    # Locomotion mode resolution (WALK = 0, SIT = 1, LIE = 2)
-    if cmd_mode is None:
-        cmd_mode = 0
-    if is_batch:
-        mode_arr = np.asarray(cmd_mode, dtype=np.int32)
-        if mode_arr.ndim == 0:
-            is_sit = np.full(base_lin.shape[0], mode_arr == 1, dtype=bool)
-            is_lie = np.full(base_lin.shape[0], mode_arr == 2, dtype=bool)
-        else:
-            is_sit = (mode_arr == 1)
-            is_lie = (mode_arr == 2)
-    else:
-        is_sit = (int(cmd_mode) == 1)
-        is_lie = (int(cmd_mode) == 2)
-
-    # 1. Forward linear velocity tracking
-    vel_x = base_lin[..., 0]
-    vel_y = base_lin[..., 1]
-    cmd_x = cmd_lin[..., 0]
-    cmd_y = cmd_lin[..., 1]
-    if is_batch:
-        vel_x_eff = np.minimum(vel_x, cmd_x + 0.05)
-        fwd_reward = np.where(vel_x >= 0.0, 2.0 * vel_x_eff, 4.0 * vel_x)
-        r_track_lin_vel = fwd_reward - 0.5 * np.square(vel_y - cmd_y)
-        r_track_lin_vel = np.where(is_sit | is_lie, 0.0, r_track_lin_vel).astype(np.float32)
-    else:
-        vel_x_eff = min(float(vel_x), float(cmd_x) + 0.05)
-        fwd_reward = 2.0 * vel_x_eff if float(vel_x) >= 0.0 else 4.0 * float(vel_x)
-        r_track_lin_vel = fwd_reward - 0.5 * float((vel_y - cmd_y) ** 2)
-        if is_sit or is_lie:
-            r_track_lin_vel = 0.0
-
-    # Double support dwell penalty (> 0.20s)
-    is_walking_cmd = cmd_x > 0.05
-    if is_batch:
-        is_backward = (vel_x < -0.01) & is_walking_cmd & (~is_sit) & (~is_lie)
-        r_backward_vel = np.where(is_backward, 1.0 + 5.0 * np.abs(vel_x), 0.0).astype(np.float32)
-    else:
-        is_backward = (vel_x < -0.01) and bool(is_walking_cmd) and (not is_sit) and (not is_lie)
-        r_backward_vel = float(1.0 + 5.0 * abs(vel_x)) if is_backward else 0.0
-
-    if is_batch:
-        if double_support_time is not None:
-            dst = np.asarray(double_support_time, dtype=np.float32)
-            is_dwell = (dst > 0.20) & is_walking_cmd & (~is_sit) & (~is_lie)
-            r_track_lin_vel = np.where(is_dwell, np.minimum(0.0, r_track_lin_vel), r_track_lin_vel).astype(np.float32)
-            r_double_support = np.where(is_dwell, 1.0, 0.0).astype(np.float32)
-        else:
-            r_double_support = np.zeros(base_lin.shape[0], dtype=np.float32)
-    else:
-        if double_support_time is not None:
-            dst = float(double_support_time)
-            is_dwell = (dst > 0.20) and bool(is_walking_cmd) and (not is_sit) and (not is_lie)
-            if is_dwell:
-                r_track_lin_vel = min(0.0, r_track_lin_vel)
-                r_double_support = 1.0
-            else:
-                r_double_support = 0.0
-        else:
-            r_double_support = 0.0
-
-    # Feet air time reward
-    if feet_air_time is not None and feet_touchdown is not None:
-        air_t = np.asarray(feet_air_time, dtype=np.float32)
-        td = np.asarray(feet_touchdown, dtype=np.float32)
-        air_reward = np.clip(air_t - 0.08, 0.0, 0.40) * td
-        cmd_active = (np.linalg.norm(cmd_lin[..., :2], axis=-1) > 0.05).astype(np.float32)
-        if is_batch:
-            forward_active = (vel_x > 0.02).astype(np.float32)
-            r_feet_air_time = np.sum(air_reward, axis=-1) * cmd_active * forward_active
-        else:
-            forward_active = float(vel_x > 0.02)
-            r_feet_air_time = float(np.sum(air_reward) * cmd_active * forward_active)
-    else:
-        r_feet_air_time = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
-
-    # 2. Angular velocity tracking around Z axis
-    ang_err_sq = np.square(base_ang[..., 2] - target_yaw)
-    r_track_ang_vel = np.exp(-ang_err_sq / 0.25)
-
-    # 3. Upright posture reward
-    grav_err_sq = (
-        np.square(grav[..., 0])
-        + np.square(grav[..., 1])
-        + np.square(grav[..., 2] - (-1.0))
-    )
-    r_upright = np.exp(-grav_err_sq / 0.2)
-
-    # 4. Energy and torque minimization penalty
-    r_torque_penalty = np.sum(np.square(torques), axis=-1)
-
-    # 5. Joint velocity smoothing penalty
-    r_joint_vel_penalty = np.sum(np.square(j_vel), axis=-1)
-
-    # 6. Action rate penalty
-    if actions is not None and last_actions is not None:
-        act = np.asarray(actions, dtype=np.float32)
-        last_act = np.asarray(last_actions, dtype=np.float32)
-        r_action_rate_penalty = np.sum(np.square(act - last_act), axis=-1)
-    else:
-        r_action_rate_penalty = (
-            np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
-        )
-
-    # 7. Foot contact reward
-    num_contacts = np.sum(f_contact > 0.0, axis=-1)
-    cmd_speed = np.linalg.norm(cmd_lin[..., :2], axis=-1) + np.abs(target_yaw)
-    is_moving_cmd = cmd_speed > 0.05
-    forward_gait_gate = (vel_x > 0.02).astype(np.float32)
-    r_foot_contact = np.where(
-        is_moving_cmd,
-        (num_contacts == 1).astype(np.float32) * forward_gait_gate,
-        (num_contacts == 2).astype(np.float32) * 0.5,
-    ).astype(np.float32)
-
-    # 8. Obstacle avoidance reward / penalty
-    if lidar_ranges is not None:
-        ranges = np.asarray(lidar_ranges, dtype=np.float32)
-        min_dist = np.min(ranges, axis=-1)
-        r_obstacle = np.where(
-            min_dist < _DEFAULT_CFG.OBSTACLE_THRESHOLD,
-            min_dist - _DEFAULT_CFG.OBSTACLE_THRESHOLD,
-            0.0,
-        ).astype(np.float32)
-    else:
-        r_obstacle = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
-
-    # 9. Stair ascent elevation reward
-    if root_x is not None and root_z is not None:
-        rx = np.asarray(root_x, dtype=np.float32)
-        rz = np.asarray(root_z, dtype=np.float32)
-        stair_mask = (rx >= 1.35).astype(np.float32)
-        elevation_gain = np.clip(rz - 0.170, 0.0, 0.050)
-        r_stair_ascent = stair_mask * elevation_gain * 10.0
-    else:
-        r_stair_ascent = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
-
-    r_alive = np.ones(base_lin.shape[0], dtype=np.float32) if is_batch else 1.0
-
-    total = (
-        weights.get("tracking_lin_vel", 1.0) * r_track_lin_vel
-        + weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
-        + weights.get("upright", 1.0) * r_upright
-        + weights.get("torque_penalty", -0.001) * r_torque_penalty
-        + weights.get("joint_vel_penalty", -0.0001) * r_joint_vel_penalty
-        + weights.get("action_rate_penalty", -0.01) * r_action_rate_penalty
-        + weights.get("foot_contact", 0.1) * r_foot_contact
-        + weights.get("backward_vel_penalty", -2.0) * r_backward_vel
-        + weights.get("feet_air_time", 2.0) * r_feet_air_time
-        + weights.get("obstacle_avoidance", 0.2) * r_obstacle
-        + weights.get("stair_ascent", 0.0) * r_stair_ascent
-        + weights.get("alive_bonus", 0.0) * r_alive
-    )
-
-    if not is_batch:
-        return {
-            "total_reward": float(total),
-            "tracking_lin_vel": float(r_track_lin_vel),
-            "tracking_ang_vel": float(r_track_ang_vel),
-            "upright": float(r_upright),
-            "torque_penalty": float(r_torque_penalty),
-            "joint_vel_penalty": float(r_joint_vel_penalty),
-            "action_rate_penalty": float(r_action_rate_penalty),
-            "backward_vel_penalty": float(weights.get("backward_vel_penalty", -2.0) * r_backward_vel),
-            "foot_contact": float(r_foot_contact),
-            "feet_air_time": float(r_feet_air_time),
-            "obstacle_avoidance": float(r_obstacle),
-            "stair_ascent": float(r_stair_ascent),
-            "alive_bonus": float(weights.get("alive_bonus", 0.0) * r_alive),
-        }
-
-    return {
-        "total_reward": total.astype(np.float32),
-        "tracking_lin_vel": r_track_lin_vel.astype(np.float32),
-        "tracking_ang_vel": r_track_ang_vel.astype(np.float32),
-        "upright": r_upright.astype(np.float32),
-        "torque_penalty": r_torque_penalty.astype(np.float32),
-        "joint_vel_penalty": r_joint_vel_penalty.astype(np.float32),
-        "action_rate_penalty": r_action_rate_penalty.astype(np.float32),
-        "backward_vel_penalty": (weights.get("backward_vel_penalty", -2.0) * r_backward_vel).astype(np.float32),
-        "foot_contact": r_foot_contact.astype(np.float32),
-        "feet_air_time": r_feet_air_time.astype(np.float32),
-        "obstacle_avoidance": r_obstacle.astype(np.float32),
-        "stair_ascent": r_stair_ascent.astype(np.float32),
-        "alive_bonus": (weights.get("alive_bonus", 0.0) * r_alive).astype(np.float32),
-    }

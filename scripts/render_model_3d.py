@@ -40,7 +40,7 @@ def render_sculpted_duck():
 
     media_dir = os.path.join(os.path.dirname(__file__), "..", "assets", "media")
     os.makedirs(media_dir, exist_ok=True)
-    brain_dir = r"C:\Users\LEGION\.gemini\antigravity\brain\eac089d5-7756-4b70-896e-d09247ae73c7"
+    brain_dir = os.environ.get("BRAIN_DIR", os.environ.get("GEMINI_BRAIN_DIR", ""))
 
     renderer = mujoco.Renderer(model, width=640, height=480)
 
@@ -54,7 +54,7 @@ def render_sculpted_duck():
     img_iso = renderer.render()
     iso_path = os.path.join(media_dir, "microduck_iso_3d.png")
     Image.fromarray(img_iso).save(iso_path)
-    if os.path.exists(brain_dir):
+    if brain_dir and os.path.exists(brain_dir):
         shutil.copy2(iso_path, os.path.join(brain_dir, "microduck_iso_3d.png"))
 
     # 2. Front 3D View
@@ -67,7 +67,7 @@ def render_sculpted_duck():
     img_front = renderer.render()
     front_path = os.path.join(media_dir, "microduck_front.png")
     Image.fromarray(img_front).save(front_path)
-    if os.path.exists(brain_dir):
+    if brain_dir and os.path.exists(brain_dir):
         shutil.copy2(front_path, os.path.join(brain_dir, "microduck_front.png"))
 
     # 3. Side 3D View
@@ -80,7 +80,7 @@ def render_sculpted_duck():
     img_side = renderer.render()
     side_path = os.path.join(media_dir, "microduck_side.png")
     Image.fromarray(img_side).save(side_path)
-    if os.path.exists(brain_dir):
+    if brain_dir and os.path.exists(brain_dir):
         shutil.copy2(side_path, os.path.join(brain_dir, "microduck_side.png"))
 
     # 4. Foot Close-up View (showing precision flat sole on floor)
@@ -93,10 +93,11 @@ def render_sculpted_duck():
     img_foot = renderer.render()
     foot_path = os.path.join(media_dir, "microduck_foot_closeup.png")
     Image.fromarray(img_foot).save(foot_path)
-    if os.path.exists(brain_dir):
+    if brain_dir and os.path.exists(brain_dir):
         shutil.copy2(foot_path, os.path.join(brain_dir, "microduck_foot_closeup.png"))
 
-    print(f"Official Microduck CAD Renders successfully generated in {media_dir} and synced to {brain_dir}!")
+    sync_msg = f" and synced to {brain_dir}" if brain_dir and os.path.exists(brain_dir) else ""
+    print(f"Official Microduck CAD Renders successfully generated in {media_dir}{sync_msg}!")
 
 if __name__ == "__main__":
     render_sculpted_duck()

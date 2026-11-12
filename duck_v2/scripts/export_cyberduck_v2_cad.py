@@ -10,7 +10,7 @@ import numpy as np
 def export_v2_cad():
     cad_dir = "duck_v2/cad"
     os.makedirs(cad_dir, exist_ok=True)
-    brain_dir = r"C:\Users\LEGION\.gemini\antigravity\brain\eac089d5-7756-4b70-896e-d09247ae73c7"
+    brain_dir = os.environ.get("BRAIN_DIR", os.environ.get("GEMINI_BRAIN_DIR", ""))
     
     xml_path = "duck_v2/cyberduck_v2.xml"
     model = mujoco.MjModel.from_xml_path(xml_path)
@@ -158,7 +158,7 @@ def export_v2_cad():
     print(f"Exported: {zip_p} ({os.path.getsize(zip_p)/1024/1024:.2f} MB)")
 
     # Copy to brain dir
-    if os.path.exists(brain_dir):
+    if brain_dir and os.path.exists(brain_dir):
         shutil.copy2(obj_p, os.path.join(brain_dir, "cyberduck_v2_assembly.obj"))
         shutil.copy2(mtl_p, os.path.join(brain_dir, "cyberduck_v2_assembly.mtl"))
         shutil.copy2(exp_p, os.path.join(brain_dir, "cyberduck_v2_exploded.obj"))
