@@ -31,17 +31,35 @@ duck_v2/
 │   ├── cyberduck_v2_exploded.obj  # File 3D phân rã linh kiện (2.82 MB)
 │   └── cyberduck_v2_stl_parts.zip # Gói nén trọn bộ 13 file STL (0.86 MB)
 ├── media/                      # Bộ ảnh render studio HD đa góc nhìn
+│   ├── cyberduck_v2_front_hd.png   # Render trực diện HD sạch bóng lỗi thị giác
+│   ├── cyberduck_v2_iso_hd.png     # Render góc 3/4 Isometric HD giáp trắng ngà
 │   ├── cyberduck_v2_iso.png
 │   ├── cyberduck_v2_front.png
 │   ├── cyberduck_v2_side.png
 │   ├── cyberduck_v2_wing_closeup.png
 │   ├── cyberduck_v2_foot_closeup.png
 │   └── cyberduck_v2_exploded.png
-└── scripts/
-    ├── build_cyberduck_v2.py       # Tái tạo 13 file STL từ toán học tham số
-    ├── render_cyberduck_v2.py      # Render bộ ảnh trực quan HD
-    └── export_cyberduck_v2_cad.py  # Xuất file CAD OBJ + MTL + ZIP
+├── scripts/
+│   ├── build_cyberduck_v2.py       # Tái tạo 13 file STL từ toán học tham số
+│   ├── render_cyberduck_v2.py      # Render bộ ảnh trực quan HD
+│   ├── render_v2_hd.py             # Render & tự động kiểm tra pixel artifact
+│   └── export_cyberduck_v2_cad.py  # Xuất file CAD OBJ + MTL + ZIP
 ```
+
+---
+
+## 💎 Chuẩn Thị Giác & Ánh Sáng Studio Mới (Visual & Shading Upgrades)
+
+1. **Triệt tiêu hoàn toàn quả cầu đỏ & chấm đỏ cảm biến**:
+   - Toàn bộ sensory sites (`imu`, `imu_site`, `site_lidar_m30..p30`, foot touch sites) được cấu hình `rgba="0 0 0 0"` và đưa vào `group="4"`.
+   - 5 tia LiDAR rangefinder được dời flush phẳng với kính ngắm (`pos="0.025 0 0.022"`), triệt tiêu hoàn toàn hiện tượng điểm đỏ trôi lơ lửng trước mặt robot.
+2. **Nâng cấp ánh sáng Studio PBR & Triệt tiêu Shadow Acne**:
+   - Thêm camera headlight fill (`ambient="0.45 0.47 0.50"`), loại bỏ góc chết tối đen trên giáp.
+   - Nâng độ phân giải bản đồ đổ bóng lên `shadowsize="4096"` với `shadowclip="0.5"`.
+   - Khóa `castshadow="false"` trên các đèn phụ, chỉ giữ 1 key light chính đổ bóng để triệt tiêu hiện tượng bóng răng cưa (shadow acne) chồng chéo.
+   - Nâng cấp vật liệu `mecha_white` đạt chuẩn ceramic trắng tinh khiết (`rgba="0.98 0.99 1.0 1.0"`, `emission="0.08"`).
+3. **Triệt tiêu viền vàng hộp va chạm ở bàn chân**:
+   - Lớp `class="collision"` được gán `rgba="0.2 0.5 0.8 0"` và viewer group 3/4 được khóa mặc định, đảm bảo bàn chân hiển thị đúng chất liệu vàng kim và đế cao su.
 
 ---
 
