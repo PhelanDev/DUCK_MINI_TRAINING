@@ -195,11 +195,13 @@ def export_esp32_headers(
         obs_dim=obs_dim,
     )
 
-    # Quantize Layer 1
-    max_w1 = float(np.max(np.abs(w1)))
+    # Quantize Layer 1 with per-channel observation scales matching mcu2_main.ino OBS_CHANNEL_SCALES
+    obs_channel_scales = (float(scale_obs) / DEFAULT_OBS_BOUNDS[:obs_dim]).astype(np.float32)
+    w1_effective = w1 / obs_channel_scales  # broadcast shape (256, obs_dim) / (obs_dim,)
+    max_w1 = float(np.max(np.abs(w1_effective)))
     scale_w1 = 127.0 / max(max_w1, 1e-7)
-    w1_int8 = np.clip(np.round(w1 * scale_w1), -128, 127).astype(np.int8)
-    scale_b1 = scale_w1 * scale_obs
+    w1_int8 = np.clip(np.round(w1_effective * scale_w1), -128, 127).astype(np.int8)
+    scale_b1 = scale_w1
     b1_int32 = np.round(b1 * scale_b1).astype(np.int32)
 
     # Quantize Layer 2

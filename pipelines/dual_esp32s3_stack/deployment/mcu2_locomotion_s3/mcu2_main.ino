@@ -41,6 +41,7 @@ const uint8_t SERVO_PINS[8] = {6, 7, 8, 9, 10, 11, 12, 13};
 // Physical Joint Limits (radians)
 const float JOINT_MIN_LIMITS[8] = {-1.57f, -0.52f, -0.44f, -0.87f, 0.00f, -0.44f, -0.87f, 0.00f};
 const float JOINT_MAX_LIMITS[8] = { 1.57f,  0.78f,  0.44f,  0.87f, 1.48f,  0.44f,  0.87f, 1.48f};
+const float JOINT_NOMINAL_POS[8] = { 0.00f,  0.00f,  0.00f, -0.15f, 0.15f,  0.00f, -0.15f, 0.15f};
 
 // MG996R Safety Constraints
 #define MAX_VELOCITY_RAD_S 6.0f     // ~344 deg/s max angular velocity
@@ -67,11 +68,11 @@ HardwareSerial UartLink(MCU2_UART_NUM);
 #endif
 static float g_obs[OBS_DIM];
 
-// Locomotion & Joint State
-static float g_current_joint_pos[8] = {0};
-static float g_last_joint_pos[8]    = {0};
-static float g_target_angles[8]     = {0};
-static float g_last_targets[8]      = {0};
+// Locomotion & Joint State (initialized to nominal stand posture)
+static float g_current_joint_pos[8] = { 0.00f,  0.00f,  0.00f, -0.15f, 0.15f,  0.00f, -0.15f, 0.15f};
+static float g_last_joint_pos[8]    = { 0.00f,  0.00f,  0.00f, -0.15f, 0.15f,  0.00f, -0.15f, 0.15f};
+static float g_target_angles[8]     = { 0.00f,  0.00f,  0.00f, -0.15f, 0.15f,  0.00f, -0.15f, 0.15f};
+static float g_last_targets[8]      = { 0.00f,  0.00f,  0.00f, -0.15f, 0.15f,  0.00f, -0.15f, 0.15f};
 float g_last_raw_actions[8]         = {0};
 
 // Telemetry from MCU 1
@@ -113,8 +114,8 @@ void set_servo_angle(uint8_t index, float angle_rad) {
 void init_servos() {
     for (uint8_t i = 0; i < 8; ++i) {
         ledcAttachChannel(SERVO_PINS[i], PWM_FREQ_HZ, PWM_RESOLUTION_BITS, i);
-        // Initialize to neutral stand posture
-        set_servo_angle(i, 0.0f);
+        // Initialize to nominal stand posture
+        set_servo_angle(i, JOINT_NOMINAL_POS[i]);
     }
     Serial.println("[MCU 2] 8-DOF MG996R LEDC PWM channels initialized @ 50Hz.");
 }
@@ -327,8 +328,8 @@ void read_mpu6050(float *gyro, float *proj_grav) {
         mahony_update(ax, ay, az, s_filt_gyro[0], s_filt_gyro[1], s_filt_gyro[2], CONTROL_DT);
 
         // Project gravity to MuJoCo base coordinate frame
-        proj_grav[0] = 2.0f * (s_q1 * s_q3 - s_q0 * s_q2);
-        proj_grav[1] = 2.0f * (s_q2 * s_q3 + s_q0 * s_q1);
+        proj_grav[0] = -2.0f * (s_q1 * s_q3 - s_q0 * s_q2);
+        proj_grav[1] = -2.0f * (s_q2 * s_q3 + s_q0 * s_q1);
         proj_grav[2] = -(s_q0 * s_q0 - s_q1 * s_q1 - s_q2 * s_q2 + s_q3 * s_q3);
 
         // Update legacy IIR filter for diagnostics and backward test compatibility
@@ -487,8 +488,8 @@ void evaluate_locomotion_policy(const float *obs, float *target_angles_out) {
         raw_act = constrain(raw_act, -1.0f, 1.0f);
         g_last_raw_actions[i] = raw_act;
 
-        // Linear scaling: raw [-1, 1] -> [JOINT_MIN_LIMITS[i], JOINT_MAX_LIMITS[i]]
-        float target_angle = JOINT_MIN_LIMITS[i] + (raw_act + 1.0f) * 0.5f * (JOINT_MAX_LIMITS[i] - JOINT_MIN_LIMITS[i]);
+        // Nominal-centered scaling: action 0.0 corresponds to nominal_qpos
+        float target_angle = (raw_act >= 0.0f) ? (JOINT_NOMINAL_POS[i] + raw_act * (JOINT_MAX_LIMITS[i] - JOINT_NOMINAL_POS[i])) : (JOINT_NOMINAL_POS[i] + raw_act * (JOINT_NOMINAL_POS[i] - JOINT_MIN_LIMITS[i]));
         target_angles_out[i] = constrain(target_angle, JOINT_MIN_LIMITS[i], JOINT_MAX_LIMITS[i]);
     }
 }

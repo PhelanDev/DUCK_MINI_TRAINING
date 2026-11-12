@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipelines.rpi5_stack.training.env_config import (
+from training.env_config import (
     MicroDuck8DoFConfig,
     compute_observations,
     scale_actions,
@@ -297,8 +297,8 @@ class MPU6050FilterReader:
         """Compute projected gravity vector in robot base frame matching MuJoCo convention [0, 0, -1]."""
         qw, qx, qy, qz = self.q
         return np.array([
-            2.0 * (qx * qz - qw * qy),
-            2.0 * (qy * qz + qw * qx),
+            -2.0 * (qx * qz - qw * qy),
+            -2.0 * (qy * qz + qw * qx),
             -(qw * qw - qx * qx - qy * qy + qz * qz),
         ], dtype=np.float32)
 
@@ -346,7 +346,7 @@ class RPi5InferenceEngine:
         mock: bool = False,
         freq: float = 50.0,
     ):
-        self.cfg = MicroDuck8DoFConfig()
+        self.cfg = MicroDuck8DoFConfig(OBS_DIM=42)
         self.freq = float(freq)
         self.dt = 1.0 / self.freq
         self.mock = mock or (smbus is None)
@@ -381,8 +381,8 @@ class RPi5InferenceEngine:
         else:
             print("[RPi5InferenceEngine] No ONNX model provided or file not found. Running in heuristic/zero-action mode.")
 
-        # State tracking for rate limiting
-        self.last_targets = np.zeros(self.cfg.ACTION_DIM, dtype=np.float32)
+        # State tracking for rate limiting (initialized to nominal stand posture)
+        self.last_targets = self.cfg.nominal_qpos.copy()
         self.last_raw_actions = np.zeros(self.cfg.ACTION_DIM, dtype=np.float32)
         self.joint_limits_list = [
             self.cfg.JOINT_LIMITS[name] for name in self.cfg.JOINT_NAMES
@@ -415,7 +415,7 @@ class RPi5InferenceEngine:
         self.last_raw_actions = raw_actions.copy()
 
         # 2. Scale actions to joint angles
-        scaled_targets = scale_actions(raw_actions, self.cfg)
+        scaled_targets = scale_actions(raw_actions, self.cfg, nominal_centered=True)
 
         # 3. Rate-limit targets to protect MG996R gears
         clipped_targets = clip_action_rates(
