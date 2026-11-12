@@ -23,11 +23,14 @@
 
   <asset>
     <!-- Materials with realistic PBR shine and emissive glow -->
-    <material name="mecha_white" rgba="0.42 0.45 0.49 1.0" specular="0.6" shininess="0.80" />
-    <material name="mecha_carbon" rgba="0.18 0.20 0.24 1.0" specular="0.4" shininess="0.5" />
-    <material name="mecha_gold" rgba="0.96 0.74 0.14 1.0" specular="0.85" shininess="0.90" />
-    <material name="mecha_cyan_glow" rgba="0.0 0.92 1.0 1.0" specular="0.9" shininess="1.0" emission="0.8" />
-    <material name="mecha_thruster" rgba="0.22 0.25 0.30 1.0" specular="0.5" shininess="0.6" />
+    <!-- Giáp chính: Xám nhám (Matte Titanium Slate) -->
+    <material name="mecha_white" rgba="0.34 0.36 0.40 1.0" specular="0.22" shininess="0.18" />
+    <!-- Khung xương & Khớp nối: Đen Carbon nhám (Matte Carbon Fiber) -->
+    <material name="mecha_carbon" rgba="0.15 0.16 0.18 1.0" specular="0.18" shininess="0.15" />
+    <!-- Mỏ & Móng chân: Vàng đồng ánh kim (Burnished Metallic Bronze) -->
+    <material name="mecha_gold" rgba="0.80 0.54 0.22 1.0" specular="0.75" shininess="0.70" />
+    <material name="mecha_cyan_glow" rgba="0.0 0.92 1.0 1.0" specular="0.9" shininess="1.0" emission="0.85" />
+    <material name="mecha_thruster" rgba="0.20 0.22 0.25 1.0" specular="0.25" shininess="0.20" />
     <material name="mecha_sole_rubber" rgba="0.12 0.13 0.15 1.0" specular="0.1" />
 
     <!-- Meshes -->
