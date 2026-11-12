@@ -92,8 +92,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     v2_xml = REPO_ROOT / "duck_v2" / "cyberduck_v2.xml"
     v2_cad = REPO_ROOT / "duck_v2" / "cad" / "cyberduck_v2_assembly.obj"
     v2_zip = REPO_ROOT / "duck_v2" / "cad" / "cyberduck_v2_stl_parts.zip"
-    print("\n[5] MÔ HÌNH THỂ THAO CYBERDUCK V2 PRO (ATHLETIC BIONIC DROID)")
+    v2_best_ckpt = REPO_ROOT / "models" / "checkpoints" / "cyberduck_v2_best.pt"
+    print("\n[5] MÔ HÌNH THỂ THAO CYBERDUCK V2 PRO (ATHLETIC BIONIC DROID / MECHA AVIAN EDITION)")
     print(f"  • Mô hình vật lý MuJoCo : {'[SẴN SÀNG]' if v2_xml.exists() else '[CHƯA TẠO]'} ({v2_xml.name})")
+    print(f"  • Checkpoint tốt nhất   : {'[CÓ SẴN]' if v2_best_ckpt.exists() else '[CHƯA CÓ]'} ({v2_best_ckpt.name})")
     print(f"  • Bản vẽ lắp ráp 3D CAD : {'[SẴN SÀNG]' if v2_cad.exists() else '[CHƯA XUẤT]'} ({v2_cad.name})")
     print(f"  • Gói 17 File STL In 3D : {'[SẴN SÀNG]' if v2_zip.exists() else '[CHƯA NÉN]'} ({v2_zip.name})")
     print("  • Tiếp xúc sàn          : Phẳng tuyệt đối tại Z = 0.000m (Khớp cổ các-đăng & bàn chân 50mm)")
@@ -200,8 +202,25 @@ def cmd_train(args: argparse.Namespace) -> int:
     if getattr(args, "target", None) and args.target in target_models:
         cmd.extend(["--model-path", str(target_models[args.target])])
 
+    if getattr(args, "target", None) == "v2":
+        cmd.extend([
+            "--save-path", str(REPO_ROOT / "models" / "checkpoints" / "cyberduck_v2_ppo.pt"),
+            "--best-save-path", str(REPO_ROOT / "models" / "checkpoints" / "cyberduck_v2_best.pt")
+        ])
+
     if args.resume:
-        if Path(str(args.resume)).exists() or str(args.resume).lower() not in ("true", "1"):
+        resume_val = str(args.resume).strip()
+        is_bool = (args.resume is True) or (resume_val.lower() in ("true", "1"))
+        if is_bool and getattr(args, "target", None) == "v2":
+            v2_best = REPO_ROOT / "models" / "checkpoints" / "cyberduck_v2_best.pt"
+            v1_best = REPO_ROOT / "models" / "checkpoints" / "microduck_best.pt"
+            if v2_best.exists():
+                cmd.extend(["--load-checkpoint", str(v2_best)])
+            elif v1_best.exists():
+                cmd.extend(["--load-checkpoint", str(v1_best)])
+            else:
+                cmd.append("--resume")
+        elif not is_bool and (Path(resume_val).exists() or resume_val.endswith(".pt")):
             cmd.extend(["--load-checkpoint", str(args.resume)])
         else:
             cmd.append("--resume")
@@ -262,7 +281,7 @@ def main() -> int:
     p_train.add_argument("--target", choices=["rpi5", "pizero2w", "esp32", "v2"], default="rpi5", help="Nhánh phần cứng/mô hình mục tiêu (rpi5, pizero2w, esp32, v2 - mặc định: rpi5)")
     p_train.add_argument("--envs", type=int, default=256, help="Số lượng môi trường song song (mặc định: 256)")
     p_train.add_argument("--iterations", type=int, default=500, help="Số vòng lặp huấn luyện (mặc định: 500)")
-    p_train.add_argument("--resume", type=str, default=None, help="Tiếp tục học từ checkpoint")
+    p_train.add_argument("--resume", type=str, default=None, nargs="?", const="true", help="Tiếp tục học từ checkpoint")
     p_train.add_argument("--stand-first", action="store_true", help="Ưu tiên học đứng thăng bằng trước")
     p_train.add_argument("--dry-run", action="store_true", help="Chạy kiểm thử nhanh 1 vòng lặp (Dry-run)")
 
