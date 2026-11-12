@@ -618,7 +618,7 @@ def train_ppo(
             print_interval = max(1, min(log_interval, max_iterations))
             if verbose and (iteration % print_interval == 0 or iteration == 1 or iteration == max_iterations):
                 print(
-                    f"[Iteration {iteration:03d}/{max_iterations}] "
+                    f"[Iteration {iteration:04d}/{max_iterations}] "
                     f"Stage: {current_stage} | "
                     f"EpLen: {mean_ep_len:5.1f}/500 | "
                     f"DistX: {mean_dist_x:4.2f}m | "
@@ -626,7 +626,8 @@ def train_ppo(
                     f"Reward: {metrics['mean_reward']:+.3f} | "
                     f"PiLoss: {metrics['policy_loss']:.4f} | "
                     f"ValLoss: {metrics['value_loss']:.4f} | "
-                    f"FPS: {iter_fps:.0f}"
+                    f"FPS: {iter_fps:.0f}",
+                    flush=True,
                 )
 
             # Check for historical best model (Reward and DistX peak without policy collapse)
