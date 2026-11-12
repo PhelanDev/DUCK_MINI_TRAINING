@@ -72,8 +72,8 @@ def superellipsoid(rx, ry, rz, r=0.4, s=0.4, center=(0, 0, 0), rot_mat=None, n_u
             p1 = i * n_u + (j + 1)
             p2 = (i + 1) * n_u + j
             p3 = (i + 1) * n_u + (j + 1)
-            tris.append([verts[p0], verts[p1], verts[p2]])
-            tris.append([verts[p1], verts[p3], verts[p2]])
+            tris.append([verts[p0], verts[p2], verts[p1]])
+            tris.append([verts[p1], verts[p2], verts[p3]])
     return np.array(tris, dtype=np.float32)
 
 def filleted_cylinder(r, half_length, fillet=0.002, center=(0, 0, 0), axis='z', n_theta=32, n_z=16):
@@ -240,7 +240,7 @@ def generate_panoramic_visor():
         ib0 = n_pts + b0
         ib1 = n_pts + b1
         tris.append([all_verts[b0], all_verts[ib0], all_verts[b1]])
-        tris.append([all_verts[b1], all_verts[ib0], all_verts[b1]])
+        tris.append([all_verts[b1], all_verts[ib0], all_verts[ib1]])
 
     # Left & right side edges
     for i in range(n_z - 1):
@@ -249,7 +249,7 @@ def generate_panoramic_visor():
         l_in0 = n_pts + l_out0
         l_in1 = n_pts + l_out1
         tris.append([all_verts[l_out0], all_verts[l_in0], all_verts[l_out1]])
-        tris.append([all_verts[l_out1], all_verts[l_in0], all_verts[l_out1]])
+        tris.append([all_verts[l_out1], all_verts[l_in0], all_verts[l_in1]])
         r_out0 = i * n_theta + (n_theta - 1)
         r_out1 = (i + 1) * n_theta + (n_theta - 1)
         r_in0 = n_pts + r_out0
