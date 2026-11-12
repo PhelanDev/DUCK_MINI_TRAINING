@@ -1,0 +1,21 @@
+# Materials for CyberDuck V2 Mechanical Skeleton
+newmtl mat_chassis_titanium
+Ka 0.10 0.12 0.15
+Kd 0.45 0.50 0.58
+Ks 0.60 0.60 0.60
+Ns 45.0
+d 1.0
+
+newmtl mat_servo_body
+Ka 0.05 0.05 0.06
+Kd 0.18 0.18 0.20
+Ks 0.25 0.25 0.25
+Ns 20.0
+d 1.0
+
+newmtl mat_servo_horn_bronze
+Ka 0.16 0.11 0.04
+Kd 0.82 0.56 0.22
+Ks 0.75 0.65 0.40
+Ns 60.0
+d 1.0

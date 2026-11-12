@@ -92,7 +92,7 @@ def filleted_cylinder(r, half_length, fillet=0.002, center=(0, 0, 0), axis='z', 
     elif axis == 'y':
         X = r_mod * np.cos(Theta)
         Y = Z_rel
-        Z = r_mod * np.sin(Theta)
+        Z = -r_mod * np.sin(Theta)
     else:  # 'x'
         X = Z_rel
         Y = r_mod * np.cos(Theta)
@@ -107,8 +107,8 @@ def filleted_cylinder(r, half_length, fillet=0.002, center=(0, 0, 0), axis='z', 
             p1 = i * n_theta + (j + 1)
             p2 = (i + 1) * n_theta + j
             p3 = (i + 1) * n_theta + (j + 1)
-            tris.append([verts[p0], verts[p2], verts[p1]])
-            tris.append([verts[p1], verts[p2], verts[p3]])
+            tris.append([verts[p0], verts[p1], verts[p2]])
+            tris.append([verts[p1], verts[p3], verts[p2]])
 
     # Caps
     c_bot = np.array(center) + (np.array([-half_length, 0, 0]) if axis=='x' else (np.array([0, -half_length, 0]) if axis=='y' else np.array([0, 0, -half_length])))
@@ -305,8 +305,8 @@ def generate_sculpted_chest():
     pelvis = superellipsoid(0.022, 0.024, 0.014, r=0.35, s=0.35, center=(0.006, 0, -0.024))
     
     # Flared Pelvic Hip Sockets (Hốc khớp hông bao bọc kín ổ bi háng)
-    hip_socket_l = superellipsoid(0.018, 0.011, 0.014, r=0.30, s=0.30, center=(0.005, 0.030, -0.022))
-    hip_socket_r = superellipsoid(0.018, 0.011, 0.014, r=0.30, s=0.30, center=(0.005, -0.030, -0.022))
+    hip_socket_l = superellipsoid(0.016, 0.012, 0.014, r=0.30, s=0.30, center=(0.005, 0.036, -0.024))
+    hip_socket_r = superellipsoid(0.016, 0.012, 0.014, r=0.30, s=0.30, center=(0.005, -0.036, -0.024))
     
     return np.vstack([chest_block, collar, collar_lip, sh_l, sh_r, flank_l, flank_r, pelvis, hip_socket_l, hip_socket_r])
 
@@ -342,16 +342,16 @@ def generate_bionic_hip(side=+1):
     at (0, side*0.012, -0.015) [pitch axis Y].
     """
     # 1. Roll Pivot Core (centered at 0,0,0, axis X, fitting into pelvic hip socket)
-    roll_knuckle = filleted_cylinder(0.011, 0.007, fillet=0.0015, center=(0, 0, 0), axis='x')
+    roll_knuckle = filleted_cylinder(0.0085, 0.006, fillet=0.0015, center=(0, 0, 0), axis='x')
     
     # 2. Bionic Dogbone Link Arm (bridging 0,0,0 to 0, side*0.012, -0.015)
-    dogbone = superellipsoid(0.011, 0.008, 0.010, r=0.3, s=0.3, center=(0.001, side * 0.006, -0.0075))
+    dogbone = superellipsoid(0.010, 0.007, 0.009, r=0.3, s=0.3, center=(0.001, side * 0.006, -0.0075))
     
     # 3. Pitch Bearing Knuckle (at 0, side*0.012, -0.015, axis Y, where thigh attaches)
-    pitch_knuckle = filleted_cylinder(0.011, 0.006, fillet=0.0015, center=(0, side * 0.012, -0.015), axis='y')
+    pitch_knuckle = filleted_cylinder(0.0095, 0.0055, fillet=0.0015, center=(0, side * 0.012, -0.015), axis='y')
     
     # 4. Mechanical Accent Gusset
-    gusset = superellipsoid(0.009, 0.005, 0.008, r=0.25, s=0.25, center=(-0.002, side * 0.006, -0.0075))
+    gusset = superellipsoid(0.008, 0.0045, 0.007, r=0.25, s=0.25, center=(-0.002, side * 0.006, -0.0075))
     
     return np.vstack([roll_knuckle, dogbone, pitch_knuckle, gusset])
 
