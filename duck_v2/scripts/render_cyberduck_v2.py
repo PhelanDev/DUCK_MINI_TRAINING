@@ -1,19 +1,21 @@
 """
-Render high-resolution studio 3D views of CyberDuck V2.
+Render high-resolution studio 3D views of CyberDuck V2 with pristine studio PBR lighting.
 """
 import os
 import shutil
+from pathlib import Path
 import mujoco
 import numpy as np
 from PIL import Image
 
 def render_v2():
-    media_dir = "duck_v2/media"
-    os.makedirs(media_dir, exist_ok=True)
-    brain_dir = r"C:\Users\LEGION\.gemini\antigravity\brain\eac089d5-7756-4b70-896e-d09247ae73c7"
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    v2_dir = repo_root / "duck_v2"
+    media_dir = v2_dir / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
 
-    xml_path = "duck_v2/cyberduck_v2.xml"
-    model = mujoco.MjModel.from_xml_path(xml_path)
+    xml_path = v2_dir / "cyberduck_v2.xml"
+    model = mujoco.MjModel.from_xml_path(str(xml_path))
     data = mujoco.MjData(model)
 
     # Compute transforms
@@ -26,6 +28,15 @@ def render_v2():
     data.qpos[3:7] = [1, 0, 0, 0]
     mujoco.mj_forward(model, data)
 
+    # Configure studio visual options: hide collision hulls (grp 3) and sensory sites (grp 4)
+    opt = mujoco.MjvOption()
+    opt.geomgroup[0] = 1
+    opt.geomgroup[1] = 1
+    opt.geomgroup[2] = 1
+    opt.geomgroup[3] = 0
+    opt.sitegroup[4] = 0
+    opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
+
     renderer = mujoco.Renderer(model, width=1024, height=768)
 
     # 1. Isometric 3D
@@ -34,12 +45,10 @@ def render_v2():
     cam_iso.distance = 0.46
     cam_iso.azimuth = 135
     cam_iso.elevation = -18
-    renderer.update_scene(data, camera=cam_iso)
+    renderer.update_scene(data, camera=cam_iso, scene_option=opt)
     img_iso = renderer.render()
-    p_iso = os.path.join(media_dir, "cyberduck_v2_iso.png")
-    Image.fromarray(img_iso).save(p_iso)
-    if os.path.exists(brain_dir):
-        shutil.copy2(p_iso, os.path.join(brain_dir, "cyberduck_v2_iso.png"))
+    p_iso = media_dir / "cyberduck_v2_iso.png"
+    Image.fromarray(img_iso).save(str(p_iso))
     print(f"Rendered: {p_iso}")
 
     # 2. Front 3D
@@ -48,12 +57,10 @@ def render_v2():
     cam_front.distance = 0.44
     cam_front.azimuth = 180
     cam_front.elevation = -10
-    renderer.update_scene(data, camera=cam_front)
+    renderer.update_scene(data, camera=cam_front, scene_option=opt)
     img_front = renderer.render()
-    p_front = os.path.join(media_dir, "cyberduck_v2_front.png")
-    Image.fromarray(img_front).save(p_front)
-    if os.path.exists(brain_dir):
-        shutil.copy2(p_front, os.path.join(brain_dir, "cyberduck_v2_front.png"))
+    p_front = media_dir / "cyberduck_v2_front.png"
+    Image.fromarray(img_front).save(str(p_front))
     print(f"Rendered: {p_front}")
 
     # 3. Side Profile
@@ -62,12 +69,10 @@ def render_v2():
     cam_side.distance = 0.44
     cam_side.azimuth = 90
     cam_side.elevation = -10
-    renderer.update_scene(data, camera=cam_side)
+    renderer.update_scene(data, camera=cam_side, scene_option=opt)
     img_side = renderer.render()
-    p_side = os.path.join(media_dir, "cyberduck_v2_side.png")
-    Image.fromarray(img_side).save(p_side)
-    if os.path.exists(brain_dir):
-        shutil.copy2(p_side, os.path.join(brain_dir, "cyberduck_v2_side.png"))
+    p_side = media_dir / "cyberduck_v2_side.png"
+    Image.fromarray(img_side).save(str(p_side))
     print(f"Rendered: {p_side}")
 
     # 4. Chest & Reactor Closeup
@@ -76,12 +81,10 @@ def render_v2():
     cam_wing.distance = 0.22
     cam_wing.azimuth = 145
     cam_wing.elevation = -12
-    renderer.update_scene(data, camera=cam_wing)
+    renderer.update_scene(data, camera=cam_wing, scene_option=opt)
     img_wing = renderer.render()
-    p_wing = os.path.join(media_dir, "cyberduck_v2_wing_closeup.png")
-    Image.fromarray(img_wing).save(p_wing)
-    if os.path.exists(brain_dir):
-        shutil.copy2(p_wing, os.path.join(brain_dir, "cyberduck_v2_wing_closeup.png"))
+    p_wing = media_dir / "cyberduck_v2_wing_closeup.png"
+    Image.fromarray(img_wing).save(str(p_wing))
     print(f"Rendered: {p_wing}")
 
     # 5. Foot Closeup
@@ -90,12 +93,10 @@ def render_v2():
     cam_foot.distance = 0.20
     cam_foot.azimuth = 145
     cam_foot.elevation = -22
-    renderer.update_scene(data, camera=cam_foot)
+    renderer.update_scene(data, camera=cam_foot, scene_option=opt)
     img_foot = renderer.render()
-    p_foot = os.path.join(media_dir, "cyberduck_v2_foot_closeup.png")
-    Image.fromarray(img_foot).save(p_foot)
-    if os.path.exists(brain_dir):
-        shutil.copy2(p_foot, os.path.join(brain_dir, "cyberduck_v2_foot_closeup.png"))
+    p_foot = media_dir / "cyberduck_v2_foot_closeup.png"
+    Image.fromarray(img_foot).save(str(p_foot))
     print(f"Rendered: {p_foot}")
 
     # 5b. Neck Joint Closeup
@@ -104,12 +105,10 @@ def render_v2():
     cam_neck.distance = 0.16
     cam_neck.azimuth = 145
     cam_neck.elevation = -5
-    renderer.update_scene(data, camera=cam_neck)
+    renderer.update_scene(data, camera=cam_neck, scene_option=opt)
     img_neck = renderer.render()
-    p_neck = os.path.join(media_dir, "cyberduck_v2_neck_closeup.png")
-    Image.fromarray(img_neck).save(p_neck)
-    if os.path.exists(brain_dir):
-        shutil.copy2(p_neck, os.path.join(brain_dir, "cyberduck_v2_neck_closeup.png"))
+    p_neck = media_dir / "cyberduck_v2_neck_closeup.png"
+    Image.fromarray(img_neck).save(str(p_neck))
     print(f"Rendered: {p_neck}")
 
     # 6. Exploded View 3D
@@ -139,12 +138,10 @@ def render_v2():
     cam_exp.distance = 0.52
     cam_exp.azimuth = 135
     cam_exp.elevation = -18
-    renderer.update_scene(data, camera=cam_exp)
+    renderer.update_scene(data, camera=cam_exp, scene_option=opt)
     img_exp = renderer.render()
-    p_exp = os.path.join(media_dir, "cyberduck_v2_exploded.png")
-    Image.fromarray(img_exp).save(p_exp)
-    if os.path.exists(brain_dir):
-        shutil.copy2(p_exp, os.path.join(brain_dir, "cyberduck_v2_exploded.png"))
+    p_exp = media_dir / "cyberduck_v2_exploded.png"
+    Image.fromarray(img_exp).save(str(p_exp))
     print(f"Rendered: {p_exp}")
 
 if __name__ == "__main__":
