@@ -64,8 +64,8 @@
     <body name="trunk_base" pos="0 0 0.125" childclass="cyberduck_v2">
       <freejoint name="trunk_freejoint" />
       <inertial pos="0.002 0.000 -0.012" mass="0.36" diaginertia="0.00038 0.00048 0.00032" />
-      <site name="imu" pos="0 0 0" size="0.005" rgba="1 0 0 1" />
-      <site name="imu_site" pos="0 0 0" size="0.005" rgba="1 0 0 1" />
+      <site name="imu" pos="0 0 0" size="0.005" rgba="0 0 0 0" group="4" />
+      <site name="imu_site" pos="0 0 0" size="0.005" rgba="0 0 0 0" group="4" />
 
       <!-- Chest Armor, Reactor Core, Thruster Backpack -->
       <geom type="mesh" mesh="cyber_chest" material="mecha_white" class="visual" />
@@ -95,11 +95,11 @@
           <site name="camera_site" pos="0.040 0 0.022" size="0.003" rgba="0 1 0 0" />
 
           <!-- 5-Ray ToF LiDAR Scanner: horizontal fan [-30°, -15°, 0°, +15°, +30°] -->
-          <site name="site_lidar_m30" pos="0.040 0 0.030" zaxis="0.866025 -0.5 0" size="0.003" rgba="1 0 0 0.8"/>
-          <site name="site_lidar_m15" pos="0.040 0 0.030" zaxis="0.965926 -0.258819 0" size="0.003" rgba="1 0.3 0 0.8"/>
-          <site name="site_lidar_0" pos="0.040 0 0.030" zaxis="1 0 0" size="0.003" rgba="1 1 0 0.8"/>
-          <site name="site_lidar_p15" pos="0.040 0 0.030" zaxis="0.965926 0.258819 0" size="0.003" rgba="0 1 0 0.8"/>
-          <site name="site_lidar_p30" pos="0.040 0 0.030" zaxis="0.866025 0.5 0" size="0.003" rgba="0 0 1 0.8"/>
+          <site name="site_lidar_m30" pos="0.025 0 0.022" zaxis="0.866025 -0.5 0" size="0.003" rgba="0 0 0 0" group="4"/>
+          <site name="site_lidar_m15" pos="0.025 0 0.022" zaxis="0.965926 -0.258819 0" size="0.003" rgba="0 0 0 0" group="4"/>
+          <site name="site_lidar_0" pos="0.025 0 0.022" zaxis="1 0 0" size="0.003" rgba="0 0 0 0" group="4"/>
+          <site name="site_lidar_p15" pos="0.025 0 0.022" zaxis="0.965926 0.258819 0" size="0.003" rgba="0 0 0 0" group="4"/>
+          <site name="site_lidar_p30" pos="0.025 0 0.022" zaxis="0.866025 0.5 0" size="0.003" rgba="0 0 0 0" group="4"/>
         </body>
       </body>
 
@@ -124,7 +124,7 @@
 
             <body name="left_foot" pos="0.004 0 -0.036">
               <inertial pos="0.005 0 0.006" mass="0.038" diaginertia="0.00002 0.00002 0.00002" />
-              <site name="left_foot_touch_site" pos="0.005 0 -0.004" size="0.025 0.013 0.004" type="box" rgba="0 1 1 0" />
+              <site name="left_foot_touch_site" pos="0.005 0 -0.004" size="0.025 0.013 0.004" type="box" rgba="0 0 0 0" group="4" />
               <!-- 3-Claw Tactical Gold Foot & Rubber Tread Sole -->
               <geom type="mesh" mesh="cyber_foot_left" material="mecha_gold" class="visual" />
               <geom name="left_sole_geom" type="box" size="0.025 0.013 0.004" pos="0.005 0 -0.004" friction="1.5 0.01 0.0005" solref="0.005 1" solimp="0.9 0.95 0.001 0.5 2" class="collision" />
@@ -155,7 +155,7 @@
 
             <body name="right_foot" pos="0.004 0 -0.036">
               <inertial pos="0.005 0 0.006" mass="0.038" diaginertia="0.00002 0.00002 0.00002" />
-              <site name="right_foot_touch_site" pos="0.005 0 -0.004" size="0.025 0.013 0.004" type="box" rgba="0 1 1 0" />
+              <site name="right_foot_touch_site" pos="0.005 0 -0.004" size="0.025 0.013 0.004" type="box" rgba="0 0 0 0" group="4" />
               <!-- 3-Claw Tactical Gold Foot & Rubber Tread Sole -->
               <geom type="mesh" mesh="cyber_foot_right" material="mecha_gold" class="visual" />
               <geom name="right_sole_geom" type="box" size="0.025 0.013 0.004" pos="0.005 0 -0.004" friction="1.5 0.01 0.0005" solref="0.005 1" solimp="0.9 0.95 0.001 0.5 2" class="collision" />
