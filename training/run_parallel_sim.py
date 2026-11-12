@@ -135,6 +135,7 @@ class ParallelSimRunner:
         self.episode_steps = np.zeros(self.num_envs, dtype=np.int32)
         self.completed_ep_lens: deque = deque(maxlen=100)
         self.completed_distances_x: deque = deque(maxlen=100)
+        self.completed_distances_y: deque = deque(maxlen=100)
         self.feet_air_time = np.zeros((self.num_envs, 2), dtype=np.float32)
         self.last_feet_contact = np.ones((self.num_envs, 2), dtype=bool)
         self.double_support_time = np.zeros(self.num_envs, dtype=np.float32)
@@ -494,8 +495,8 @@ class ParallelSimRunner:
                 mujoco.mj_step(self.model, d)
 
     def step(
-        self, actions: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+        self, actions: np.ndarray, fast: bool = False
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Any]:
         """Step all environments by one control step with given normalized actions.
 
         Returns: (next_observations, rewards, dones, infos)
@@ -750,6 +751,24 @@ class ParallelSimRunner:
             rewards[fallen] += fall_penalty
 
         dones = fallen | timeouts
+        time_outs = timeouts & ~fallen
+
+        self.last_actions[:] = actions
+
+        if fast:
+            terminal_obs = next_obs[time_outs].copy() if np.any(time_outs) else np.empty((0, self.obs_dim), dtype=np.float32)
+            if np.any(dones):
+                for i in np.where(dones)[0]:
+                    self.completed_ep_lens.append(int(self.episode_steps[i]))
+                    self.completed_distances_x.append(float(root_x[i]))
+                    self.completed_distances_y.append(float(root_y[i]))
+                    next_obs[i] = self.reset_env(i)
+            fast_info = {
+                "time_outs": time_outs,
+                "tracking_lin_vel": float(np.mean(reward_dict["tracking_lin_vel"])) if "tracking_lin_vel" in reward_dict else 0.0,
+                "terminal_obs": terminal_obs,
+            }
+            return next_obs, rewards, dones, fast_info
 
         # Maintain per-env info dictionary list for diagnostic logging / evaluation
         infos: List[Dict[str, Any]] = [
@@ -758,7 +777,7 @@ class ParallelSimRunner:
         ]
         for i in range(self.num_envs):
             infos[i]["timeout"] = bool(timeouts[i])
-            infos[i]["time_outs"] = bool(timeouts[i] and not fallen[i])
+            infos[i]["time_outs"] = bool(time_outs[i])
             infos[i]["edge_fallen"] = bool(edge_fallen[i])
             infos[i]["corridor_fallen"] = bool(corridor_fallen[i])
             infos[i]["yaw_fallen"] = bool(yaw_fallen[i])
@@ -770,11 +789,11 @@ class ParallelSimRunner:
                 infos[i]["recovering"] = bool(self.recovery_controllers[i].is_recovering)
                 infos[i]["recovery_state"] = int(self.recovery_controllers[i].state)
 
-        self.last_actions[:] = actions
         if np.any(dones):
             for i in np.where(dones)[0]:
                 self.completed_ep_lens.append(int(self.episode_steps[i]))
                 self.completed_distances_x.append(float(root_x[i]))
+                self.completed_distances_y.append(float(root_y[i]))
                 infos[i]["episode_length"] = int(self.episode_steps[i])
                 infos[i]["distance_x"] = float(root_x[i])
                 infos[i]["episode_distance_y"] = float(root_y[i])
@@ -782,6 +801,12 @@ class ParallelSimRunner:
                 next_obs[i] = self.reset_env(i)
 
         return next_obs, rewards, dones, infos
+
+    def step_arrays(
+        self, actions: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+        """Fast vectorized step returning NumPy arrays directly without per-env dict allocations."""
+        return self.step(actions, fast=True)
 
     def get_mean_episode_length(self) -> float:
         """Return average episode length from completed episodes window (or current steps if empty)."""
@@ -794,6 +819,12 @@ class ParallelSimRunner:
         if len(self.completed_distances_x) > 0:
             return float(np.mean(self.completed_distances_x))
         return float(np.mean([d.qpos[0] for d in self.datas]))
+
+    def get_mean_distance_y(self) -> float:
+        """Return average lateral distance along Y from completed episodes window (or current positions if empty)."""
+        if len(self.completed_distances_y) > 0:
+            return float(np.mean(self.completed_distances_y))
+        return float(np.mean([d.qpos[1] for d in self.datas]))
 
     def get_success_rate(self, min_dist: float = 1.5) -> float:
         """Return proportion of completed episodes that achieved at least min_dist along X."""

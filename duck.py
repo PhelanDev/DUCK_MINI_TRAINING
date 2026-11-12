@@ -184,7 +184,9 @@ def cmd_view(args: argparse.Namespace) -> int:
 
 def cmd_train(args: argparse.Namespace) -> int:
     """Launch PPO reinforcement learning training pipeline."""
-    iters = args.iterations if args.iterations is not None else (1 if getattr(args, "dry_run", False) else 500)
+    iters = getattr(args, "iterations", getattr(args, "iters", None))
+    if iters is None:
+        iters = 1 if getattr(args, "dry_run", False) else 500
     cmd = [
         sys.executable,
         str(REPO_ROOT / "scripts" / "train_ppo.py"),
@@ -213,9 +215,12 @@ def cmd_train(args: argparse.Namespace) -> int:
         resume_val = str(args.resume).strip()
         is_bool = (args.resume is True) or (resume_val.lower() in ("true", "1"))
         if is_bool and getattr(args, "target", None) == "v2":
+            v2_ppo = REPO_ROOT / "models" / "checkpoints" / "cyberduck_v2_ppo.pt"
             v2_best = REPO_ROOT / "models" / "checkpoints" / "cyberduck_v2_best.pt"
             v1_best = REPO_ROOT / "models" / "checkpoints" / "microduck_best.pt"
-            if v2_best.exists():
+            if v2_ppo.exists():
+                cmd.append("--resume")
+            elif v2_best.exists():
                 cmd.extend(["--load-checkpoint", str(v2_best)])
             elif v1_best.exists():
                 cmd.extend(["--load-checkpoint", str(v1_best)])

@@ -11,7 +11,7 @@ import math
 import os
 import sys
 import time
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -290,7 +290,8 @@ def train_ppo(
         best_save_path = Path(best_save_path).resolve()
         best_save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    latest_save_path = save_path.parent / "microduck_latest.pt"
+    latest_prefix = save_path.stem[:-4] if save_path.stem.endswith("_ppo") else save_path.stem
+    latest_save_path = save_path.parent / f"{latest_prefix}_latest.pt"
 
     # Historical best tracking
     best_reward = -float("inf")
@@ -351,6 +352,7 @@ def train_ppo(
     elif resume and save_path.exists():
         ckpt_to_load = save_path
 
+    loaded_iters = 0
     total_timesteps = 0
     if ckpt_to_load is not None:
         if ckpt_to_load.exists():
@@ -361,7 +363,7 @@ def train_ppo(
                 model.actor.load_state_dict(ckpt["actor_state_dict"])
                 if "critic_state_dict" in ckpt:
                     model.critic.load_state_dict(ckpt["critic_state_dict"])
-            if "optimizer_state_dict" in ckpt:
+            if "optimizer_state_dict" in ckpt and resume:
                 try:
                     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
                 except Exception:
@@ -370,9 +372,17 @@ def train_ppo(
             if loaded_stage > current_stage:
                 current_stage = loaded_stage
                 runner.set_stage(current_stage)
-            total_timesteps = ckpt.get("total_timesteps", 0)
+            if resume:
+                loaded_iters = int(ckpt.get("iterations", 0))
+                total_timesteps = int(ckpt.get("total_timesteps", 0))
+                if "best_reward" in ckpt:
+                    best_reward = max(best_reward, float(ckpt["best_reward"]))
+                if "best_distance_x" in ckpt:
+                    best_dist_x = max(best_dist_x, float(ckpt["best_distance_x"]))
+                best_stage = max(best_stage, current_stage)
             if verbose:
-                print(f"[PPO] Resumed training from checkpoint: {ckpt_to_load} (Stage {current_stage}, {total_timesteps} previous timesteps)")
+                mode_label = "Resumed training" if resume else "Transferred policy"
+                print(f"[PPO] {mode_label} from checkpoint: {ckpt_to_load} (Stage {current_stage}, {total_timesteps} previous timesteps, {loaded_iters} iters)")
         else:
             if verbose:
                 print(f"[PPO] Checkpoint {ckpt_to_load} not found. Starting training from scratch.")
@@ -394,7 +404,6 @@ def train_ppo(
     current_obs_np = runner.reset()
     current_obs = torch.as_tensor(current_obs_np, dtype=torch.float32, device=dev)
 
-    total_timesteps = 0
     start_time = time.perf_counter()
     metrics = {
         "policy_loss": 0.0,
@@ -404,8 +413,11 @@ def train_ppo(
         "mean_reward": 0.0,
     }
 
+    start_iteration = loaded_iters + 1
+    total_target_iters = loaded_iters + max_iterations
+
     try:
-        for iteration in range(1, max_iterations + 1):
+        for iteration in range(start_iteration, total_target_iters + 1):
             iter_start = time.perf_counter()
 
             # Smooth velocity warmup over first 15 iterations: stabilize early stepping balance
@@ -426,32 +438,46 @@ def train_ppo(
                 actions_np = actions.cpu().numpy()
                 actions_clamped = np.clip(actions_np, -1.0, 1.0)
 
-                next_obs_np, rewards_np, dones_np, infos = runner.step(actions_clamped)
-                step_lin_vels.append(float(np.mean([info.get("tracking_lin_vel", 0.0) for info in infos])))
+                if hasattr(runner, "step_arrays"):
+                    next_obs_np, rewards_np, dones_np, step_info = runner.step_arrays(actions_clamped)
+                    step_lin_vels.append(float(step_info["tracking_lin_vel"]))
+                    raw_step_rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
+                    raw_rewards_buffer[step] = raw_step_rewards
 
-                # Store raw unbootstrapped rewards for training metric logging
-                raw_step_rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
-                raw_rewards_buffer[step] = raw_step_rewards
+                    time_outs_np = step_info["time_outs"]
+                    if np.any(time_outs_np):
+                        timeout_mask = torch.as_tensor(time_outs_np, dtype=torch.bool, device=dev)
+                        terminal_obs_tensor = torch.as_tensor(step_info["terminal_obs"], dtype=torch.float32, device=dev)
+                        with torch.no_grad():
+                            terminal_values = model.forward_critic(terminal_obs_tensor)
+                        step_rewards = apply_timeout_bootstrap(
+                            raw_step_rewards, timeout_mask, terminal_values, gamma=gamma
+                        )
+                    else:
+                        step_rewards = raw_step_rewards
+                else:
+                    next_obs_np, rewards_np, dones_np, infos = runner.step(actions_clamped)
+                    step_lin_vels.append(float(np.mean([info.get("tracking_lin_vel", 0.0) for info in infos])))
+                    raw_step_rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
+                    raw_rewards_buffer[step] = raw_step_rewards
 
-                # Time-limit value bootstrapping: add gamma * V(s_terminal) for truncated envs (used for GAE advantage computation)
-                step_rewards = raw_step_rewards.clone()
-                timeout_mask = torch.tensor(
-                    [info.get("time_outs", False) for info in infos],
-                    dtype=torch.bool,
-                    device=dev,
-                )
-
-                if timeout_mask.any():
-                    timeout_indices = torch.where(timeout_mask)[0]
-                    terminal_obs_list = [infos[idx.item()]["terminal_obs"] for idx in timeout_indices]
-                    terminal_obs_tensor = torch.as_tensor(
-                        np.stack(terminal_obs_list), dtype=torch.float32, device=dev
+                    step_rewards = raw_step_rewards.clone()
+                    timeout_mask = torch.tensor(
+                        [info.get("time_outs", False) for info in infos],
+                        dtype=torch.bool,
+                        device=dev,
                     )
-                    with torch.no_grad():
-                        terminal_values = model.forward_critic(terminal_obs_tensor)
-                    step_rewards = apply_timeout_bootstrap(
-                        step_rewards, timeout_mask, terminal_values, gamma=gamma
-                    )
+                    if timeout_mask.any():
+                        timeout_indices = torch.where(timeout_mask)[0]
+                        terminal_obs_list = [infos[idx.item()]["terminal_obs"] for idx in timeout_indices]
+                        terminal_obs_tensor = torch.as_tensor(
+                            np.stack(terminal_obs_list), dtype=torch.float32, device=dev
+                        )
+                        with torch.no_grad():
+                            terminal_values = model.forward_critic(terminal_obs_tensor)
+                        step_rewards = apply_timeout_bootstrap(
+                            step_rewards, timeout_mask, terminal_values, gamma=gamma
+                        )
 
                 # Store into buffers
                 obs_buffer[step] = current_obs
@@ -560,6 +586,7 @@ def train_ppo(
             # Evaluate terrain & obstacle curriculum progression
             mean_ep_len = runner.get_mean_episode_length()
             mean_dist_x = runner.get_mean_distance_x()
+            mean_dist_y = runner.get_mean_distance_y() if hasattr(runner, "get_mean_distance_y") else 0.0
             stage_req_dist = STAGE_MIN_DISTANCE_X.get(current_stage, 0.8)
             cohort_success_rate = runner.get_success_rate(stage_req_dist)
             rew_lin_vel_ratio = float(np.mean(step_lin_vels)) if step_lin_vels else 0.0
@@ -574,6 +601,7 @@ def train_ppo(
                     mean_distance_x=mean_dist_x,
                     min_distance_x=stage_req_dist,
                     success_rate=cohort_success_rate,
+                    mean_distance_y=mean_dist_y,
                 )
                 if new_stage != current_stage:
                     current_stage = new_stage
@@ -590,6 +618,7 @@ def train_ppo(
                     mean_distance_x=mean_dist_x,
                     min_distance_x=stage_req_dist,
                     success_rate=cohort_success_rate,
+                    mean_distance_y=mean_dist_y,
                 )
                 if new_stage != current_stage:
                     current_stage = new_stage
@@ -610,15 +639,16 @@ def train_ppo(
             metrics["mean_reward"] = float(raw_rewards_buffer.mean().item())
             metrics["bootstrapped_mean_reward"] = float(rewards_buffer.mean().item())
             metrics["mean_distance_x"] = float(mean_dist_x)
+            metrics["mean_distance_y"] = float(mean_dist_y)
             metrics["success_rate"] = float(cohort_success_rate)
             metrics["stage"] = current_stage
             metrics["hold_count"] = hold_count
 
             iter_fps = batch_size / max(1e-6, (time.perf_counter() - iter_start))
             print_interval = max(1, min(log_interval, max_iterations))
-            if verbose and (iteration % print_interval == 0 or iteration == 1 or iteration == max_iterations):
+            if verbose and (iteration % print_interval == 0 or iteration == start_iteration or iteration == total_target_iters):
                 print(
-                    f"[Iteration {iteration:04d}/{max_iterations}] "
+                    f"[Iteration {iteration:04d}/{total_target_iters}] "
                     f"Stage: {current_stage} | "
                     f"EpLen: {mean_ep_len:5.1f}/500 | "
                     f"DistX: {mean_dist_x:4.2f}m | "
@@ -711,7 +741,7 @@ def train_ppo(
             "obs_dim": obs_dim,
             "action_dim": action_dim,
             "hidden_dim": hidden_dim,
-            "iterations": max_iterations,
+            "iterations": total_target_iters,
             "stage": current_stage,
             "total_timesteps": total_timesteps,
             "elapsed_seconds": elapsed_total,
@@ -731,7 +761,7 @@ def train_ppo(
 
     return {
         "success": True,
-        "iterations": max_iterations,
+        "iterations": total_target_iters,
         "total_timesteps": total_timesteps,
         "checkpoint_path": str(save_path),
         "latest_checkpoint_path": str(latest_save_path),
