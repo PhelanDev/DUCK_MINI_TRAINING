@@ -201,7 +201,10 @@ def cmd_train(args: argparse.Namespace) -> int:
         cmd.extend(["--model-path", str(target_models[args.target])])
 
     if args.resume:
-        cmd.extend(["--resume", str(args.resume)])
+        if Path(str(args.resume)).exists() or str(args.resume).lower() not in ("true", "1"):
+            cmd.extend(["--load-checkpoint", str(args.resume)])
+        else:
+            cmd.append("--resume")
     if args.stand_first:
         cmd.append("--stand-first")
     if getattr(args, "dry_run", False):
