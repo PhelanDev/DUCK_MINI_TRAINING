@@ -21,9 +21,9 @@
 
   <asset>
     <!-- Materials with realistic PBR shine and emissive glow -->
-    <material name="mecha_white" rgba="0.96 0.97 0.99 1.0" specular="0.6" shininess="0.85" reflectance="0.10" />
+    <material name="mecha_white" rgba="0.96 0.97 0.99 1.0" specular="0.6" shininess="0.85" />
     <material name="mecha_carbon" rgba="0.18 0.20 0.24 1.0" specular="0.4" shininess="0.5" />
-    <material name="mecha_gold" rgba="0.96 0.74 0.14 1.0" specular="0.85" shininess="0.90" reflectance="0.20" />
+    <material name="mecha_gold" rgba="0.96 0.74 0.14 1.0" specular="0.85" shininess="0.90" />
     <material name="mecha_cyan_glow" rgba="0.0 0.92 1.0 1.0" specular="0.9" shininess="1.0" emission="0.8" />
     <material name="mecha_thruster" rgba="0.22 0.25 0.30 1.0" specular="0.5" shininess="0.6" />
     <material name="mecha_sole_rubber" rgba="0.12 0.13 0.15 1.0" specular="0.1" />

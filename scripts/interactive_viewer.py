@@ -806,16 +806,24 @@ def run_interactive_viewer(
             configure_viewer_camera(viewer.cam)
             # Track the robot base so the duck stays centered in view as it moves
             duck_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
+            if duck_body_id == -1:
+                duck_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "trunk_base")
             if duck_body_id != -1:
                 viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
                 viewer.cam.trackbodyid = duck_body_id
-                viewer.cam.distance = 1.4
-                viewer.cam.elevation = -20.0
+                viewer.cam.distance = 1.2
+                viewer.cam.elevation = -18.0
                 viewer.cam.azimuth = 135.0
 
-            # Ensure geom groups 0, 1, 2, 3 are all active for rendering
-            for g_idx in range(4):
-                viewer.opt.geomgroup[g_idx] = 1
+            # Render visual geoms (0: environment, 1: dynamic, 2: visual meshes)
+            # Group 3 is collision hull: keep OFF by default to eliminate semi-transparent ghosting / X-ray overlay
+            viewer.opt.geomgroup[0] = 1
+            viewer.opt.geomgroup[1] = 1
+            viewer.opt.geomgroup[2] = 1
+            # Only enable group 3 for baseline model when stage >= 2 (where stairs are assigned to group 3)
+            is_v2 = "cyberduck_v2" in str(model_path).lower()
+            viewer.opt.geomgroup[3] = 0 if is_v2 else (1 if stage >= 2 else 0)
+            viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
             viewer.sync()
 
             start_wall_time = time.time()
