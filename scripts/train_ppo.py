@@ -260,6 +260,10 @@ def train_ppo(
     stand_first: bool = False,
     friction_min: float = 1.1,
     friction_max: float = 1.6,
+    target_kl: float = 0.015,
+    min_lr: float = 1e-5,
+    max_lr: float = 1e-3,
+    entropy_coef_end: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Execute PPO training pipeline using ParallelSimRunner."""
     if device is None:
@@ -350,7 +354,13 @@ def train_ppo(
 
     # Instantiate ActorCritic network & Adam optimizer
     model = ActorCritic(obs_dim=obs_dim, action_dim=action_dim, hidden_dim=hidden_dim).to(dev)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, eps=1e-5)
+    current_lr = float(learning_rate)
+    eff_entropy_end = (
+        float(entropy_coef_end)
+        if entropy_coef_end is not None
+        else min(float(entropy_coef), 0.002)
+    )
+    optimizer = optim.Adam(model.parameters(), lr=current_lr, eps=1e-5)
 
     # Resume from checkpoint if requested or exists
     ckpt_to_load = None
@@ -387,6 +397,12 @@ def train_ppo(
                 if "best_distance_x" in ckpt:
                     best_dist_x = max(best_dist_x, float(ckpt["best_distance_x"]))
                 best_stage = max(best_stage, current_stage)
+                if "learning_rate" in ckpt:
+                    current_lr = float(ckpt["learning_rate"])
+                    if target_kl > 0:
+                        current_lr = min(max_lr, max(min_lr, current_lr))
+                for pg in optimizer.param_groups:
+                    pg["lr"] = current_lr
             if verbose:
                 mode_label = "Resumed training" if resume else "Transferred policy"
                 print(f"[PPO] {mode_label} from checkpoint: {ckpt_to_load} (Stage {current_stage}, {total_timesteps} previous timesteps, {loaded_iters} iters)")
@@ -412,12 +428,21 @@ def train_ppo(
     current_obs = torch.as_tensor(current_obs_np, dtype=torch.float32, device=dev)
 
     start_time = time.perf_counter()
+    with torch.no_grad():
+        initial_action_std = float(
+            torch.exp(torch.clamp(model.log_std, model.min_log_std, model.max_log_std)).mean().item()
+        )
+
     metrics = {
         "policy_loss": 0.0,
         "value_loss": 0.0,
         "entropy": 0.0,
         "total_loss": 0.0,
         "mean_reward": 0.0,
+        "approx_kl": 0.0,
+        "learning_rate": current_lr,
+        "entropy_coef": float(entropy_coef),
+        "action_std_mean": initial_action_std,
     }
 
     start_iteration = loaded_iters + 1
@@ -426,6 +451,13 @@ def train_ppo(
     try:
         for iteration in range(start_iteration, total_target_iters + 1):
             iter_start = time.perf_counter()
+
+            progress = (
+                0.0
+                if total_target_iters <= 1
+                else min(1.0, max(0.0, (iteration - 1) / (total_target_iters - 1)))
+            )
+            current_entropy_coef = float(entropy_coef) + (eff_entropy_end - float(entropy_coef)) * progress
 
             # Smooth velocity warmup over first 15 iterations: stabilize early stepping balance
             if not stand_first and iteration <= 15:
@@ -519,7 +551,6 @@ def train_ppo(
             b_log_probs = log_probs_buffer.reshape(-1)
             b_advantages = advantages.reshape(-1)
             b_returns = returns.reshape(-1)
-            b_values = values_buffer.reshape(-1)
 
             # Normalize advantages
             b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
@@ -534,10 +565,13 @@ def train_ppo(
             epoch_policy_loss = 0.0
             epoch_value_loss = 0.0
             epoch_entropy = 0.0
+            total_kl_sum = 0.0
             update_count = 0
 
             for _ in range(num_epochs):
                 np.random.shuffle(indices)
+                epoch_kl_sum = 0.0
+                epoch_batches = 0
                 for start_idx in range(0, num_samples, mini_batch_size):
                     end_idx = min(start_idx + mini_batch_size, num_samples)
                     mb_inds = indices[start_idx:end_idx]
@@ -548,6 +582,13 @@ def train_ppo(
 
                     log_ratio = new_log_probs - b_log_probs[mb_inds]
                     ratio = torch.exp(log_ratio)
+
+                    with torch.no_grad():
+                        approx_kl = ((ratio - 1.0) - log_ratio).mean()
+                    kl_val = float(approx_kl.item())
+                    epoch_kl_sum += kl_val
+                    epoch_batches += 1
+                    total_kl_sum += kl_val
 
                     # PPO Clipped Surrogate Loss
                     mb_adv = b_advantages[mb_inds]
@@ -564,7 +605,7 @@ def train_ppo(
                     total_loss = (
                         policy_loss
                         + value_loss_coef * value_loss
-                        - entropy_coef * entropy_mean
+                        - current_entropy_coef * entropy_mean
                     )
 
                     optimizer.zero_grad()
@@ -579,6 +620,19 @@ def train_ppo(
                     epoch_entropy += float(entropy_mean.item())
                     update_count += 1
 
+                epoch_mean_kl = epoch_kl_sum / max(1, epoch_batches)
+                if target_kl > 0 and epoch_mean_kl > 2.0 * target_kl:
+                    break
+
+            if target_kl > 0 and update_count > 0:
+                iter_mean_kl = total_kl_sum / update_count
+                if iter_mean_kl > target_kl * 2.0:
+                    current_lr = max(min_lr, current_lr / 1.5)
+                elif 0.0 < iter_mean_kl < target_kl * 0.5:
+                    current_lr = min(max_lr, current_lr * 1.5)
+                for pg in optimizer.param_groups:
+                    pg["lr"] = current_lr
+
             if update_count > 0:
                 metrics["policy_loss"] = epoch_policy_loss / update_count
                 metrics["value_loss"] = epoch_value_loss / update_count
@@ -586,7 +640,17 @@ def train_ppo(
                 metrics["total_loss"] = (
                     metrics["policy_loss"]
                     + value_loss_coef * metrics["value_loss"]
-                    - entropy_coef * metrics["entropy"]
+                    - current_entropy_coef * metrics["entropy"]
+                )
+                metrics["approx_kl"] = total_kl_sum / update_count
+            else:
+                metrics["approx_kl"] = 0.0
+
+            metrics["learning_rate"] = current_lr
+            metrics["entropy_coef"] = current_entropy_coef
+            with torch.no_grad():
+                metrics["action_std_mean"] = float(
+                    torch.exp(torch.clamp(model.log_std, model.min_log_std, model.max_log_std)).mean().item()
                 )
             # Evaluate terrain & obstacle curriculum progression
             mean_ep_len = runner.get_mean_episode_length()
@@ -661,6 +725,9 @@ def train_ppo(
                     f"Reward: {metrics['mean_reward']:+.3f} | "
                     f"PiLoss: {metrics['policy_loss']:.4f} | "
                     f"ValLoss: {metrics['value_loss']:.4f} | "
+                    f"KL: {metrics['approx_kl']:.4f} | "
+                    f"LR: {metrics['learning_rate']:.1e} | "
+                    f"Std: {metrics['action_std_mean']:.3f} | "
                     f"FPS: {iter_fps:.0f}",
                     flush=True,
                 )
@@ -694,6 +761,7 @@ def train_ppo(
                     "action_dim": action_dim,
                     "hidden_dim": hidden_dim,
                     "iterations": iteration,
+                    "learning_rate": current_lr,
                     "stage": current_stage,
                     "terrain_mode": terrain_mode,
                     "total_timesteps": total_timesteps,
@@ -721,6 +789,7 @@ def train_ppo(
                     "action_dim": action_dim,
                     "hidden_dim": hidden_dim,
                     "iterations": iteration,
+                    "learning_rate": current_lr,
                     "stage": current_stage,
                     "terrain_mode": terrain_mode,
                     "total_timesteps": total_timesteps,
@@ -747,6 +816,7 @@ def train_ppo(
             "action_dim": action_dim,
             "hidden_dim": hidden_dim,
             "iterations": total_target_iters,
+            "learning_rate": current_lr,
             "stage": current_stage,
             "total_timesteps": total_timesteps,
             "elapsed_seconds": elapsed_total,
@@ -806,6 +876,10 @@ def main():
     parser.add_argument("--stand-first", action="store_true", help="Start training with zero velocity commands (stand still curriculum) until stable")
     parser.add_argument("--friction-min", type=float, default=1.1, help="Minimum floor friction for domain randomization (default: 1.1)")
     parser.add_argument("--friction-max", type=float, default=1.6, help="Maximum floor friction for domain randomization (default: 1.6)")
+    parser.add_argument("--target-kl", type=float, default=0.015, help="Target KL divergence for adaptive LR and epoch early-stop (<=0 to disable, default: 0.015)")
+    parser.add_argument("--min-lr", type=float, default=1e-5, help="Minimum learning rate for adaptive KL schedule (default: 1e-5)")
+    parser.add_argument("--max-lr", type=float, default=1e-3, help="Maximum learning rate for adaptive KL schedule (default: 1e-3)")
+    parser.add_argument("--entropy-coef-end", type=float, default=None, help="Target entropy coefficient at final iteration (default: None, falls back to min(entropy_coef, 0.002))")
 
     args = parser.parse_args()
 
@@ -838,6 +912,10 @@ def main():
         stand_first=args.stand_first,
         friction_min=args.friction_min,
         friction_max=args.friction_max,
+        target_kl=args.target_kl,
+        min_lr=args.min_lr,
+        max_lr=args.max_lr,
+        entropy_coef_end=args.entropy_coef_end,
     )
 
 
