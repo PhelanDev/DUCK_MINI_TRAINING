@@ -240,11 +240,16 @@ class ParallelSimRunner:
 
     def set_stage(self, stage: int) -> None:
         """Update terrain and obstacle curriculum stage."""
+        prev_stage = getattr(self, "curriculum_stage", None)
         self.curriculum_stage = int(stage)
         if self.terrain_mode == "stairs":
             apply_stair_stage(self.model, self.curriculum_stage)
         else:
             apply_stage(self.model, self.curriculum_stage)
+        if prev_stage is not None and self.curriculum_stage != prev_stage:
+            self.completed_ep_lens.clear()
+            self.completed_distances_x.clear()
+            self.completed_distances_y.clear()
 
     def _extract_foot_dynamics(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Extract foot heights, horizontal velocities, and 3D contact forces in world frame.

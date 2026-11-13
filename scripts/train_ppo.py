@@ -660,7 +660,7 @@ def train_ppo(
             mean_ep_len = runner.get_mean_episode_length()
             mean_dist_x = runner.get_mean_distance_x()
             mean_dist_y = runner.get_mean_distance_y() if hasattr(runner, "get_mean_distance_y") else 0.0
-            stage_req_dist = STAGE_MIN_DISTANCE_X.get(current_stage, 0.8)
+            stage_req_dist = STAGE_MIN_DISTANCE_X.get(current_stage, STAGE_MIN_DISTANCE_X[max(STAGE_MIN_DISTANCE_X)])
             cohort_success_rate = runner.get_success_rate(stage_req_dist)
             rew_lin_vel_ratio = float(np.mean(step_lin_vels)) if step_lin_vels else 0.0
 
