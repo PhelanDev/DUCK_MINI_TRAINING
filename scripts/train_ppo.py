@@ -371,22 +371,28 @@ def train_ppo(
     elif resume and save_path.exists():
         ckpt_to_load = save_path
 
+    transfer_loaded = False
+    optimizer_loaded = False
     loaded_iters = 0
     total_timesteps = 0
     if ckpt_to_load is not None:
         if ckpt_to_load.exists():
             ckpt = torch.load(str(ckpt_to_load), map_location=dev, weights_only=False)
+            model_loaded = False
             if "model_state_dict" in ckpt:
                 model.load_state_dict(ckpt["model_state_dict"])
+                model_loaded = True
             elif "actor_state_dict" in ckpt:
                 model.actor.load_state_dict(ckpt["actor_state_dict"])
                 if "critic_state_dict" in ckpt:
                     model.critic.load_state_dict(ckpt["critic_state_dict"])
+                model_loaded = True
             if "optimizer_state_dict" in ckpt and resume:
                 try:
                     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                    optimizer_loaded = True
                 except Exception:
-                    pass
+                    optimizer_loaded = False
             loaded_stage = ckpt.get("stage", current_stage)
             if loaded_stage > current_stage:
                 current_stage = loaded_stage
@@ -406,6 +412,20 @@ def train_ppo(
                         current_lr = min(max_lr, max(min_lr, current_lr))
                 for pg in optimizer.param_groups:
                     pg["lr"] = current_lr
+            elif load_checkpoint is not None and model_loaded:
+                transfer_loaded = True
+                raw_lr = ckpt.get("learning_rate")
+                if raw_lr is not None:
+                    try:
+                        flt_lr = float(raw_lr)
+                        if math.isfinite(flt_lr) and flt_lr > 0:
+                            current_lr = min(current_lr, flt_lr)
+                            if target_kl > 0:
+                                current_lr = min(max_lr, max(min_lr, current_lr))
+                            for pg in optimizer.param_groups:
+                                pg["lr"] = current_lr
+                    except (TypeError, ValueError):
+                        pass
             if verbose:
                 mode_label = "Resumed training" if resume else "Transferred policy"
                 print(f"[PPO] {mode_label} from checkpoint: {ckpt_to_load} (Stage {current_stage}, {total_timesteps} previous timesteps, {loaded_iters} iters)")
@@ -463,7 +483,7 @@ def train_ppo(
             current_entropy_coef = float(entropy_coef) + (eff_entropy_end - float(entropy_coef)) * progress
 
             # Smooth velocity warmup over first 15 iterations: stabilize early stepping balance
-            if not stand_first and iteration <= 15:
+            if not stand_first and not transfer_loaded and iteration <= 15:
                 max_cmd_vx = 0.15 + 0.35 * (iteration / 15.0)
                 runner.commands[:, 0] = np.clip(runner.commands[:, 0], 0.08, max_cmd_vx)
 
@@ -565,6 +585,17 @@ def train_ppo(
             num_samples = b_obs.shape[0]
             indices = np.arange(num_samples)
 
+            active_lr = current_lr
+            if (
+                transfer_loaded
+                and not optimizer_loaded
+                and iteration == start_iteration
+                and target_kl > 0
+            ):
+                active_lr = min(current_lr, 1e-4)
+                for pg in optimizer.param_groups:
+                    pg["lr"] = active_lr
+
             epoch_policy_loss = 0.0
             epoch_value_loss = 0.0
             epoch_entropy = 0.0
@@ -630,9 +661,20 @@ def train_ppo(
             if target_kl > 0 and update_count > 0:
                 iter_mean_kl = total_kl_sum / update_count
                 if iter_mean_kl > target_kl * 2.0:
-                    current_lr = max(min_lr, current_lr / 1.5)
+                    current_lr = max(min_lr, active_lr / 1.5)
                 elif 0.0 < iter_mean_kl < target_kl * 0.5:
-                    current_lr = min(max_lr, current_lr * 1.5)
+                    current_lr = min(max_lr, active_lr * 1.5)
+                else:
+                    current_lr = active_lr
+                for pg in optimizer.param_groups:
+                    pg["lr"] = current_lr
+            elif (
+                transfer_loaded
+                and not optimizer_loaded
+                and iteration == start_iteration
+                and target_kl > 0
+            ):
+                current_lr = active_lr
                 for pg in optimizer.param_groups:
                     pg["lr"] = current_lr
 
@@ -660,7 +702,7 @@ def train_ppo(
             mean_ep_len = runner.get_mean_episode_length()
             mean_dist_x = runner.get_mean_distance_x()
             mean_dist_y = runner.get_mean_distance_y() if hasattr(runner, "get_mean_distance_y") else 0.0
-            stage_req_dist = STAGE_MIN_DISTANCE_X.get(current_stage, 0.8)
+            stage_req_dist = STAGE_MIN_DISTANCE_X.get(current_stage, STAGE_MIN_DISTANCE_X[max(STAGE_MIN_DISTANCE_X)])
             cohort_success_rate = runner.get_success_rate(stage_req_dist)
             rew_lin_vel_ratio = float(np.mean(step_lin_vels)) if step_lin_vels else 0.0
 
@@ -751,7 +793,12 @@ def train_ppo(
             cur_dist_x = metrics["mean_distance_x"]
             is_best = False
 
-            if not dry_run and iteration > 0:
+            allow_best_eval = not (
+                transfer_loaded
+                and iteration == start_iteration
+                and total_target_iters > start_iteration
+            )
+            if not dry_run and iteration > 0 and allow_best_eval:
                 if rollout_stage > best_stage and cur_dist_x >= 0.0 and (cur_dist_x > 0.0 or cur_reward > 0.0):
                     is_best = True
                     best_stage = rollout_stage

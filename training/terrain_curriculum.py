@@ -99,6 +99,7 @@ STAGE_MIN_DISTANCE_X: Dict[int, float] = {
     0: 0.8,   # Stage 0 -> 1: Flat floor clearance >= 0.8m (prevent overfitting to flat floor)
     1: 1.2,   # Stage 1 -> 2: 5mm stair clearance >= 1.2m
     2: 1.5,   # Stage 2 -> 3: 10mm stair clearance >= 1.5m
+    3: 1.8,   # Stage 3: 15mm stair clearance onto top platform >= 1.8m
 }
 
 
@@ -138,7 +139,7 @@ def next_stage(
     # If caller leaves min_distance_x at default (0.8), use STAGE_MIN_DISTANCE_X mapping.
     # Otherwise, honor explicit caller-provided threshold.
     if min_distance_x == 0.8:
-        stage_target_dist = STAGE_MIN_DISTANCE_X.get(stage, 0.8)
+        stage_target_dist = STAGE_MIN_DISTANCE_X.get(stage, STAGE_MIN_DISTANCE_X[max(STAGE_MIN_DISTANCE_X)])
     else:
         stage_target_dist = min_distance_x
 

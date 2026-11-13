@@ -777,7 +777,8 @@ def compute_rewards(
         rx = np.asarray(root_x, dtype=np.float32)
         rz = np.asarray(root_z, dtype=np.float32)
         stair_mask = (rx >= 1.35).astype(np.float32)
-        elevation_gain = np.clip(rz - 0.170, 0.0, 0.050)
+        # Baseline z=0.125m matches flat walking mean_root_z ≈ 0.1234m (spawn z=0.128m)
+        elevation_gain = np.clip(rz - 0.125, 0.0, 0.050)
         r_stair_ascent = stair_mask * elevation_gain * 10.0
     else:
         r_stair_ascent = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
