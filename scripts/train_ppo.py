@@ -308,6 +308,7 @@ def train_ppo(
     best_reward = -float("inf")
     best_dist_x = -float("inf")
     best_stage = current_stage
+    has_prev_best = False
 
     if best_save_path.exists():
         try:
@@ -324,7 +325,8 @@ def train_ppo(
                     prev_best.get("metrics", {}).get("mean_distance_x", -float("inf")),
                 )
             )
-            best_stage = int(prev_best.get("stage", current_stage))
+            best_stage = int(prev_best.get("best_stage", prev_best.get("stage", current_stage)))
+            has_prev_best = True
         except Exception:
             pass
 
@@ -396,7 +398,8 @@ def train_ppo(
                     best_reward = max(best_reward, float(ckpt["best_reward"]))
                 if "best_distance_x" in ckpt:
                     best_dist_x = max(best_dist_x, float(ckpt["best_distance_x"]))
-                best_stage = max(best_stage, current_stage)
+                if not has_prev_best and "best_stage" in ckpt:
+                    best_stage = int(ckpt["best_stage"])
                 if "learning_rate" in ckpt:
                     current_lr = float(ckpt["learning_rate"])
                     if target_kl > 0:
@@ -653,6 +656,7 @@ def train_ppo(
                     torch.exp(torch.clamp(model.log_std, model.min_log_std, model.max_log_std)).mean().item()
                 )
             # Evaluate terrain & obstacle curriculum progression
+            rollout_stage = current_stage
             mean_ep_len = runner.get_mean_episode_length()
             mean_dist_x = runner.get_mean_distance_x()
             mean_dist_y = runner.get_mean_distance_y() if hasattr(runner, "get_mean_distance_y") else 0.0
@@ -673,6 +677,11 @@ def train_ppo(
                     mean_distance_y=mean_dist_y,
                 )
                 if new_stage != current_stage:
+                    if new_stage > rollout_stage:
+                        current_lr = min(current_lr, float(learning_rate))
+                        for pg in optimizer.param_groups:
+                            pg["lr"] = current_lr
+                        metrics["learning_rate"] = current_lr
                     current_stage = new_stage
                     runner.set_stage(current_stage)
                     if verbose:
@@ -690,6 +699,11 @@ def train_ppo(
                     mean_distance_y=mean_dist_y,
                 )
                 if new_stage != current_stage:
+                    if new_stage > rollout_stage:
+                        current_lr = min(current_lr, float(learning_rate))
+                        for pg in optimizer.param_groups:
+                            pg["lr"] = current_lr
+                        metrics["learning_rate"] = current_lr
                     current_stage = new_stage
                     runner.set_stage(current_stage)
                     if verbose:
@@ -738,19 +752,21 @@ def train_ppo(
             is_best = False
 
             if not dry_run and iteration > 0:
-                if current_stage > best_stage and cur_dist_x >= 0.0:
+                if rollout_stage > best_stage and cur_dist_x >= 0.0 and (cur_dist_x > 0.0 or cur_reward > 0.0):
                     is_best = True
-                elif (cur_reward >= best_reward and cur_dist_x >= best_dist_x) and (
-                    cur_reward > best_reward or cur_dist_x > best_dist_x
-                ):
-                    is_best = True
-                elif cur_dist_x > best_dist_x and cur_reward >= best_reward - 0.05:
-                    is_best = True
+                    best_stage = rollout_stage
+                    best_reward = cur_reward
+                    best_dist_x = cur_dist_x
+                elif rollout_stage == best_stage:
+                    if (
+                        (cur_reward >= best_reward and cur_dist_x >= best_dist_x)
+                        and (cur_reward > best_reward or cur_dist_x > best_dist_x)
+                    ) or (cur_dist_x > best_dist_x and cur_reward >= best_reward - 0.05):
+                        is_best = True
+                        best_reward = max(best_reward, cur_reward)
+                        best_dist_x = max(best_dist_x, cur_dist_x)
 
             if is_best:
-                best_reward = max(best_reward, cur_reward)
-                best_dist_x = max(best_dist_x, cur_dist_x)
-                best_stage = max(best_stage, current_stage)
                 elapsed_cur = time.perf_counter() - start_time
                 best_ckpt = {
                     "model_state_dict": model.state_dict(),
@@ -762,7 +778,8 @@ def train_ppo(
                     "hidden_dim": hidden_dim,
                     "iterations": iteration,
                     "learning_rate": current_lr,
-                    "stage": current_stage,
+                    "stage": rollout_stage,
+                    "best_stage": best_stage,
                     "terrain_mode": terrain_mode,
                     "total_timesteps": total_timesteps,
                     "elapsed_seconds": elapsed_cur,
@@ -791,6 +808,7 @@ def train_ppo(
                     "iterations": iteration,
                     "learning_rate": current_lr,
                     "stage": current_stage,
+                    "best_stage": best_stage,
                     "terrain_mode": terrain_mode,
                     "total_timesteps": total_timesteps,
                     "elapsed_seconds": elapsed_cur,
@@ -818,6 +836,8 @@ def train_ppo(
             "iterations": total_target_iters,
             "learning_rate": current_lr,
             "stage": current_stage,
+            "best_stage": best_stage,
+            "terrain_mode": terrain_mode,
             "total_timesteps": total_timesteps,
             "elapsed_seconds": elapsed_total,
             "metrics": metrics,
@@ -843,6 +863,7 @@ def train_ppo(
         "best_checkpoint_path": str(best_save_path),
         "metrics": metrics,
         "stage": current_stage,
+        "best_stage": best_stage,
     }
 
 
