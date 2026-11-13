@@ -57,11 +57,19 @@ class ActorCritic(nn.Module):
         action_dim: int = 8,
         hidden_dim: int = 256,
         init_noise_std: float = 0.20,
+        min_log_std: float = -3.0,
+        max_log_std: float = 0.0,
     ):
         super().__init__()
+        if min_log_std > max_log_std:
+            raise ValueError(
+                f"min_log_std ({min_log_std}) must be <= max_log_std ({max_log_std})"
+            )
         self.obs_dim = int(obs_dim)
         self.action_dim = int(action_dim)
         self.hidden_dim = int(hidden_dim)
+        self.min_log_std = float(min_log_std)
+        self.max_log_std = float(max_log_std)
 
         # Actor Network (Mean Action)
         self.actor = nn.Sequential(
@@ -74,6 +82,7 @@ class ActorCritic(nn.Module):
 
         # Learnable log standard deviation for Gaussian policy
         init_log_std = math.log(max(1e-4, float(init_noise_std)))
+        init_log_std = max(self.min_log_std, min(self.max_log_std, init_log_std))
         self.log_std = nn.Parameter(torch.full((self.action_dim,), init_log_std, dtype=torch.float32))
 
         # Critic Network (State Value V(s))
@@ -131,7 +140,8 @@ class ActorCritic(nn.Module):
             (actions, log_probabilities, entropy, values)
         """
         mean = self.actor(obs)
-        std = torch.exp(self.log_std).expand_as(mean)
+        clamped_log_std = torch.clamp(self.log_std, self.min_log_std, self.max_log_std)
+        std = torch.exp(clamped_log_std).expand_as(mean)
         dist = torch.distributions.Normal(mean, std)
 
         if action is None:
@@ -545,13 +555,9 @@ def train_ppo(
                     surr2 = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * mb_adv
                     policy_loss = -torch.min(surr1, surr2).mean()
 
-                    # Value Function Loss with Clipping and Huber / Smooth L1 (prevents explosion on bootstrap)
+                    # Value Function Loss with Huber / Smooth L1 (beta=2.0)
                     mb_ret = b_returns[mb_inds]
-                    mb_val = b_values[mb_inds]
-                    v_loss_unclipped = F.smooth_l1_loss(new_values, mb_ret, beta=1.0, reduction="none")
-                    v_clipped = mb_val + torch.clamp(new_values - mb_val, -clip_epsilon, clip_epsilon)
-                    v_loss_clipped = F.smooth_l1_loss(v_clipped, mb_ret, beta=1.0, reduction="none")
-                    value_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+                    value_loss = 0.5 * F.smooth_l1_loss(new_values, mb_ret, beta=2.0)
 
                     # Total Loss with Entropy Regularization
                     entropy_mean = entropy.mean()
@@ -565,6 +571,8 @@ def train_ppo(
                     total_loss.backward()
                     nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                     optimizer.step()
+                    with torch.no_grad():
+                        model.log_std.clamp_(model.min_log_std, model.max_log_std)
 
                     epoch_policy_loss += float(policy_loss.item())
                     epoch_value_loss += float(value_loss.item())
