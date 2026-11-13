@@ -89,7 +89,6 @@ class ParallelSimRunner:
             self.embed_phase_clock = bool(embed_phase_clock)
         else:
             self.embed_phase_clock = (getattr(self.cfg, "STACK_NAME", "microduck_8dof") == "microduck_8dof")
-        self.cfg = cfg if cfg is not None else _DEFAULT_CFG
         self.num_envs = int(num_envs)
         self.decimation = max(1, int(decimation))
         self.kp = float(kp) if kp is not None else float(self.cfg.KP)

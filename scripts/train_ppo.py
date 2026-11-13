@@ -281,17 +281,14 @@ def train_ppo(
     save_path = Path(save_path).resolve()
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
+    ckpt_prefix = save_path.stem[:-4] if save_path.stem.endswith("_ppo") else save_path.stem
     if best_save_path is None:
-        if save_path.name == "microduck_ppo.pt":
-            best_save_path = save_path.parent / "microduck_best.pt"
-        else:
-            best_save_path = save_path.parent / f"{save_path.stem}_best.pt"
+        best_save_path = save_path.parent / f"{ckpt_prefix}_best.pt"
     else:
         best_save_path = Path(best_save_path).resolve()
         best_save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    latest_prefix = save_path.stem[:-4] if save_path.stem.endswith("_ppo") else save_path.stem
-    latest_save_path = save_path.parent / f"{latest_prefix}_latest.pt"
+    latest_save_path = save_path.parent / f"{ckpt_prefix}_latest.pt"
 
     # Historical best tracking
     best_reward = -float("inf")
