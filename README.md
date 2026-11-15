@@ -184,9 +184,9 @@ duckV1/
 
 ## 7. Trạng Thái Hiện Tại & Điểm Neo Khôi Phục (`v1-flat-walk-stable`)
 
-- **Đang dừng ở đâu:** Đã hợp nhất 4 bản vá từ `wip/fix-gait-touch-reward` vào `main`; tag neo khôi phục `v1-flat-walk-stable` (`dc948dbd` + `models/checkpoints/v1-flat-walk-stable.pt`) và nhánh thử nghiệm `wip/nav-sac` (`650269db`) vẫn được giữ tách biệt sạch.
-- **Đã thử những gì:** Đợt train WSL GPU (`64 envs × 256 rollout`, `--max-lr 5e-4`) trên bản vá mới đã thoát hoàn toàn bẫy nhún tại chỗ: Stage 0 tăng đều lên `DistX: 0.96m`, `Succ: 80.0%`, `Reward: +2.317`, `Std: 0.171` ở `Iter 150` và tự động thăng hạng lên Stage 1 (`DistX: 1.01m`, `Reward: +2.521` ở `Iter 165`, duy trì `0.84–0.99m` qua `Iter 265`).
-- **Giả thuyết tiếp theo:** Cho đợt train GPU `1500` iters hoàn tất qua Stage 1–3, sau đó chép file checkpoint `.pt` tốt nhất kèm gắn tag neo mới (ví dụ `v2-stage1-walk-stable`), rồi mới cân nhắc cherry-pick dần BC Warmup / SAC / Nav Planner từ `wip/nav-sac`.
+- **Đang dừng ở đâu:** Nhánh `main` vẫn bảo toàn nguyên vẹn tại điểm neo `v1-flat-walk-stable` (`dc948dbd` + `models/checkpoints/v1-flat-walk-stable.pt`), kèm nhánh `wip/nav-sac` (`650269db`); toàn bộ gói sửa lỗi đa tầng **A1 + L1 + L2** cho `CyberDuck V2` đã cô lập sạch trên nhánh `wip/cyberduck-v2-multilayer-fix` (Whole-Branch Final Review: `APPROVED`).
+- **Đã thử những gì:** Triển khai đồng bộ 8 commits (`30e4c98f`..`bb3c5a8b`): xóa va chạm tự thân & mở rộng đế bàn chân (`cyberduck_v2.xml`), bỏ xoay kép `<gyro>`, đồng bộ `KP=13.5 / KD=0.9` và `RESIDUAL_ACTION_SCALE` đối xứng trên cả 3 hardware stack + `mcu2_main.ino` + gait clock `obs[35..36]`, tách Stage 1 thuần Slalom (`stair_step_h=-0.020`, `target_foot_height=0.015`), thêm `RunningMeanStd` + Asymmetric Critic (`42 -> 53`) + gấp `obs_rms` vào ONNX/ESP32 INT8, và tích hợp L2 `LidarWaypointPlanner`. Kiểm chứng `pytest tests/ -q` đạt `384 passed`, CPU smoke train 10 iters (`EpLen` `38.6 -> 88.5`), ONNX parity `max_abs_diff = 3.055e-07`, và L1/L2 Stage 1 benchmark đều hoàn tất sạch (`max_abs_hip_roll = 0.0088 rad`).
+- **Giả thuyết tiếp theo:** Chạy train full `1500` iters trên WSL GPU (`64×256`, `--max-lr 5e-4`) trực tiếp từ nhánh `wip/cyberduck-v2-multilayer-fix` để đánh giá khả năng leo Stage 1–3; khi hội tụ ổn định mới lưu snapshot `.pt`, gắn tag neo mới và cân nhắc hợp nhất về `main`.
 
 ---
 
