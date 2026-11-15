@@ -346,6 +346,34 @@ def scale_actions(
     return np.clip(scaled, low, high).astype(np.float32)
 
 
+def unscale_actions(
+    targets: np.ndarray,
+    cfg: Optional[MicroDuck8DoFConfig] = None,
+    nominal_centered: bool = False,
+) -> np.ndarray:
+    """Exact inverse of scale_actions: maps physical joint target angles back to [-1, 1].
+
+    If nominal_centered=True, nominal_qpos maps to 0.0.
+    If nominal_centered=False (default), low_limit -> -1.0, high_limit -> +1.0.
+    Safely clips outputs to [-1.0, 1.0].
+    """
+    if cfg is None:
+        cfg = _DEFAULT_CFG
+
+    t = np.asarray(targets, dtype=np.float32)
+    if not nominal_centered:
+        span = np.maximum(cfg.high_limits - cfg.low_limits, 1e-6)
+        raw = 2.0 * (t - cfg.low_limits) / span - 1.0
+    else:
+        nom = cfg.nominal_qpos
+        raw = np.where(
+            t >= nom,
+            (t - nom) / np.maximum(cfg.high_limits - nom, 1e-6),
+            (t - nom) / np.maximum(nom - cfg.low_limits, 1e-6),
+        )
+    return np.clip(raw, -1.0, 1.0).astype(np.float32)
+
+
 def clip_action_rates(
     current_targets: np.ndarray,
     last_targets: np.ndarray,
