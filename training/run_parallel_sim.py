@@ -66,6 +66,43 @@ def _find_first_id(model: mujoco.MjModel, obj_type: mujoco.mjtObj, candidates: T
     return -1
 
 
+LIDAR_SITE_NAMES: Tuple[str, ...] = (
+    "site_lidar_m30",
+    "site_lidar_m15",
+    "site_lidar_0",
+    "site_lidar_p15",
+    "site_lidar_p30",
+)
+
+
+def extract_filtered_lidar_ranges(
+    model: Optional[mujoco.MjModel],
+    data: Any,
+    obs_dim: int = 42,
+    lidar_max: float = 2.0,
+    site_ids: Optional[List[int]] = None,
+) -> Optional[np.ndarray]:
+    """Extract 5-ray LiDAR readings in meters with floor-hit filtering (`z_hit <= 0.012`)."""
+    if len(data.sensordata) >= 33:
+        raw_lidar = np.array(data.sensordata[28:33], dtype=np.float32)
+        lidar_ranges = np.where(raw_lidar < 0.0, lidar_max, raw_lidar)
+        if site_ids is None and model is not None:
+            site_ids = [
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, sname)
+                for sname in LIDAR_SITE_NAMES
+            ]
+        if site_ids and hasattr(data, "site_xpos") and hasattr(data, "site_xmat"):
+            for k, sid in enumerate(site_ids):
+                if sid != -1 and 0.0 <= raw_lidar[k] < lidar_max:
+                    z_hit = float(data.site_xpos[sid, 2]) + float(raw_lidar[k]) * float(data.site_xmat[sid, 8])
+                    if z_hit <= 0.012:
+                        lidar_ranges[k] = lidar_max
+        return lidar_ranges
+    if obs_dim == 42:
+        return np.full(5, lidar_max, dtype=np.float32)
+    return None
+
+
 class ParallelSimRunner:
     """Vectorized / batched simulation runner for MicroDuck 8-DOF."""
 
@@ -348,21 +385,14 @@ class ParallelSimRunner:
 
     def _get_lidar_ranges(self, env_idx: int) -> Optional[np.ndarray]:
         """Extract 5-ray LiDAR readings in meters with floor hit filtering."""
-        d = self.datas[env_idx]
-        if len(d.sensordata) >= 33:
-            raw_lidar = np.array(d.sensordata[28:33], dtype=np.float32)
-            lidar_max = float(getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0))
-            lidar_ranges = np.where(raw_lidar < 0.0, lidar_max, raw_lidar)
-            for k, sid in enumerate(self.lidar_site_ids):
-                if sid != -1 and 0.0 <= raw_lidar[k] < lidar_max:
-                    z_hit = float(d.site_xpos[sid, 2]) + float(raw_lidar[k]) * float(d.site_xmat[sid, 8])
-                    if z_hit <= 0.012:
-                        lidar_ranges[k] = lidar_max
-            return lidar_ranges
-        elif self.base_obs_dim == 42:
-            lidar_max = float(getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0))
-            return np.full(5, lidar_max, dtype=np.float32)
-        return None
+        lidar_max = float(getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0))
+        return extract_filtered_lidar_ranges(
+            self.model,
+            self.datas[env_idx],
+            obs_dim=self.base_obs_dim,
+            lidar_max=lidar_max,
+            site_ids=self.lidar_site_ids,
+        )
 
     def update_nav_commands(
         self,

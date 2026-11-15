@@ -74,6 +74,11 @@ except Exception:
     STAIR_STAGES = []
 
 try:
+    from training.run_parallel_sim import extract_filtered_lidar_ranges
+except Exception:
+    extract_filtered_lidar_ranges = None
+
+try:
     import mujoco
     import mujoco.viewer
     _MUJOCO_AVAILABLE = True
@@ -134,6 +139,53 @@ JOINT_LIMITS: Dict[str, Tuple[float, float]] = {
 
 # Rest height and nominal pose configuration matching training environment
 RESTING_SPAWN_HEIGHT: float = 0.194
+
+
+def _resolve_spawn_z(model: Any) -> float:
+    """Resolve native resting root Z from MJCF qpos0, falling back to RESTING_SPAWN_HEIGHT."""
+    if len(getattr(model, "qpos0", [])) >= 3 and float(model.qpos0[2]) > 0.0:
+        return float(model.qpos0[2])
+    return RESTING_SPAWN_HEIGHT
+
+
+def _reset_viewer_robot(
+    model: Any,
+    data: Any,
+    joint_targets: Optional[np.ndarray] = None,
+    full_reset: bool = True,
+) -> None:
+    """Reset robot root pose at native spawn Z, joint angles, and velocities."""
+    if full_reset:
+        mujoco.mj_resetData(model, data)
+    data.qpos[0:3] = [0.0, 0.0, _resolve_spawn_z(model)]
+    data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+    if joint_targets is not None:
+        data.qpos[7:15] = joint_targets
+    data.qvel[:] = 0.0
+    mujoco.mj_forward(model, data)
+
+
+def _setup_viewer_scene(
+    model_path: Union[str, Path],
+    dt: float,
+    stage: int,
+    stairs: bool,
+    pose: str,
+) -> Tuple[Any, Any, np.ndarray]:
+    """Load MJCF model, apply curriculum stage (including Stage 0), and spawn at native height."""
+    model_str = str(model_path)
+    if not os.path.exists(model_str):
+        raise FileNotFoundError(f"Model file not found: {model_str}")
+    model = mujoco.MjModel.from_xml_path(model_str)
+    model.opt.timestep = dt
+    if stairs and apply_stair_stage is not None:
+        apply_stair_stage(model, stage)
+    elif apply_stage is not None:
+        apply_stage(model, stage)
+    data = mujoco.MjData(model)
+    target_pose = np.array(POSE_PRESETS.get(pose, POSE_PRESETS["stand"]), dtype=np.float32)
+    _reset_viewer_robot(model, data, target_pose, full_reset=True)
+    return model, data, target_pose
 
 # Standard pose presets for testing stability and kinodynamics
 POSE_PRESETS: Dict[str, List[float]] = {
@@ -439,8 +491,10 @@ def extract_viewer_observation(
         dtype=np.float32,
     )
 
-    # 6. LiDAR ranges (sensordata 28:33)
-    if len(data.sensordata) >= 33:
+    # 6. LiDAR ranges (sensordata 28:33) with floor-hit filtering matching ParallelSimRunner
+    if extract_filtered_lidar_ranges is not None:
+        lidar_ranges = extract_filtered_lidar_ranges(model, data, obs_dim=obs_dim, lidar_max=2.0)
+    elif len(data.sensordata) >= 33:
         raw_lidar = np.array(data.sensordata[28:33], dtype=np.float32)
         lidar_ranges = np.where(raw_lidar < 0.0, 2.0, raw_lidar)
     elif obs_dim == 42:
@@ -619,22 +673,7 @@ def run_simulation_headless(
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    model = mujoco.MjModel.from_xml_path(model_path)
-    model.opt.timestep = dt
-    if stairs and apply_stair_stage is not None:
-        apply_stair_stage(model, stage)
-    elif apply_stage is not None and stage > 0:
-        apply_stage(model, stage)
-    data = mujoco.MjData(model)
-
-    # Initialize nominal standing pose with ground-aligned height
-    mujoco.mj_resetData(model, data)
-    data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
-    data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-
-    target_pose = np.array(POSE_PRESETS.get(pose, POSE_PRESETS["stand"]), dtype=np.float32)
-    data.qpos[7:15] = target_pose
-    mujoco.mj_forward(model, data)
+    model, data, target_pose = _setup_viewer_scene(model_path, dt, stage, stairs, pose)
 
     total_steps = int(max(1, duration / dt))
     sim_time = 0.0
@@ -699,14 +738,10 @@ def run_simulation_headless(
         if policy is not None and auto_reset and step_idx % decimation == 0:
             state = get_robot_state(model, data)
             if not state["is_stable"]:
-                data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
-                data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-                data.qpos[7:15] = target_pose
-                data.qvel[:] = 0.0
+                _reset_viewer_robot(model, data, target_pose, full_reset=False)
                 policy_episode_step = 0
                 last_actions = np.zeros(8, dtype=np.float32)
                 last_targets = np.array(target_pose, dtype=np.float32)
-                mujoco.mj_forward(model, data)
 
     state = get_robot_state(model, data)
     return {
@@ -762,22 +797,7 @@ def run_interactive_viewer(
         print(f"[LỖI] Không tìm thấy tệp mô hình: {model_path}")
         return
 
-    model = mujoco.MjModel.from_xml_path(model_path)
-    model.opt.timestep = dt
-    if stairs and apply_stair_stage is not None:
-        apply_stair_stage(model, stage)
-    elif apply_stage is not None and stage > 0:
-        apply_stage(model, stage)
-    data = mujoco.MjData(model)
-
-    # Reset to nominal standing pose with ground-aligned height
-    mujoco.mj_resetData(model, data)
-    data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
-    data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-
-    target_qpos = np.array(POSE_PRESETS.get(pose, POSE_PRESETS["stand"]), dtype=np.float32)
-    data.qpos[7:15] = target_qpos
-    mujoco.mj_forward(model, data)
+    model, data, target_qpos = _setup_viewer_scene(model_path, dt, stage, stairs, pose)
 
     print("=" * 70)
     print("  MICRODUCK 8-DOF (MG996R) - TRỰC QUAN HÓA 3D & KIỂM THỬ TƯ THẾ")
@@ -879,14 +899,10 @@ def run_interactive_viewer(
                 if policy is not None and auto_reset and step_count % decimation == 0:
                     state = get_robot_state(model, data)
                     if not state["is_stable"]:
-                        data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
-                        data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-                        data.qpos[7:15] = target_qpos
-                        data.qvel[:] = 0.0
+                        _reset_viewer_robot(model, data, target_qpos, full_reset=False)
                         policy_episode_step = 0
                         last_actions = np.zeros(8, dtype=np.float32)
                         last_targets = np.array(target_qpos, dtype=np.float32)
-                        mujoco.mj_forward(model, data)
                 if step_count % 10 == 0:
                     viewer.sync()
                 if step_count % 250 == 0:
@@ -984,20 +1000,7 @@ def run_opencv_viewer(
         print(f"[LỖI] Không tìm thấy tệp mô hình: {model_path}")
         return
 
-    model = mujoco.MjModel.from_xml_path(model_path)
-    model.opt.timestep = dt
-    if stairs and apply_stair_stage is not None:
-        apply_stair_stage(model, stage)
-    elif apply_stage is not None and stage > 0:
-        apply_stage(model, stage)
-    data = mujoco.MjData(model)
-
-    mujoco.mj_resetData(model, data)
-    data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
-    data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-    target_qpos = np.array(POSE_PRESETS.get(pose, POSE_PRESETS["stand"]), dtype=np.float32)
-    data.qpos[7:15] = target_qpos
-    mujoco.mj_forward(model, data)
+    model, data, target_qpos = _setup_viewer_scene(model_path, dt, stage, stairs, pose)
 
     # Tracking camera
     cam = mujoco.MjvCamera()
@@ -1115,14 +1118,10 @@ def run_opencv_viewer(
                     if policy is not None and auto_reset and step_count % decimation == 0:
                         state = get_robot_state(model, data)
                         if not state["is_stable"]:
-                            data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
-                            data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-                            data.qpos[7:15] = target_qpos
-                            data.qvel[:] = 0.0
+                            _reset_viewer_robot(model, data, target_qpos, full_reset=False)
                             policy_episode_step = 0
                             last_actions = np.zeros(8, dtype=np.float32)
                             last_targets = np.array(target_qpos, dtype=np.float32)
-                            mujoco.mj_forward(model, data)
 
             renderer.update_scene(data, cam)
             rgb_frame = renderer.render()
@@ -1193,17 +1192,16 @@ def run_opencv_viewer(
                 target_qpos = np.array(POSE_PRESETS["lie"], dtype=np.float32)
                 print("[ĐIỀU KHIỂN] Chọn tư thế [4]: NẰM (Lie).")
             elif key == ord("r"):
-                mujoco.mj_resetData(model, data)
-                data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
-                data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-                data.qpos[7:15] = target_qpos
+                _reset_viewer_robot(model, data, target_qpos, full_reset=True)
                 policy_episode_step = 0
                 last_actions = np.zeros(8, dtype=np.float32)
                 last_targets = np.array(target_qpos, dtype=np.float32)
-                mujoco.mj_forward(model, data)
                 sim_time = 0.0
 
-            if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+            try:
+                if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+                    break
+            except cv2.error:
                 break
 
             render_took = time.time() - t0
@@ -1233,9 +1231,7 @@ def run_interactive_cli(
     data = mujoco.MjData(model)
 
     # Nominal reset
-    mujoco.mj_resetData(model, data)
-    data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
-    data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+    _reset_viewer_robot(model, data, full_reset=True)
     current_targets = np.array(POSE_PRESETS["stand"], dtype=np.float32)
 
     print("\n" + "=" * 60)
@@ -1322,11 +1318,8 @@ def run_interactive_cli(
                 print(f"[OK] Đã mô phỏng {steps} bước ({steps * dt:.3f}s).")
 
             elif cmd == "reset":
-                mujoco.mj_resetData(model, data)
-                data.qpos[0:3] = [0.0, 0.0, RESTING_SPAWN_HEIGHT]
-                data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
+                _reset_viewer_robot(model, data, full_reset=True)
                 current_targets = np.array(POSE_PRESETS["stand"], dtype=np.float32)
-                mujoco.mj_forward(model, data)
                 print("[OK] Đã đặt lại toàn bộ trạng thái robot về mặc định.")
 
             elif cmd == "help":
@@ -1381,6 +1374,7 @@ def main() -> int:
             cmd_vel=tuple(args.cmd_vel),
             dt=args.dt,
             stage=args.stage,
+            stairs=args.stairs,
             record_path=args.record,
             auto_reset=args.auto_reset,
             gait=args.gait,
