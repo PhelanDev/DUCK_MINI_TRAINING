@@ -144,6 +144,7 @@ class ParallelSimRunner:
         else:
             self.base_obs_dim = self.cfg.OBS_DIM
             self.obs_dim = self.cfg.OBS_DIM
+        self.privileged_obs_dim = self.obs_dim + 11
         self.action_dim = self.cfg.ACTION_DIM
 
         self.last_actions = np.zeros((self.num_envs, self.action_dim), dtype=np.float32)
@@ -220,6 +221,7 @@ class ParallelSimRunner:
             gname = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, gid)
             if gname and ("stair" in gname or "platform" in gname):
                 stair_gids.append(gid)
+        self.terrain_gids = stair_gids
         if stair_gids:
             self.stair_min_x = float(min(self.model.geom_pos[g, 0] - self.model.geom_size[g, 0] for g in stair_gids))
             self.stair_max_x = float(max(self.model.geom_pos[g, 0] + self.model.geom_size[g, 0] for g in stair_gids))
@@ -547,6 +549,104 @@ class ParallelSimRunner:
             obs[i] = self._extract_obs(i)
         return obs
 
+    def _get_terrain_height_at_xy(self, x: float, y: float) -> float:
+        """Query top elevation of terrain / stairs at world coordinate (x, y)."""
+        h = 0.0
+        terrain_gids = getattr(self, "terrain_gids", None)
+        if terrain_gids:
+            for gid in terrain_gids:
+                gx, gy, gz = self.model.geom_pos[gid]
+                sx, sy, sz = self.model.geom_size[gid]
+                top_z = float(gz + sz)
+                if top_z > h and abs(x - gx) <= sx and abs(y - gy) <= sy:
+                    h = top_z
+        return float(h)
+
+    def get_privileged_obs(
+        self,
+        raw_obs: Optional[np.ndarray] = None,
+        env_indices: Optional[Union[List[int], np.ndarray]] = None,
+    ) -> np.ndarray:
+        """Extract privileged observation tensor of shape (N, obs_dim + 11).
+
+        Components:
+        - raw_obs (obs_dim): standard actor observation vector
+        - base_lin_vel (3): linear velocity in base body frame
+        - contact_forces_z (2): vertical contact forces on left/right foot soles
+        - terrain_height_at_feet (2): terrain elevation directly under left/right foot
+        - nearest_obstacle_dist (1): distance to nearest obstacle surface
+        - nearest_obstacle_rel_xy (2): relative 2D offset to nearest obstacle in robot body frame
+        - current_stage_norm (1): curriculum stage normalized to [0, 1]
+        """
+        if env_indices is None:
+            indices = list(range(self.num_envs))
+        else:
+            indices = [int(i) for i in env_indices]
+
+        n_envs = len(indices)
+        if n_envs == 0:
+            return np.empty((0, self.privileged_obs_dim), dtype=np.float32)
+
+        if raw_obs is None:
+            actor_obs = np.array([self._extract_obs(i) for i in indices], dtype=np.float32)
+        else:
+            raw_arr = np.asarray(raw_obs, dtype=np.float32)
+            if raw_arr.shape[0] == self.num_envs and len(indices) < self.num_envs:
+                actor_obs = raw_arr[indices]
+            else:
+                actor_obs = raw_arr
+
+        active_obstacle_gids = [
+            gid for gid in self.obstacle_geom_ids if float(self.model.geom_pos[gid, 2]) > 0.0
+        ]
+        has_obs = len(active_obstacle_gids) > 0
+        if has_obs:
+            obs_xy = np.array([self.model.geom_pos[gid, :2] for gid in active_obstacle_gids], dtype=np.float32)
+            obs_radii = np.array([self.model.geom_size[gid, 0] for gid in active_obstacle_gids], dtype=np.float32)
+
+        stage_norm = float(getattr(self, "curriculum_stage", 0)) / 3.0
+        priv_extra = np.zeros((n_envs, 11), dtype=np.float32)
+
+        for k, idx in enumerate(indices):
+            d = self.datas[idx]
+            # 1. Base linear velocity in body frame (3)
+            base_lin_vel_world = d.qvel[0:3].astype(np.float32)
+            base_quat = d.qpos[3:7].astype(np.float32)
+            base_lin_vel_body = quat_rotate_inverse(base_quat, base_lin_vel_world)
+            priv_extra[k, 0:3] = base_lin_vel_body
+
+            # 2. Foot contact forces Z (2)
+            if len(d.sensordata) >= 12:
+                priv_extra[k, 3] = float(d.sensordata[10])
+                priv_extra[k, 4] = float(d.sensordata[11])
+
+            # 3. Terrain height at feet (2)
+            if self.left_foot_bid != -1 and self.right_foot_bid != -1:
+                priv_extra[k, 5] = self._get_terrain_height_at_xy(float(d.xpos[self.left_foot_bid][0]), float(d.xpos[self.left_foot_bid][1]))
+                priv_extra[k, 6] = self._get_terrain_height_at_xy(float(d.xpos[self.right_foot_bid][0]), float(d.xpos[self.right_foot_bid][1]))
+
+            # 4. Nearest obstacle dist (1) & rel XY in body frame (2)
+            if has_obs:
+                base_xy = d.qpos[0:2].astype(np.float32)
+                diff = obs_xy - base_xy
+                dist = np.linalg.norm(diff, axis=-1) - obs_radii
+                min_i = int(np.argmin(dist))
+                priv_extra[k, 7] = float(np.clip(dist[min_i], 0.0, None))
+                yaw = float(quat_to_yaw(base_quat))
+                cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+                dx_w, dy_w = float(diff[min_i, 0]), float(diff[min_i, 1])
+                priv_extra[k, 8] = float(cos_y * dx_w + sin_y * dy_w)
+                priv_extra[k, 9] = float(-sin_y * dx_w + cos_y * dy_w)
+            else:
+                priv_extra[k, 7] = 2.0
+                priv_extra[k, 8] = 2.0
+                priv_extra[k, 9] = 0.0
+
+            # 5. Curriculum stage norm (1)
+            priv_extra[k, 10] = stage_norm
+
+        return np.concatenate([actor_obs, priv_extra], axis=-1).astype(np.float32)
+
     def _step_subrange(
         self,
         indices: np.ndarray,
@@ -840,7 +940,14 @@ class ParallelSimRunner:
         self.last_actions[:] = actions
 
         if fast:
-            terminal_obs = next_obs[time_outs].copy() if np.any(time_outs) else np.empty((0, self.obs_dim), dtype=np.float32)
+            if np.any(time_outs):
+                timeout_indices = np.where(time_outs)[0]
+                terminal_obs = next_obs[time_outs].copy()
+                terminal_critic_obs = self.get_privileged_obs(raw_obs=next_obs, env_indices=timeout_indices)
+            else:
+                terminal_obs = np.empty((0, self.obs_dim), dtype=np.float32)
+                terminal_critic_obs = np.empty((0, self.privileged_obs_dim), dtype=np.float32)
+
             if np.any(dones):
                 for i in np.where(dones)[0]:
                     self.completed_ep_lens.append(int(self.episode_steps[i]))
@@ -851,6 +958,7 @@ class ParallelSimRunner:
                 "time_outs": time_outs,
                 "tracking_lin_vel": float(np.mean(reward_dict["tracking_lin_vel"])) if "tracking_lin_vel" in reward_dict else 0.0,
                 "terminal_obs": terminal_obs,
+                "terminal_critic_obs": terminal_critic_obs,
             }
             return next_obs, rewards, dones, fast_info
 
@@ -888,6 +996,7 @@ class ParallelSimRunner:
                 infos[i]["distance_x"] = float(root_x[i])
                 infos[i]["episode_distance_y"] = float(root_y[i])
                 infos[i]["terminal_obs"] = next_obs[i].copy()
+                infos[i]["terminal_critic_obs"] = self.get_privileged_obs(raw_obs=next_obs[i:i+1], env_indices=[i])[0]
                 next_obs[i] = self.reset_env(i)
 
         return next_obs, rewards, dones, infos

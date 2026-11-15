@@ -41,13 +41,92 @@ DEFAULT_MODEL_PATH = (
 DEFAULT_SAVE_PATH = REPO_ROOT / "models" / "checkpoints" / "microduck_ppo.pt"
 
 
+class RunningMeanStd:
+    """Tracks running mean and variance using parallel Welford algorithm."""
+
+    def __init__(
+        self,
+        shape: Union[int, Tuple[int, ...]] = (),
+        epsilon: float = 1e-4,
+        clip: float = 10.0,
+    ):
+        if isinstance(shape, int):
+            shape = (shape,)
+        self.shape = shape
+        self.epsilon = float(epsilon)
+        self.clip = float(clip)
+        self.mean = np.zeros(self.shape, dtype=np.float64)
+        self.var = np.ones(self.shape, dtype=np.float64)
+        self.count = 1e-4
+
+    def update(self, x: Union[np.ndarray, torch.Tensor]) -> None:
+        """Update running statistics with a batch of observations."""
+        if isinstance(x, torch.Tensor):
+            x = x.detach().cpu().numpy()
+        x = np.asarray(x, dtype=np.float64)
+        batch_size = x.size // np.prod(self.shape) if len(self.shape) > 0 else x.size
+        if batch_size == 0:
+            return
+        x_flat = x.reshape(batch_size, *self.shape)
+
+        batch_mean = np.mean(x_flat, axis=0)
+        batch_var = np.var(x_flat, axis=0)
+        batch_count = float(batch_size)
+
+        new_count = self.count + batch_count
+        delta = batch_mean - self.mean
+        self.mean = self.mean + delta * (batch_count / new_count)
+        self.var = (
+            self.count * self.var
+            + batch_count * batch_var
+            + (delta ** 2) * (self.count * batch_count / new_count)
+        ) / new_count
+        self.count = new_count
+
+    def normalize(self, x: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
+        """Normalize observation x: (x - mean) / sqrt(var + eps), clipped to [-clip, clip]."""
+        if isinstance(x, torch.Tensor):
+            mean_t = torch.as_tensor(self.mean, dtype=x.dtype, device=x.device)
+            var_t = torch.as_tensor(self.var, dtype=x.dtype, device=x.device)
+            norm = (x - mean_t) / torch.sqrt(var_t + self.epsilon)
+            if self.clip > 0:
+                norm = torch.clamp(norm, -self.clip, self.clip)
+            return norm
+        else:
+            x_arr = np.asarray(x, dtype=np.float32)
+            std = np.sqrt(self.var + self.epsilon).astype(np.float32)
+            norm = (x_arr - self.mean.astype(np.float32)) / std
+            if self.clip > 0:
+                norm = np.clip(norm, -self.clip, self.clip)
+            return norm
+
+    def state_dict(self) -> Dict[str, Any]:
+        return {
+            "mean": self.mean.copy(),
+            "var": self.var.copy(),
+            "count": self.count,
+            "shape": self.shape,
+            "clip": self.clip,
+            "epsilon": self.epsilon,
+        }
+
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        self.mean = np.asarray(state_dict["mean"], dtype=np.float64).copy()
+        self.var = np.asarray(state_dict["var"], dtype=np.float64).copy()
+        self.count = float(state_dict["count"])
+        if "clip" in state_dict:
+            self.clip = float(state_dict["clip"])
+        if "epsilon" in state_dict:
+            self.epsilon = float(state_dict["epsilon"])
+
+
 class ActorCritic(nn.Module):
     """Actor-Critic neural network for MicroDuck 8-DOF bipedal robot.
 
     Architecture:
-    - Input: 42-dimensional observation vector
-    - Actor: 42 -> 256 (ELU) -> 256 (ELU) -> 8 (joint actions)
-    - Critic: 42 -> 256 (ELU) -> 256 (ELU) -> 1 (state value V(s))
+    - Input: Actor receives obs_dim (42), Critic receives critic_obs_dim (e.g. 53 or 42)
+    - Actor: obs_dim -> 256 (ELU) -> 256 (ELU) -> 8 (joint actions)
+    - Critic: critic_obs_dim -> 256 (ELU) -> 256 (ELU) -> 1 (state value V(s))
     - Action noise: Learnable log_std parameter for continuous action distribution
     """
 
@@ -59,6 +138,7 @@ class ActorCritic(nn.Module):
         init_noise_std: float = 0.20,
         min_log_std: float = -3.0,
         max_log_std: float = 0.0,
+        critic_obs_dim: Optional[int] = None,
     ):
         super().__init__()
         if min_log_std > max_log_std:
@@ -66,6 +146,7 @@ class ActorCritic(nn.Module):
                 f"min_log_std ({min_log_std}) must be <= max_log_std ({max_log_std})"
             )
         self.obs_dim = int(obs_dim)
+        self.critic_obs_dim = int(critic_obs_dim) if critic_obs_dim is not None else self.obs_dim
         self.action_dim = int(action_dim)
         self.hidden_dim = int(hidden_dim)
         self.min_log_std = float(min_log_std)
@@ -87,7 +168,7 @@ class ActorCritic(nn.Module):
 
         # Critic Network (State Value V(s))
         self.critic = nn.Sequential(
-            nn.Linear(self.obs_dim, self.hidden_dim),
+            nn.Linear(self.critic_obs_dim, self.hidden_dim),
             nn.ELU(),
             nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.ELU(),
@@ -114,9 +195,9 @@ class ActorCritic(nn.Module):
         if isinstance(self.critic[-1], nn.Linear):
             nn.init.orthogonal_(self.critic[-1].weight, gain=1.0)
 
-    def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor, critic_obs: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute deterministic actor action and critic value."""
-        return self.forward_actor(obs), self.forward_critic(obs)
+        return self.forward_actor(obs), self.forward_critic(critic_obs if critic_obs is not None else obs)
 
     def forward_actor(self, obs: torch.Tensor) -> torch.Tensor:
         """Deterministic policy forward pass (mean action)."""
@@ -124,6 +205,9 @@ class ActorCritic(nn.Module):
 
     def forward_critic(self, obs: torch.Tensor) -> torch.Tensor:
         """Critic value estimation forward pass."""
+        if obs.shape[-1] < self.critic_obs_dim:
+            pad = torch.zeros(*obs.shape[:-1], self.critic_obs_dim - obs.shape[-1], device=obs.device, dtype=obs.dtype)
+            obs = torch.cat([obs, pad], dim=-1)
         val = self.critic(obs)
         if val.ndim > 1 and val.shape[-1] == 1:
             val = val.squeeze(-1)
@@ -133,6 +217,7 @@ class ActorCritic(nn.Module):
         self,
         obs: torch.Tensor,
         action: Optional[torch.Tensor] = None,
+        critic_obs: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample actions from policy distribution or evaluate given actions.
 
@@ -149,9 +234,21 @@ class ActorCritic(nn.Module):
 
         log_prob = dist.log_prob(action).sum(dim=-1)
         entropy = dist.entropy().sum(dim=-1)
-        value = self.forward_critic(obs)
+        c_obs = critic_obs if critic_obs is not None else obs
+        value = self.forward_critic(c_obs)
 
         return action, log_prob, entropy, value
+
+    def load_state_dict(self, state_dict: Dict[str, Any], strict: bool = True):
+        """Adaptive load_state_dict to smoothly support checkpoints with different critic_obs_dim."""
+        if "critic.0.weight" in state_dict:
+            c_in = state_dict["critic.0.weight"].shape[1]
+            if c_in != self.critic[0].in_features:
+                dev = self.critic[0].weight.device
+                dtype = self.critic[0].weight.dtype
+                self.critic[0] = nn.Linear(c_in, self.hidden_dim, device=dev, dtype=dtype)
+                self.critic_obs_dim = c_in
+        return super().load_state_dict(state_dict, strict=strict)
 
 
 def compute_gae(
@@ -358,6 +455,7 @@ def train_ppo(
     )
 
     obs_dim = runner.obs_dim
+    critic_obs_dim = getattr(runner, "privileged_obs_dim", obs_dim)
     action_dim = runner.action_dim
     hidden_dim = 256
 
@@ -367,7 +465,20 @@ def train_ppo(
         action_dim=action_dim,
         hidden_dim=hidden_dim,
         max_log_std=max_log_std,
+        critic_obs_dim=critic_obs_dim,
     ).to(dev)
+
+    obs_rms = RunningMeanStd(shape=obs_dim, clip=10.0)
+    critic_obs_rms = RunningMeanStd(shape=critic_obs_dim, clip=10.0)
+
+    def get_runner_critic_obs(raw_obs=None, env_indices=None):
+        if hasattr(runner, "get_privileged_obs"):
+            return runner.get_privileged_obs(raw_obs=raw_obs, env_indices=env_indices)
+        if raw_obs is not None:
+            return raw_obs if env_indices is None else raw_obs[env_indices]
+        obs_list = [runner._extract_obs(i) for i in (range(runner.num_envs) if env_indices is None else env_indices)]
+        return np.array(obs_list, dtype=np.float32)
+
     current_lr = float(learning_rate)
     eff_entropy_end = (
         float(entropy_coef_end)
@@ -390,24 +501,81 @@ def train_ppo(
     if ckpt_to_load is not None:
         if ckpt_to_load.exists():
             ckpt = torch.load(str(ckpt_to_load), map_location=dev, weights_only=False)
-            model_loaded = False
-            if "model_state_dict" in ckpt:
-                model.load_state_dict(ckpt["model_state_dict"])
-                model_loaded = True
-            elif "actor_state_dict" in ckpt:
-                model.actor.load_state_dict(ckpt["actor_state_dict"])
-                if "critic_state_dict" in ckpt:
-                    model.critic.load_state_dict(ckpt["critic_state_dict"])
-                model_loaded = True
-            if model_loaded:
-                with torch.no_grad():
-                    model.log_std.data.clamp_(model.min_log_std, model.max_log_std)
-            if "optimizer_state_dict" in ckpt and resume:
+            if "obs_rms" in ckpt:
                 try:
-                    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-                    optimizer_loaded = True
+                    obs_rms.load_state_dict(ckpt["obs_rms"])
                 except Exception:
-                    optimizer_loaded = False
+                    pass
+            if "critic_obs_rms" in ckpt and ckpt.get("critic_obs_dim") == critic_obs_dim:
+                try:
+                    critic_obs_rms.load_state_dict(ckpt["critic_obs_rms"])
+                except Exception:
+                    pass
+
+            critic_weight = None
+            if "model_state_dict" in ckpt and "critic.0.weight" in ckpt["model_state_dict"]:
+                critic_weight = ckpt["model_state_dict"]["critic.0.weight"]
+            elif "critic_state_dict" in ckpt and "0.weight" in ckpt["critic_state_dict"]:
+                critic_weight = ckpt["critic_state_dict"]["0.weight"]
+
+            mismatched_critic = (critic_weight is not None and critic_weight.shape[1] != model.critic_obs_dim)
+
+            model_loaded = False
+            if mismatched_critic:
+                if "actor_state_dict" in ckpt:
+                    model.actor.load_state_dict(ckpt["actor_state_dict"])
+                elif "model_state_dict" in ckpt:
+                    actor_state = {k.replace("actor.", ""): v for k, v in ckpt["model_state_dict"].items() if k.startswith("actor.")}
+                    model.actor.load_state_dict(actor_state)
+                if "model_state_dict" in ckpt and "log_std" in ckpt["model_state_dict"]:
+                    with torch.no_grad():
+                        model.log_std.data.copy_(ckpt["model_state_dict"]["log_std"])
+
+                shared_dim = min(critic_weight.shape[1], model.critic_obs_dim)
+                c_dict = ckpt.get("critic_state_dict")
+                m_dict = ckpt.get("model_state_dict")
+                with torch.no_grad():
+                    if c_dict is not None:
+                        model.critic[0].weight[:, :shared_dim].copy_(c_dict["0.weight"][:, :shared_dim])
+                        if "0.bias" in c_dict:
+                            model.critic[0].bias.copy_(c_dict["0.bias"])
+                        if "2.weight" in c_dict:
+                            model.critic[2].weight.copy_(c_dict["2.weight"])
+                        if "2.bias" in c_dict:
+                            model.critic[2].bias.copy_(c_dict["2.bias"])
+                        if "4.weight" in c_dict:
+                            model.critic[4].weight.copy_(c_dict["4.weight"])
+                        if "4.bias" in c_dict:
+                            model.critic[4].bias.copy_(c_dict["4.bias"])
+                    elif m_dict is not None:
+                        model.critic[0].weight[:, :shared_dim].copy_(m_dict["critic.0.weight"][:, :shared_dim])
+                        if "critic.0.bias" in m_dict:
+                            model.critic[0].bias.copy_(m_dict["critic.0.bias"])
+                        if "critic.2.weight" in m_dict:
+                            model.critic[2].weight.copy_(m_dict["critic.2.weight"])
+                        if "critic.2.bias" in m_dict:
+                            model.critic[2].bias.copy_(m_dict["critic.2.bias"])
+                        if "critic.4.weight" in m_dict:
+                            model.critic[4].weight.copy_(m_dict["critic.4.weight"])
+                        if "critic.4.bias" in m_dict:
+                            model.critic[4].bias.copy_(m_dict["critic.4.bias"])
+                model_loaded = True
+                optimizer_loaded = False
+            else:
+                if "model_state_dict" in ckpt:
+                    model.load_state_dict(ckpt["model_state_dict"])
+                    model_loaded = True
+                elif "actor_state_dict" in ckpt:
+                    model.actor.load_state_dict(ckpt["actor_state_dict"])
+                    if "critic_state_dict" in ckpt:
+                        model.critic.load_state_dict(ckpt["critic_state_dict"])
+                    model_loaded = True
+                if "optimizer_state_dict" in ckpt and resume:
+                    try:
+                        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                        optimizer_loaded = True
+                    except Exception:
+                        optimizer_loaded = False
             loaded_stage = ckpt.get("stage", current_stage)
             if loaded_stage > current_stage:
                 current_stage = loaded_stage
@@ -454,6 +622,7 @@ def train_ppo(
 
     # Storage buffers
     obs_buffer = torch.zeros((rollout_steps, num_envs, obs_dim), dtype=torch.float32, device=dev)
+    critic_obs_buffer = torch.zeros((rollout_steps, num_envs, critic_obs_dim), dtype=torch.float32, device=dev)
     actions_buffer = torch.zeros((rollout_steps, num_envs, action_dim), dtype=torch.float32, device=dev)
     log_probs_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
     raw_rewards_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
@@ -462,8 +631,12 @@ def train_ppo(
     values_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
 
     # Initial state
-    current_obs_np = runner.reset()
-    current_obs = torch.as_tensor(current_obs_np, dtype=torch.float32, device=dev)
+    current_obs_raw = runner.reset()
+    current_critic_raw = get_runner_critic_obs(raw_obs=current_obs_raw)
+    obs_rms.update(current_obs_raw)
+    critic_obs_rms.update(current_critic_raw)
+    current_obs = torch.as_tensor(obs_rms.normalize(current_obs_raw), dtype=torch.float32, device=dev)
+    current_critic_obs = torch.as_tensor(critic_obs_rms.normalize(current_critic_raw), dtype=torch.float32, device=dev)
 
     start_time = time.perf_counter()
     with torch.no_grad():
@@ -512,14 +685,16 @@ def train_ppo(
             step_lin_vels: List[float] = []
             for step in range(rollout_steps):
                 with torch.no_grad():
-                    actions, log_probs, _, values = model.get_action_and_value(current_obs)
+                    actions, log_probs, _, values = model.get_action_and_value(
+                        current_obs, critic_obs=current_critic_obs
+                    )
 
                 # Send clipped actions to physics simulator
                 actions_np = actions.cpu().numpy()
                 actions_clamped = np.clip(actions_np, -1.0, 1.0)
 
                 if hasattr(runner, "step_arrays"):
-                    next_obs_np, rewards_np, dones_np, step_info = runner.step_arrays(actions_clamped)
+                    next_obs_raw, rewards_np, dones_np, step_info = runner.step_arrays(actions_clamped)
                     step_lin_vels.append(float(step_info["tracking_lin_vel"]))
                     raw_step_rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
                     raw_rewards_buffer[step] = raw_step_rewards
@@ -527,7 +702,9 @@ def train_ppo(
                     time_outs_np = step_info["time_outs"]
                     if np.any(time_outs_np):
                         timeout_mask = torch.as_tensor(time_outs_np, dtype=torch.bool, device=dev)
-                        terminal_obs_tensor = torch.as_tensor(step_info["terminal_obs"], dtype=torch.float32, device=dev)
+                        term_crit = step_info.get("terminal_critic_obs", step_info.get("terminal_obs"))
+                        norm_term = critic_obs_rms.normalize(term_crit)
+                        terminal_obs_tensor = torch.as_tensor(norm_term, dtype=torch.float32, device=dev)
                         with torch.no_grad():
                             terminal_values = model.forward_critic(terminal_obs_tensor)
                         step_rewards = apply_timeout_bootstrap(
@@ -536,7 +713,7 @@ def train_ppo(
                     else:
                         step_rewards = raw_step_rewards
                 else:
-                    next_obs_np, rewards_np, dones_np, infos = runner.step(actions_clamped)
+                    next_obs_raw, rewards_np, dones_np, infos = runner.step(actions_clamped)
                     step_lin_vels.append(float(np.mean([info.get("tracking_lin_vel", 0.0) for info in infos])))
                     raw_step_rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
                     raw_rewards_buffer[step] = raw_step_rewards
@@ -549,10 +726,12 @@ def train_ppo(
                     )
                     if timeout_mask.any():
                         timeout_indices = torch.where(timeout_mask)[0]
-                        terminal_obs_list = [infos[idx.item()]["terminal_obs"] for idx in timeout_indices]
-                        terminal_obs_tensor = torch.as_tensor(
-                            np.stack(terminal_obs_list), dtype=torch.float32, device=dev
-                        )
+                        terminal_obs_list = [
+                            infos[idx.item()].get("terminal_critic_obs", infos[idx.item()]["terminal_obs"])
+                            for idx in timeout_indices
+                        ]
+                        norm_term = critic_obs_rms.normalize(np.stack(terminal_obs_list))
+                        terminal_obs_tensor = torch.as_tensor(norm_term, dtype=torch.float32, device=dev)
                         with torch.no_grad():
                             terminal_values = model.forward_critic(terminal_obs_tensor)
                         step_rewards = apply_timeout_bootstrap(
@@ -561,18 +740,23 @@ def train_ppo(
 
                 # Store into buffers
                 obs_buffer[step] = current_obs
+                critic_obs_buffer[step] = current_critic_obs
                 actions_buffer[step] = actions
                 log_probs_buffer[step] = log_probs
                 values_buffer[step] = values
                 rewards_buffer[step] = step_rewards
                 dones_buffer[step] = torch.as_tensor(dones_np, dtype=torch.float32, device=dev)
 
-                current_obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=dev)
+                next_critic_raw = get_runner_critic_obs(raw_obs=next_obs_raw)
+                obs_rms.update(next_obs_raw)
+                critic_obs_rms.update(next_critic_raw)
+                current_obs = torch.as_tensor(obs_rms.normalize(next_obs_raw), dtype=torch.float32, device=dev)
+                current_critic_obs = torch.as_tensor(critic_obs_rms.normalize(next_critic_raw), dtype=torch.float32, device=dev)
                 total_timesteps += num_envs
 
             # Compute bootstrap value for the final step
             with torch.no_grad():
-                next_value = model.forward_critic(current_obs)
+                next_value = model.forward_critic(current_critic_obs)
 
             # ------------------------------------------------------------------
             # Phase 2: Advantage Estimation (GAE)
@@ -588,6 +772,7 @@ def train_ppo(
 
             # Flatten transitions
             b_obs = obs_buffer.reshape(-1, obs_dim)
+            b_critic_obs = critic_obs_buffer.reshape(-1, critic_obs_dim)
             b_actions = actions_buffer.reshape(-1, action_dim)
             b_log_probs = log_probs_buffer.reshape(-1)
             b_advantages = advantages.reshape(-1)
@@ -629,7 +814,7 @@ def train_ppo(
                     mb_inds = indices[start_idx:end_idx]
 
                     _, new_log_probs, entropy, new_values = model.get_action_and_value(
-                        b_obs[mb_inds], b_actions[mb_inds]
+                        b_obs[mb_inds], b_actions[mb_inds], critic_obs=b_critic_obs[mb_inds]
                     )
 
                     log_ratio = new_log_probs - b_log_probs[mb_inds]
@@ -839,6 +1024,9 @@ def train_ppo(
                     "critic_state_dict": model.critic.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "obs_dim": obs_dim,
+                    "critic_obs_dim": critic_obs_dim,
+                    "obs_rms": obs_rms.state_dict(),
+                    "critic_obs_rms": critic_obs_rms.state_dict(),
                     "action_dim": action_dim,
                     "hidden_dim": hidden_dim,
                     "iterations": iteration,
@@ -868,6 +1056,9 @@ def train_ppo(
                     "critic_state_dict": model.critic.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "obs_dim": obs_dim,
+                    "critic_obs_dim": critic_obs_dim,
+                    "obs_rms": obs_rms.state_dict(),
+                    "critic_obs_rms": critic_obs_rms.state_dict(),
                     "action_dim": action_dim,
                     "hidden_dim": hidden_dim,
                     "iterations": iteration,
@@ -896,6 +1087,9 @@ def train_ppo(
             "critic_state_dict": model.critic.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "obs_dim": obs_dim,
+            "critic_obs_dim": critic_obs_dim,
+            "obs_rms": obs_rms.state_dict(),
+            "critic_obs_rms": critic_obs_rms.state_dict(),
             "action_dim": action_dim,
             "hidden_dim": hidden_dim,
             "iterations": total_target_iters,
