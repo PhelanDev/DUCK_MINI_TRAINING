@@ -170,7 +170,7 @@ class MicroDuck8DoFConfig:
     # Balanced reward weights
     REWARD_WEIGHTS: Dict[str, float] = field(
         default_factory=lambda: {
-            "tracking_lin_vel": 1.5,
+            "tracking_lin_vel": 3.0,
             "tracking_ang_vel": 0.5,
             "upright": 1.5,
             "orientation_penalty": -2.0,
@@ -187,6 +187,7 @@ class MicroDuck8DoFConfig:
             "corridor_clearance": 0.4,
             "sigma_obs": 0.3,
             "foot_clearance": 2.0,
+            "target_foot_height": 0.022,
             "stumble": 0.5,
             "w_centering": 1.5,
             "stair_ascent": 1.5,
@@ -1049,7 +1050,7 @@ def compute_rewards(
     limit_scale = -w_limit if w_limit < 0 else w_limit
 
     total = (
-        weights.get("tracking_lin_vel", 1.5) * r_track_lin_vel
+        weights.get("tracking_lin_vel", 3.0) * r_track_lin_vel
         + weights.get("upright", 1.5) * r_upright
         + forward_gate * (
             weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
