@@ -186,6 +186,11 @@ class ParallelSimRunner:
             if gid != -1:
                 self.obstacle_geom_ids.append(gid)
 
+        self.lidar_site_ids = [
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, sname)
+            for sname in ("site_lidar_m30", "site_lidar_m15", "site_lidar_0", "site_lidar_p15", "site_lidar_p30")
+        ]
+
         self.prev_d_min = np.zeros(self.num_envs, dtype=np.float32)
         self.d_min = np.zeros(self.num_envs, dtype=np.float32)
         self.d_min_dot = np.zeros(self.num_envs, dtype=np.float32)
@@ -327,6 +332,10 @@ class ParallelSimRunner:
 
         return foot_z, foot_vel_xy, foot_contact_forces
 
+    def _has_active_obstacles(self) -> bool:
+        """Return True if at least one obstacle geom is raised above the floor (z > 0.0)."""
+        return any(float(self.model.geom_pos[gid, 2]) > 0.0 for gid in self.obstacle_geom_ids)
+
     def _compute_d_min(self, env_idx: Optional[int] = None) -> Optional[Union[float, np.ndarray]]:
         """Compute minimum distance to obstacle cylinders (minus individual cylinder radius)."""
         if not self.obstacle_geom_ids:
@@ -425,7 +434,9 @@ class ParallelSimRunner:
         if self.enable_auto_recovery and env_idx < len(self.recovery_controllers):
             self.recovery_controllers[env_idx].reset()
         obs = self._extract_obs(env_idx)
-        if self.base_obs_dim == 42 and len(obs) >= 42:
+        if not self._has_active_obstacles():
+            d_init = None
+        elif self.base_obs_dim == 42 and len(obs) >= 42:
             d_init = float(np.min(obs[37:42]))
         else:
             d_init = self._compute_d_min(env_idx)
@@ -491,6 +502,11 @@ class ParallelSimRunner:
             raw_lidar = np.array(d.sensordata[28:33], dtype=np.float32)
             lidar_max = getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0)
             lidar_ranges = np.where(raw_lidar < 0.0, lidar_max, raw_lidar)
+            for k, sid in enumerate(self.lidar_site_ids):
+                if sid != -1 and 0.0 <= raw_lidar[k] < lidar_max:
+                    z_hit = float(d.site_xpos[sid, 2]) + float(raw_lidar[k]) * float(d.site_xmat[sid, 8])
+                    if z_hit <= 0.012:
+                        lidar_ranges[k] = lidar_max
         elif self.base_obs_dim == 42:
             lidar_max = getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0)
             lidar_ranges = np.full(5, lidar_max, dtype=np.float32)
@@ -645,7 +661,9 @@ class ParallelSimRunner:
         )
 
         # Compute obstacle distances and approach velocity
-        if lidar_ranges is not None:
+        if not self._has_active_obstacles():
+            curr_d_min = None
+        elif lidar_ranges is not None:
             curr_d_min = np.min(lidar_ranges, axis=-1)
         else:
             curr_d_min = self._compute_d_min()

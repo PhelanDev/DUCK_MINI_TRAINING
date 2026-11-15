@@ -184,9 +184,9 @@ duckV1/
 
 ## 7. Trạng Thái Hiện Tại & Điểm Neo Khôi Phục (`v1-flat-walk-stable`)
 
-- **Đang dừng ở đâu:** Nhánh `main` gắn tag `v1-flat-walk-stable` kèm checkpoint neo `models/checkpoints/v1-flat-walk-stable.pt`; bài 1 đi bộ mặt phẳng Stage 0 (`cyberduck_v2.xml`) đang hội tụ ổn định (`Reward: -7.24 -> +2.19`, `DistX: +0.36m`, `Succ: 8%`, `Std: ~0.20`, đã triệt tiêu lỗi nổ `log_std` và đi lùi).
-- **Đã thử những gì:** Đã thử nghiệm 5 mô-đun nâng cấp (Randomize Pillars, Metrics `Unstab/Coll/MinClr`, BC Warmup Actor+Critic, 5-ray LiDAR Corridor Reward, 2-Layer Nav + SAC) và chạy audit $\ge 50$ vòng cho 6 bài; phát hiện & sửa 6 lỗi ở 7 file (tia LiDAR chạm sàn khi nghiêng thân, `gait_sync` khi đứng chôn 2 chân, kẹt giảm `LR` khi `--load-checkpoint`, biên độ BC nhỏ, nổ `CriticLoss` của SAC do $\alpha_0=1.0$, và `nav_planner` phanh sớm) — toàn bộ 7 file này đã được cất riêng sang nhánh `wip/nav-sac`.
-- **Giả thuyết tiếp theo:** Chờ đợt train PPO Stage 0 dài hạn (`2300` vòng, tăng `num_envs >= 64`) hội tụ vững dáng đi phẳng trên `main`, sau đó mới cherry-pick từng phần từ `wip/nav-sac` (ưu tiên lọc tia LiDAR chạm sàn + BC warmup) để lên Stage 1–3 né cọc mà không làm hỏng dáng đi cơ sở.
+- **Đang dừng ở đâu:** Điểm neo khôi phục `v1-flat-walk-stable` trên `main` (`dc948dbd`, checkpoint `models/checkpoints/v1-flat-walk-stable.pt`) được giữ nguyên sạch; 4 bản vá chống "nhún tại chỗ" đã được tách an toàn sang nhánh `wip/fix-gait-touch-reward` (`361 passed` toàn repo).
+- **Đã thử những gì:** Đã mổ xẻ đợt train `850` iters bị kẹt (`EpLen ~470-482`, `DistX ~0.01-0.03m`, `Std=0.146`) và phát hiện 4 lỗi gốc rễ: `<touch>` site trong `cyberduck_v2.xml` nhỏ hơn `sole_geom` làm cảm biến chân mù `0.0 N`, `r_foot_contact` cộng nhầm 2 kênh phase clock, `r_gait_sync` thưởng cả khi `vel_x=0.0`/`[0,0]`/`double_support_time > 0.20s`, và LiDAR Stage 0 dính tia chạm sàn khi chúi mũi; đã sửa đồng bộ ở `cyberduck_v2.xml`, `training/env_config.py`, `training/run_parallel_sim.py` và kiểm chứng qua MuJoCo probe (`mean_touch ~7.8N`) cùng 2 run PPO Stage 0 ngắn (`50` iters `16x64` & `45` iters `32x256` không rơi vào bẫy đứng nhún, `DistX -0.10m -> -0.00m`, `Std=0.188`).
+- **Giả thuyết tiếp theo:** Chạy lại PPO Stage 0 trên WSL GPU ngay trên nhánh `wip/fix-gait-touch-reward` (nên giữ `--max-iterations 1500`–`2300` hoặc đặt `--max-lr 5e-4` để tránh `Std` tụt sớm); sau khi dáng đi phẳng vượt vững `DistX > 0.4m` mới gắn tag neo mới và xem xét merge vào `main`.
 
 ---
 

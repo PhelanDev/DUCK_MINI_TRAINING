@@ -773,7 +773,8 @@ def compute_rewards(
         )
 
     # 7. Foot contact reward (khuyến khích nhấc chân luân phiên khi di chuyển TIẾN)
-    num_contacts = np.sum(f_contact > 0.0, axis=-1)
+    # Slice [:2] so phase clock channels [2:4] cannot trigger fake single-stance rewards.
+    num_contacts = np.sum(f_contact[..., :2] > 0.0, axis=-1)
     cmd_speed = np.linalg.norm(cmd_lin[..., :2], axis=-1) + np.abs(cmd_yaw_rate)
     is_moving_cmd = cmd_speed > 0.05
     forward_gait_gate = (vel_x > 0.02).astype(np.float32)
@@ -1023,13 +1024,17 @@ def compute_rewards(
         sync_score = (1.0 - np.abs(left_c - desired_L)) + (1.0 - np.abs(right_c - desired_R))
         w_gait_sync = weights.get("gait_sync", 1.2)
         if is_batch:
-            fwd_gate = ((vel_x >= 0.0) & is_moving_cmd).astype(np.float32)
+            fwd_gate = ((vel_x > 0.02) & is_moving_cmd).astype(np.float32)
             mode_gate = walk_mode_mask.astype(np.float32)
-            r_gait_sync = (w_gait_sync * sync_score * fwd_gate * mode_gate).astype(np.float32)
+            dwell_gate = (1.0 - r_double_support).astype(np.float32)
+            contact_gate = ((left_c + right_c) > 0.0).astype(np.float32)
+            r_gait_sync = (w_gait_sync * sync_score * fwd_gate * mode_gate * dwell_gate * contact_gate).astype(np.float32)
         else:
-            fwd_gate = 1.0 if (float(vel_x) >= 0.0 and bool(is_moving_cmd)) else 0.0
+            fwd_gate = 1.0 if (float(vel_x) > 0.02 and bool(is_moving_cmd)) else 0.0
             mode_gate = 1.0 if walk_mode_mask else 0.0
-            r_gait_sync = float(w_gait_sync * sync_score * fwd_gate * mode_gate)
+            dwell_gate = 1.0 - float(r_double_support)
+            contact_gate = 1.0 if (float(left_c) + float(right_c)) > 0.0 else 0.0
+            r_gait_sync = float(w_gait_sync * sync_score * fwd_gate * mode_gate * dwell_gate * contact_gate)
     else:
         r_gait_sync = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
