@@ -370,6 +370,11 @@ class ParallelSimRunner:
         # Ngẫu nhiên hóa lệnh vận tốc mục tiêu [vx, vy, wz] (hoặc giữ đứng yên nếu stand_still)
         if self.stand_still:
             self.commands[env_idx, :] = 0.0
+        elif self.terrain_mode in ("hurdles", "stairs"):
+            self.commands[env_idx, 0] = self.rng.uniform(0.18, 0.25)
+            self.commands[env_idx, 1] = self.rng.uniform(-0.03, 0.03)
+            wz_lim = 0.04 if getattr(self, "curriculum_stage", 0) == 0 else 0.15
+            self.commands[env_idx, 2] = self.rng.uniform(-wz_lim, wz_lim)
         else:
             self.commands[env_idx, 0] = self.rng.uniform(0.10, 0.25)
             self.commands[env_idx, 1] = self.rng.uniform(-0.08, 0.08)
