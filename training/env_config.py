@@ -160,12 +160,26 @@ class MicroDuck8DoFConfig:
     DEFAULT_DT: float = 0.02  # 50 Hz control loop frequency
 
     # PD controller gains for simulated MG996R position servos
-    KP: float = 25.0  # Joint position proportional gain (N*m/rad)
-    KD: float = 0.8  # Joint velocity derivative gain (N*m*s/rad)
+    KP: float = 13.5  # Joint position proportional gain (N*m/rad)
+    KD: float = 0.9  # Joint velocity derivative gain (N*m*s/rad)
 
     # Obstacle avoidance parameters
     OBSTACLE_THRESHOLD: float = 0.35  # meters
     LIDAR_MAX_RANGE: float = 2.0  # meters
+
+    # Residual action scaling (radians) per joint around nominal standing pose
+    RESIDUAL_ACTION_SCALE: Dict[str, float] = field(
+        default_factory=lambda: {
+            "head_yaw": 0.15,
+            "head_pitch": 0.15,
+            "left_hip_roll": 0.25,
+            "left_hip_pitch": 0.45,
+            "left_knee_pitch": 0.50,
+            "right_hip_roll": 0.25,
+            "right_hip_pitch": 0.45,
+            "right_knee_pitch": 0.50,
+        }
+    )
 
     # Balanced reward weights
     REWARD_WEIGHTS: Dict[str, float] = field(
@@ -226,10 +240,16 @@ class MicroDuck8DoFConfig:
             [self.NOMINAL_JOINT_POS.get(name, 0.0) for name in self.JOINT_NAMES],
             dtype=np.float32,
         )
+        self.action_scales = np.array(
+            [self.RESIDUAL_ACTION_SCALE[name] for name in self.JOINT_NAMES],
+            dtype=np.float32,
+        )
 
 
 # Module-level cached configuration for high-frequency simulation steps
 _DEFAULT_CFG = MicroDuck8DoFConfig()
+
+DEFAULT_ACTION_SCALES: np.ndarray = _DEFAULT_CFG.action_scales
 
 # Global physical joint limit bounds (8, 2): column 0 = lower bound, column 1 = upper bound
 JOINT_LIMITS: np.ndarray = np.stack(
@@ -337,12 +357,7 @@ def scale_actions(
             cfg.high_limits - cfg.low_limits
         )
     else:
-        nom = cfg.nominal_qpos
-        scaled = np.where(
-            clipped_actions >= 0.0,
-            nom + clipped_actions * (cfg.high_limits - nom),
-            nom + clipped_actions * (nom - cfg.low_limits),
-        )
+        scaled = cfg.nominal_qpos + clipped_actions * cfg.action_scales
     low = cfg.walk_low_limits if walk_clamp else cfg.low_limits
     high = cfg.walk_high_limits if walk_clamp else cfg.high_limits
     return np.clip(scaled, low, high).astype(np.float32)
@@ -367,12 +382,7 @@ def unscale_actions(
         span = np.maximum(cfg.high_limits - cfg.low_limits, 1e-6)
         raw = 2.0 * (t - cfg.low_limits) / span - 1.0
     else:
-        nom = cfg.nominal_qpos
-        raw = np.where(
-            t >= nom,
-            (t - nom) / np.maximum(cfg.high_limits - nom, 1e-6),
-            (t - nom) / np.maximum(nom - cfg.low_limits, 1e-6),
-        )
+        raw = (t - cfg.nominal_qpos) / np.maximum(cfg.action_scales, 1e-6)
     return np.clip(raw, -1.0, 1.0).astype(np.float32)
 
 

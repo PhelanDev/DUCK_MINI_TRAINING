@@ -53,8 +53,8 @@ try:
     DEFAULT_TORQUE_LIMIT = _DEFAULT_CFG.TORQUE_LIMIT
 except Exception:
     _DEFAULT_CFG = None
-    DEFAULT_KP = 25.0
-    DEFAULT_KD = 0.8
+    DEFAULT_KP = 13.5
+    DEFAULT_KD = 0.9
     DEFAULT_TORQUE_LIMIT = 1.0
     compute_gait_phase = None
     quat_to_yaw = None

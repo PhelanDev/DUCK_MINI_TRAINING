@@ -38,10 +38,10 @@ class MicroDuck8DoFConfig(BaseConfig):
             "head_pitch": 0.0,
             "left_hip_roll": 0.0,
             "left_hip_pitch": -0.15,
-            "left_knee_pitch": 0.35,
+            "left_knee_pitch": 0.15,
             "right_hip_roll": 0.0,
             "right_hip_pitch": -0.15,
-            "right_knee_pitch": 0.35,
+            "right_knee_pitch": 0.15,
         }
     )
 

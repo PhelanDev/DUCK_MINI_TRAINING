@@ -638,14 +638,15 @@ class ParallelSimRunner:
         # Vectorized extraction of kinodynamic tensors
         base_lin_vel_world = np.array([d.qvel[0:3] for d in self.datas], dtype=np.float32)
         base_quat = np.array([d.qpos[3:7] for d in self.datas], dtype=np.float32)
-        # Crucial: Project linear velocity and angular velocity from World Frame into Body Frame!
+        # Crucial: Project linear velocity from World Frame into Body Frame!
         base_lin_vel_body = quat_rotate_inverse(base_quat, base_lin_vel_world)
 
         cmd_lin_vel = np.zeros((self.num_envs, 3), dtype=np.float32)
         cmd_lin_vel[:, :2] = self.commands[:, :2]
 
         base_ang_vel_raw = np.array([d.sensordata[3:6] for d in self.datas], dtype=np.float32)
-        base_ang_vel_body = quat_rotate_inverse(base_quat, base_ang_vel_raw)
+        # MuJoCo <gyro> sensor is already mounted on torso in body frame matching _extract_obs.
+        base_ang_vel_body = base_ang_vel_raw
         cmd_ang_vel = self.commands[:, 2]
         proj_grav = next_obs[:, 3:6]
         joint_torques = np.array([d.ctrl[:] for d in self.datas], dtype=np.float32)
