@@ -1,6 +1,6 @@
 import argparse, math
 from pathlib import Path
-from typing import Dict, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from torch.distributions import Normal
 from training.run_parallel_sim import ParallelSimRunner
@@ -130,32 +130,43 @@ def train_sac(
     save_path: Union[str, Path] = "checkpoints/sac_checkpoint.pt",
     lr: float = 3e-4, gamma: float = 0.99, tau: float = 0.005,
     buffer_capacity: int = 100_000, device: str = "cpu",
+    target_entropy: Optional[float] = None,
 ) -> Path:
     runner = ParallelSimRunner(model_path=model_path, num_envs=num_envs)
-    obs_dim, act_dim = runner.obs_dim, runner.action_dim
-    actor, critic = SquashedGaussianActor(obs_dim, act_dim, hidden_dim).to(device), TwinQCritic(obs_dim, act_dim, hidden_dim).to(device)
-    target_critic = TwinQCritic(obs_dim, act_dim, hidden_dim).to(device)
-    target_critic.load_state_dict(critic.state_dict())
-    log_alpha, target_entropy = torch.zeros(1, requires_grad=True, device=device), -float(act_dim)
-    optimizers = {
-        "actor": torch.optim.Adam(actor.parameters(), lr=lr),
-        "critic": torch.optim.Adam(critic.parameters(), lr=lr),
-        "alpha": torch.optim.Adam([log_alpha], lr=lr),
-    }
-    buf = ReplayBuffer(obs_dim, act_dim, capacity=buffer_capacity)
-    obs, collected = runner.reset(), 0
-    while collected < total_steps:
-        if collected < warmup_steps:
-            acts = np.random.uniform(-1.0, 1.0, size=(num_envs, act_dim)).astype(np.float32)
-        else:
-            with torch.no_grad():
-                acts = actor.sample(torch.as_tensor(obs, dtype=torch.float32, device=device))[0].cpu().numpy()
-        next_obs, rews, dones, _ = runner.step_arrays(acts)
-        buf.add_batch(obs, acts, rews, next_obs, dones)
-        obs, collected = next_obs, collected + num_envs
-        if collected >= warmup_steps and buf.size >= batch_size:
-            sac_update_step(actor, critic, target_critic, log_alpha, buf.sample(batch_size, device=device), optimizers, target_entropy, gamma=gamma, tau=tau)
-    return save_sac_checkpoint(save_path, actor, log_alpha, obs_dim, act_dim, hidden_dim)
+    try:
+        obs_dim, act_dim = runner.obs_dim, runner.action_dim
+        t_entropy = -float(act_dim) if target_entropy is None else float(target_entropy)
+        actor, critic = SquashedGaussianActor(obs_dim, act_dim, hidden_dim).to(device), TwinQCritic(obs_dim, act_dim, hidden_dim).to(device)
+        target_critic = TwinQCritic(obs_dim, act_dim, hidden_dim).to(device)
+        target_critic.load_state_dict(critic.state_dict())
+        log_alpha = torch.zeros(1, requires_grad=True, device=device)
+        optimizers = {
+            "actor": torch.optim.Adam(actor.parameters(), lr=lr),
+            "critic": torch.optim.Adam(critic.parameters(), lr=lr),
+            "alpha": torch.optim.Adam([log_alpha], lr=lr),
+        }
+        buf = ReplayBuffer(obs_dim, act_dim, capacity=buffer_capacity)
+        obs, collected = runner.reset(), 0
+        while collected < total_steps:
+            if collected < warmup_steps:
+                acts = np.random.uniform(-1.0, 1.0, size=(num_envs, act_dim)).astype(np.float32)
+            else:
+                with torch.no_grad():
+                    acts = actor.sample(torch.as_tensor(obs, dtype=torch.float32, device=device))[0].cpu().numpy()
+            next_obs, rews, dones, fast_info = runner.step_arrays(acts)
+            time_outs = np.asarray(fast_info.get("time_outs", np.zeros_like(dones, dtype=bool)), dtype=bool)
+            true_dones = np.logical_and(dones, ~time_outs)
+            buf_next_obs = next_obs.copy()
+            if np.any(time_outs) and len(fast_info.get("terminal_obs", [])) == int(np.sum(time_outs)):
+                buf_next_obs[time_outs] = fast_info["terminal_obs"]
+            # shortcut: on true falls next_obs is post-reset with done=1 (multiplying bootstrap by 0)
+            buf.add_batch(obs, acts, rews, buf_next_obs, true_dones)
+            obs, collected = next_obs, collected + num_envs
+            if collected >= warmup_steps and buf.size >= batch_size:
+                sac_update_step(actor, critic, target_critic, log_alpha, buf.sample(batch_size, device=device), optimizers, t_entropy, gamma=gamma, tau=tau)
+        return save_sac_checkpoint(save_path, actor, log_alpha, obs_dim, act_dim, hidden_dim)
+    finally:
+        runner.close()
 
 
 def main():
@@ -167,8 +178,14 @@ def main():
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--save-path", default="checkpoints/sac_checkpoint.pt")
+    parser.add_argument("--target-entropy", type=float, default=None)
     args = parser.parse_args()
-    train_sac(model_path=args.model_path, num_envs=args.num_envs, total_steps=args.total_steps, warmup_steps=args.warmup_steps, batch_size=args.batch_size, hidden_dim=args.hidden_dim, save_path=args.save_path)
+    train_sac(
+        model_path=args.model_path, num_envs=args.num_envs,
+        total_steps=args.total_steps, warmup_steps=args.warmup_steps,
+        batch_size=args.batch_size, hidden_dim=args.hidden_dim,
+        save_path=args.save_path, target_entropy=args.target_entropy,
+    )
 
 
 if __name__ == "__main__":
