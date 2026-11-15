@@ -41,7 +41,7 @@ from training.env_config import (
     quat_to_yaw,
     scale_actions,
 )
-from training.terrain_curriculum import apply_stage, apply_stair_stage, STAIR_STAGES
+from training.terrain_curriculum import apply_stage, apply_stair_stage, STAIR_STAGES, randomize_pillars
 from training.self_righting import FallClassifier, SelfRightingController
 
 
@@ -75,12 +75,19 @@ class ParallelSimRunner:
         walk_min_z: float = 0.060,
         friction_range: Tuple[float, float] = (1.1, 1.6),
         embed_phase_clock: Optional[bool] = None,
+        randomize_pillars: bool = False,
+        pillar_density: float = 1.0,
+        pillar_jitter_xy: float = 0.06,
+        pillar_jitter: Optional[float] = None,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
             raise FileNotFoundError(f"MuJoCo model not found at {self.model_path}")
 
         self.terrain_mode = str(terrain_mode)
+        self.randomize_pillars_enabled = bool(randomize_pillars)
+        self.pillar_density = float(pillar_density)
+        self.pillar_jitter_xy = float(pillar_jitter if pillar_jitter is not None else pillar_jitter_xy)
         self.include_emotions = bool(include_emotions)
         self.walk_min_z = float(walk_min_z)
         self.friction_range = (float(friction_range[0]), float(friction_range[1]))
@@ -313,8 +320,11 @@ class ParallelSimRunner:
         """Compute minimum distance to obstacle cylinders (minus individual cylinder radius)."""
         if not self.obstacle_geom_ids:
             return None
-        obs_xy = np.array([self.model.geom_pos[gid, :2] for gid in self.obstacle_geom_ids], dtype=np.float32)
-        obs_radii = np.array([self.model.geom_size[gid, 0] for gid in self.obstacle_geom_ids], dtype=np.float32)
+        active_gids = [gid for gid in self.obstacle_geom_ids if self.model.geom_pos[gid, 2] > 0.0]
+        if not active_gids:
+            return None
+        obs_xy = np.array([self.model.geom_pos[gid, :2] for gid in active_gids], dtype=np.float32)
+        obs_radii = np.array([self.model.geom_size[gid, 0] for gid in active_gids], dtype=np.float32)
         if env_idx is not None:
             base_xy = np.array(self.datas[env_idx].qpos[0:2], dtype=np.float32)
             diff = base_xy - obs_xy
@@ -325,6 +335,18 @@ class ParallelSimRunner:
             diff = base_xy[:, None, :] - obs_xy[None, :, :]
             dist = np.linalg.norm(diff, axis=-1) - obs_radii[None, :]
             return np.clip(np.min(dist, axis=-1), 0.0, None).astype(np.float32)
+
+    def randomize_stage_pillars(self) -> List[str]:
+        """Synchronously randomize active slalom pillars on shared model outside worker threads."""
+        if self.randomize_pillars_enabled and self.terrain_mode == "hurdles" and self.curriculum_stage >= 1:
+            return randomize_pillars(
+                self.model,
+                stage=self.curriculum_stage,
+                rng=self.rng,
+                density_rho=self.pillar_density,
+                jitter_xy=self.pillar_jitter_xy,
+            )
+        return []
 
     def _randomize_model_dynamics(self):
         """Synchronously randomize floor friction and torso mass on shared model outside worker threads."""
@@ -406,6 +428,7 @@ class ParallelSimRunner:
         """Reset specified environments or all if None. Returns array of observations."""
         self._randomize_model_dynamics()
         if env_ids is None:
+            self.randomize_stage_pillars()
             indices = range(self.num_envs)
         else:
             indices = env_ids

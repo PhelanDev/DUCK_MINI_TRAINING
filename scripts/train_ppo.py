@@ -265,6 +265,9 @@ def train_ppo(
     max_lr: float = 1e-3,
     entropy_coef_end: Optional[float] = None,
     max_log_std: float = -1.05,
+    randomize_pillars: bool = False,
+    pillar_density: float = 1.0,
+    pillar_jitter: float = 0.06,
 ) -> Dict[str, Any]:
     """Execute PPO training pipeline using ParallelSimRunner."""
     if device is None:
@@ -349,6 +352,9 @@ def train_ppo(
         terrain_mode=terrain_mode,
         stand_still=stand_first,
         friction_range=(friction_min, friction_max),
+        randomize_pillars=randomize_pillars,
+        pillar_density=pillar_density,
+        pillar_jitter_xy=pillar_jitter,
     )
 
     obs_dim = runner.obs_dim
@@ -483,6 +489,9 @@ def train_ppo(
     try:
         for iteration in range(start_iteration, total_target_iters + 1):
             iter_start = time.perf_counter()
+
+            # Randomize slalom pillars per iteration outside worker stepping (thread-safe)
+            runner.randomize_stage_pillars()
 
             progress = (
                 0.0
@@ -959,6 +968,9 @@ def main():
     parser.add_argument("--max-lr", type=float, default=1e-3, help="Maximum learning rate for adaptive KL schedule (default: 1e-3)")
     parser.add_argument("--entropy-coef-end", type=float, default=None, help="Target entropy coefficient at final iteration (default: None, falls back to min(entropy_coef, 0.0005))")
     parser.add_argument("--max-log-std", type=float, default=-1.05, help="Maximum log standard deviation for action policy (default: -1.05)")
+    parser.add_argument("--randomize-pillars", action="store_true", help="Enable randomizing slalom pillar selection and jitter per episode/iteration")
+    parser.add_argument("--pillar-density", type=float, default=1.0, help="Fraction of slalom pillars kept active (default: 1.0)")
+    parser.add_argument("--pillar-jitter", type=float, default=0.06, help="Maximum XY jitter applied to active slalom pillars in meters (default: 0.06)")
 
     args = parser.parse_args()
 
@@ -997,6 +1009,9 @@ def main():
         max_lr=args.max_lr,
         entropy_coef_end=args.entropy_coef_end,
         max_log_std=args.max_log_std,
+        randomize_pillars=args.randomize_pillars,
+        pillar_density=args.pillar_density,
+        pillar_jitter=args.pillar_jitter,
     )
 
 
