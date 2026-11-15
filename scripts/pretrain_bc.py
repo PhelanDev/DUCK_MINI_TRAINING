@@ -2,12 +2,17 @@
 """Closed-loop Behavioral Cloning warmup for Actor and Critic initialization."""
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+_ROOT = str(Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from scripts.train_ppo import ActorCritic
 from training.advanced_gaits import BipedalGaitGenerator

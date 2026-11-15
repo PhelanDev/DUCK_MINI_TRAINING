@@ -1,8 +1,11 @@
-import argparse, math
+import argparse, math, sys
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
 import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from torch.distributions import Normal
+_ROOT = str(Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 from training.run_parallel_sim import ParallelSimRunner
 
 
