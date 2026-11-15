@@ -415,7 +415,7 @@ class ParallelSimRunner:
         elif self.terrain_mode in ("hurdles", "stairs"):
             self.commands[env_idx, 0] = self.rng.uniform(0.18, 0.25)
             self.commands[env_idx, 1] = self.rng.uniform(-0.03, 0.03)
-            wz_lim = 0.04 if getattr(self, "curriculum_stage", 0) == 0 else 0.15
+            wz_lim = min(0.10, 0.04 + 0.02 * getattr(self, "curriculum_stage", 0))
             self.commands[env_idx, 2] = self.rng.uniform(-wz_lim, wz_lim)
         else:
             self.commands[env_idx, 0] = self.rng.uniform(0.10, 0.25)

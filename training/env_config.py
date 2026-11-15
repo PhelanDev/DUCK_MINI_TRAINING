@@ -988,6 +988,13 @@ def compute_rewards(
         else:
             straight_turn_mask = bool(np.abs(cmd_yaw_rate) < 0.05)
             r_heading = float(w_heading * np.square(yaw_diff)) if (walk_mode_mask and straight_turn_mask) else 0.0
+
+        if d_min is not None:
+            clear_scale = np.clip((np.asarray(d_min, dtype=np.float32) - 0.35) / 0.45, 0.0, 1.0)
+            if is_batch:
+                r_heading = (r_heading * clear_scale).astype(np.float32)
+            else:
+                r_heading = float(r_heading * float(np.squeeze(clear_scale)))
     else:
         r_heading = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
