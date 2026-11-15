@@ -323,20 +323,20 @@ def main():
             f"MinClr: {res_v2['min_clearance_m']:.2f}m"
         )
 
-    print("\n========================================================================================================================")
+    header = f"{'Model':<16} | {'Scenario':<30} | {'Surv%':<6} | {'EpLen':<8} | {'DistX (m)':<10} | {'Reward':<9} | {'Tilt°':<6} | {'Unstab':<8} | {'Coll/100':<9} | {'MinClr':<8} | {'Pwr (W)':<7}"
+    print("\n" + "=" * len(header))
     print("DETAILED BENCHMARK SUMMARY TABLE")
-    print("========================================================================================================================")
-    header = f"{'Model':<16} | {'Scenario':<30} | {'Surv%':<6} | {'EpLen':<8} | {'DistX (m)':<10} | {'Reward':<9} | {'Tilt°':<6} | {'Unstab':<7} | {'Coll/100':<8} | {'MinClr':<7} | {'Pwr (W)':<7}"
+    print("=" * len(header))
     print(header)
     print("-" * len(header))
     for r in results:
         m_short = "MicroDuck V1" if "V1" in r["model"] else "CyberDuck V2"
         print(
-            f"{m_short:<16} | {r['scenario'][:30]:<30} | {r['success_rate']*100:5.1f}% | {r['mean_eplen']:6.1f}   | "
-            f"{r['mean_dist_x']:+9.3f}  | {r['mean_reward']:+8.2f}  | {r['mean_tilt_deg']:5.1f}° | "
-            f"{r['yaw_unstability']:6.2f}  | {r['collision_rate_per_100']:6.1f}%  | {r['min_clearance_m']:5.2f}m  | {r['mean_power_watt']:6.2f}W"
+            f"{m_short:<16} | {r['scenario'][:30]:<30} | {r['success_rate']*100:5.1f}% | {r['mean_eplen']:8.1f} | "
+            f"{r['mean_dist_x']:+10.3f} | {r['mean_reward']:+9.2f} | {r['mean_tilt_deg']:5.1f}° | "
+            f"{r['yaw_unstability']:8.2f} | {r['collision_rate_per_100']:8.1f}% | {r['min_clearance_m']:7.2f}m | {r['mean_power_watt']:6.2f}W"
         )
-    print("========================================================================================================================")
+    print("=" * len(header))
 
 
 if __name__ == "__main__":
