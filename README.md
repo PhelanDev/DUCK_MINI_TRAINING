@@ -184,9 +184,9 @@ duckV1/
 
 ## 7. Trạng Thái Hiện Tại & Điểm Neo Khôi Phục (`v1-flat-walk-stable`)
 
-- **Đang dừng ở đâu:** Điểm neo khôi phục `v1-flat-walk-stable` trên `main` (`dc948dbd`, checkpoint `models/checkpoints/v1-flat-walk-stable.pt`) được giữ nguyên sạch; 4 bản vá chống "nhún tại chỗ" đã được tách an toàn sang nhánh `wip/fix-gait-touch-reward` (`361 passed` toàn repo).
-- **Đã thử những gì:** Đã mổ xẻ đợt train `850` iters bị kẹt (`EpLen ~470-482`, `DistX ~0.01-0.03m`, `Std=0.146`) và phát hiện 4 lỗi gốc rễ: `<touch>` site trong `cyberduck_v2.xml` nhỏ hơn `sole_geom` làm cảm biến chân mù `0.0 N`, `r_foot_contact` cộng nhầm 2 kênh phase clock, `r_gait_sync` thưởng cả khi `vel_x=0.0`/`[0,0]`/`double_support_time > 0.20s`, và LiDAR Stage 0 dính tia chạm sàn khi chúi mũi; đã sửa đồng bộ ở `cyberduck_v2.xml`, `training/env_config.py`, `training/run_parallel_sim.py` và kiểm chứng qua MuJoCo probe (`mean_touch ~7.8N`) cùng 2 run PPO Stage 0 ngắn (`50` iters `16x64` & `45` iters `32x256` không rơi vào bẫy đứng nhún, `DistX -0.10m -> -0.00m`, `Std=0.188`).
-- **Giả thuyết tiếp theo:** Chạy lại PPO Stage 0 trên WSL GPU ngay trên nhánh `wip/fix-gait-touch-reward` (nên giữ `--max-iterations 1500`–`2300` hoặc đặt `--max-lr 5e-4` để tránh `Std` tụt sớm); sau khi dáng đi phẳng vượt vững `DistX > 0.4m` mới gắn tag neo mới và xem xét merge vào `main`.
+- **Đang dừng ở đâu:** Đã hợp nhất 4 bản vá từ `wip/fix-gait-touch-reward` vào `main`; tag neo khôi phục `v1-flat-walk-stable` (`dc948dbd` + `models/checkpoints/v1-flat-walk-stable.pt`) và nhánh thử nghiệm `wip/nav-sac` (`650269db`) vẫn được giữ tách biệt sạch.
+- **Đã thử những gì:** Đợt train WSL GPU (`64 envs × 256 rollout`, `--max-lr 5e-4`) trên bản vá mới đã thoát hoàn toàn bẫy nhún tại chỗ: Stage 0 tăng đều lên `DistX: 0.96m`, `Succ: 80.0%`, `Reward: +2.317`, `Std: 0.171` ở `Iter 150` và tự động thăng hạng lên Stage 1 (`DistX: 1.01m`, `Reward: +2.521` ở `Iter 165`, duy trì `0.84–0.99m` qua `Iter 265`).
+- **Giả thuyết tiếp theo:** Cho đợt train GPU `1500` iters hoàn tất qua Stage 1–3, sau đó chép file checkpoint `.pt` tốt nhất kèm gắn tag neo mới (ví dụ `v2-stage1-walk-stable`), rồi mới cân nhắc cherry-pick dần BC Warmup / SAC / Nav Planner từ `wip/nav-sac`.
 
 ---
 
