@@ -3,11 +3,16 @@
 
 import argparse
 from pathlib import Path
+import sys
 from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.train_ppo import ActorCritic
 from training.advanced_gaits import BipedalGaitGenerator
@@ -48,6 +53,10 @@ def _collect_rollouts(
 
     t_steps, n_envs = rew_seq.shape
     returns, running_ret = np.zeros_like(rew_seq), np.zeros(n_envs, dtype=np.float32)
+    for e in range(n_envs):
+        if not done_seq[-1, e]:
+            tail = rew_seq[-min(20, t_steps) :, e]
+            running_ret[e] = float(np.mean(tail)) / max(1.0 - gamma, 1e-4)
     for t in reversed(range(t_steps)):
         running_ret = rew_seq[t] + gamma * running_ret * (1.0 - done_seq[t].astype(np.float32))
         returns[t] = running_ret
@@ -71,7 +80,7 @@ def collect_gait_demonstrations(
     gait, dt = BipedalGaitGenerator(default_freq=freq), float(runner.control_dt)
 
     def policy_fn(_obs: np.ndarray, step: int) -> np.ndarray:
-        q = gait.compute_walk(step * dt, freq=freq)
+        q = gait.compute_walk(step * dt, freq=freq, roll_amp=0.14, pitch_amp=0.32, knee_amp=0.40)
         raw_act = unscale_actions(q, runner.cfg, nominal_centered=True)
         return np.tile(raw_act, (runner.num_envs, 1))
 
@@ -111,7 +120,7 @@ def train_behavior_cloning(
     ret_t = torch.as_tensor(returns, dtype=torch.float32, device=device) if returns is not None else None
 
     dataset_size, epoch_losses = len(obs), []
-    for _ in range(epochs):
+    for ep in range(1, epochs + 1):
         perm, total_loss, batches = torch.randperm(dataset_size, device=device), 0.0, 0
         for i in range(0, dataset_size, batch_size):
             idx = perm[i : i + batch_size]
@@ -125,6 +134,8 @@ def train_behavior_cloning(
             total_loss += float(loss.item())
             batches += 1
         epoch_losses.append(total_loss / max(1, batches))
+    with torch.no_grad():
+        model.log_std.data.fill_(-1.90)
     return model, epoch_losses
 
 
@@ -135,6 +146,7 @@ def save_bc_checkpoint(
     out_path = Path(path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        "model_state_dict": model.state_dict(),
         "actor_state_dict": model.actor.state_dict(),
         "critic_state_dict": model.critic.state_dict(),
         "obs_dim": int(obs_dim),

@@ -74,10 +74,11 @@ class LidarWaypointPlanner:
                     best_idx = int(np.argmax(scores))
                     target_steer = float(RAY_ANGLES[best_idx])
 
-        # Velocity scaling: slow down before tight gaps or when misaligned
-        clearance_scale = float(np.clip(fwd_clearance / max(self.cfg.safe_dist, 1e-4), 0.2, 1.0))
+        # Velocity scaling: slow down before tight gaps or only within final braking radius
+        clearance_scale = float(np.clip(fwd_clearance / max(self.cfg.safe_dist, 1e-4), 0.35, 1.0))
         heading_scale = max(0.0, float(np.cos(target_steer)))
-        dist_scale = min(1.0, dist)
+        brake_dist = max(2.0 * self.cfg.goal_tol, 0.25)
+        dist_scale = min(1.0, dist / brake_dist)
 
         vx = float(np.clip(self.cfg.max_vx * clearance_scale * heading_scale * dist_scale, 0.0, self.cfg.max_vx))
         vy = 0.0  # shortcut: biped forward-walking primary, lateral crab-walk disabled

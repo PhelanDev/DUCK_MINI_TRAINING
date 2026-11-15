@@ -82,6 +82,22 @@ def load_actor(checkpoint_path: Path) -> nn.Module:
         hidden_dim = cp.get("hidden_dim", hidden_dim)
         action_dim = cp.get("action_dim", action_dim)
 
+    if isinstance(state_dict, dict) and "net.0.weight" in state_dict:
+        from scripts.train_sac import SquashedGaussianActor
+
+        obs_dim = int(state_dict["net.0.weight"].shape[1])
+        hidden_dim = int(state_dict["net.0.weight"].shape[0])
+        if "mean_head.weight" in state_dict:
+            action_dim = int(state_dict["mean_head.weight"].shape[0])
+        sac_actor = SquashedGaussianActor(obs_dim=obs_dim, act_dim=action_dim, hidden_dim=hidden_dim)
+        sac_actor.load_state_dict(state_dict)
+        sac_actor.eval()
+        sac_actor.obs_dim = obs_dim
+        sac_actor.hidden_dim = hidden_dim
+        sac_actor.action_dim = action_dim
+        sac_actor.stage = int(cp.get("stage", 0)) if isinstance(cp, dict) else 0
+        return sac_actor
+
     # Infer from state_dict keys/shapes if available
     if "0.weight" in state_dict:
         obs_dim = int(state_dict["0.weight"].shape[1])
@@ -130,6 +146,7 @@ def run_benchmark_scenario(
     runner.commands[:, 0] = cmd_vx
     runner.commands[:, 1] = 0.0
     runner.commands[:, 2] = 0.0
+    obs[:, 6:9] = runner.commands
 
     num_envs = runner.num_envs
     alive_steps = np.zeros(num_envs, dtype=np.int32)
@@ -197,7 +214,7 @@ def run_benchmark_scenario(
                 env_collided[i] |= bool(infos[i].get("obstacle_contact", False))
 
                 d_val = infos[i].get("d_min")
-                if d_val is None and next_obs.shape[1] >= 42:
+                if d_val is None and next_obs.shape[1] >= 42 and runner._has_active_obstacles():
                     lidar_slice = (
                         infos[i].get("terminal_obs", next_obs[i])[37:42]
                         if dones[i]

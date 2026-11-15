@@ -603,14 +603,14 @@ def train_ppo(
             num_samples = b_obs.shape[0]
             indices = np.arange(num_samples)
 
-            active_lr = current_lr
-            if (
+            is_transfer_warmup_iter = (
                 transfer_loaded
                 and not optimizer_loaded
                 and iteration == start_iteration
                 and target_kl > 0
-            ):
-                active_lr = min(current_lr, 1e-4)
+            )
+            active_lr = min(current_lr, 1e-4) if is_transfer_warmup_iter else current_lr
+            if is_transfer_warmup_iter:
                 for pg in optimizer.param_groups:
                     pg["lr"] = active_lr
 
@@ -678,21 +678,16 @@ def train_ppo(
 
             if target_kl > 0 and update_count > 0:
                 iter_mean_kl = total_kl_sum / update_count
+                base_lr = current_lr if is_transfer_warmup_iter else active_lr
                 if iter_mean_kl > target_kl * 2.0:
                     current_lr = max(min_lr, active_lr / 1.5)
                 elif 0.0 < iter_mean_kl < target_kl * 0.5:
-                    current_lr = min(max_lr, active_lr * 1.5)
+                    current_lr = min(max_lr, base_lr * 1.5)
                 else:
-                    current_lr = active_lr
+                    current_lr = base_lr
                 for pg in optimizer.param_groups:
                     pg["lr"] = current_lr
-            elif (
-                transfer_loaded
-                and not optimizer_loaded
-                and iteration == start_iteration
-                and target_kl > 0
-            ):
-                current_lr = active_lr
+            elif is_transfer_warmup_iter:
                 for pg in optimizer.param_groups:
                     pg["lr"] = current_lr
 

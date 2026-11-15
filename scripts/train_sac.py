@@ -1,8 +1,13 @@
-import argparse, math
+import argparse, math, sys
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
 import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 from torch.distributions import Normal
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from training.run_parallel_sim import ParallelSimRunner
 
 
@@ -19,7 +24,7 @@ class SquashedGaussianActor(nn.Module):
     def sample(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         feat = self.net(obs)
         mean = self.mean_head(feat)
-        log_std = torch.clamp(self.log_std_head(feat), -20.0, 2.0)
+        log_std = torch.clamp(self.log_std_head(feat), -5.0, 0.0)
         normal = Normal(mean, log_std.exp())
         u = normal.rsample()
         action = torch.tanh(u)
@@ -78,9 +83,10 @@ def sac_update_step(
         target_q = rew + (1.0 - done) * gamma * (torch.min(t_q1, t_q2) - alpha * next_log_prob)
 
     q1, q2 = critic(obs, act)
-    critic_loss = F.mse_loss(q1, target_q) + F.mse_loss(q2, target_q)
+    critic_loss = F.smooth_l1_loss(q1, target_q, beta=2.0) + F.smooth_l1_loss(q2, target_q, beta=2.0)
     optimizers["critic"].zero_grad()
     critic_loss.backward()
+    nn.utils.clip_grad_norm_(critic.parameters(), 1.0)
     optimizers["critic"].step()
 
     critic.requires_grad_(False)
@@ -124,7 +130,7 @@ def save_sac_checkpoint(
 
 
 def train_sac(
-    model_path: Union[str, Path] = "models/mjcf/microduck_8dof.xml",
+    model_path: Union[str, Path] = "duck_v2/cyberduck_v2.xml",
     num_envs: int = 16, total_steps: int = 100_000, warmup_steps: int = 1_000,
     batch_size: int = 256, hidden_dim: int = 256,
     save_path: Union[str, Path] = "checkpoints/sac_checkpoint.pt",
@@ -139,7 +145,7 @@ def train_sac(
         actor, critic = SquashedGaussianActor(obs_dim, act_dim, hidden_dim).to(device), TwinQCritic(obs_dim, act_dim, hidden_dim).to(device)
         target_critic = TwinQCritic(obs_dim, act_dim, hidden_dim).to(device)
         target_critic.load_state_dict(critic.state_dict())
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
+        log_alpha = torch.tensor([math.log(0.2)], dtype=torch.float32, requires_grad=True, device=device)
         optimizers = {
             "actor": torch.optim.Adam(actor.parameters(), lr=lr),
             "critic": torch.optim.Adam(critic.parameters(), lr=lr),

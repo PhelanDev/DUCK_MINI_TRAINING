@@ -1025,11 +1025,13 @@ def compute_rewards(
         if is_batch:
             fwd_gate = ((vel_x >= 0.0) & is_moving_cmd).astype(np.float32)
             mode_gate = walk_mode_mask.astype(np.float32)
-            r_gait_sync = (w_gait_sync * sync_score * fwd_gate * mode_gate).astype(np.float32)
+            dwell_gate = (1.0 - r_double_support).astype(np.float32)
+            r_gait_sync = (w_gait_sync * sync_score * fwd_gate * mode_gate * dwell_gate).astype(np.float32)
         else:
             fwd_gate = 1.0 if (float(vel_x) >= 0.0 and bool(is_moving_cmd)) else 0.0
             mode_gate = 1.0 if walk_mode_mask else 0.0
-            r_gait_sync = float(w_gait_sync * sync_score * fwd_gate * mode_gate)
+            dwell_gate = 1.0 - float(r_double_support)
+            r_gait_sync = float(w_gait_sync * sync_score * fwd_gate * mode_gate * dwell_gate)
     else:
         r_gait_sync = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
