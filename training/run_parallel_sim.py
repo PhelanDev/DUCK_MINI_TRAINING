@@ -43,6 +43,7 @@ from training.env_config import (
 )
 from training.terrain_curriculum import apply_stage, apply_stair_stage, STAIR_STAGES, randomize_pillars
 from training.self_righting import FallClassifier, SelfRightingController
+from training.nav_planner import LidarWaypointPlanner, NavPlannerConfig
 
 
 def has_obstacle_contact(data: Any, obstacle_gid_set: set) -> bool:
@@ -90,6 +91,9 @@ class ParallelSimRunner:
         pillar_density: float = 1.0,
         pillar_jitter_xy: float = 0.06,
         pillar_jitter: Optional[float] = None,
+        use_nav_planner: bool = False,
+        nav_goal_xy: Tuple[float, float] = (2.0, 0.0),
+        nav_planner_cfg: Optional[NavPlannerConfig] = None,
     ):
         self.model_path = Path(model_path).resolve()
         if not self.model_path.exists():
@@ -236,6 +240,14 @@ class ParallelSimRunner:
         else:
             self.recovery_controllers = []
 
+        # Hierarchical waypoint navigation planner (L2)
+        self.use_nav_planner = bool(use_nav_planner)
+        self.nav_goal_xy = tuple(nav_goal_xy)
+        if self.use_nav_planner:
+            self.nav_planner = LidarWaypointPlanner(nav_planner_cfg)
+        else:
+            self.nav_planner = None
+
         # Initialize environments
         self.reset()
 
@@ -333,6 +345,68 @@ class ParallelSimRunner:
                     foot_contact_forces[env_idx, 1] += f_world
 
         return foot_z, foot_vel_xy, foot_contact_forces
+
+    def _get_lidar_ranges(self, env_idx: int) -> Optional[np.ndarray]:
+        """Extract 5-ray LiDAR readings in meters with floor hit filtering."""
+        d = self.datas[env_idx]
+        if len(d.sensordata) >= 33:
+            raw_lidar = np.array(d.sensordata[28:33], dtype=np.float32)
+            lidar_max = float(getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0))
+            lidar_ranges = np.where(raw_lidar < 0.0, lidar_max, raw_lidar)
+            for k, sid in enumerate(self.lidar_site_ids):
+                if sid != -1 and 0.0 <= raw_lidar[k] < lidar_max:
+                    z_hit = float(d.site_xpos[sid, 2]) + float(raw_lidar[k]) * float(d.site_xmat[sid, 8])
+                    if z_hit <= 0.012:
+                        lidar_ranges[k] = lidar_max
+            return lidar_ranges
+        elif self.base_obs_dim == 42:
+            lidar_max = float(getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0))
+            return np.full(5, lidar_max, dtype=np.float32)
+        return None
+
+    def update_nav_commands(
+        self,
+        env_indices: Optional[Union[List[int], np.ndarray, range]] = None,
+        lidar_obs: Optional[np.ndarray] = None,
+    ) -> None:
+        """Update self.commands for specified environments using LidarWaypointPlanner.
+
+        Extracts current robot pose (qpos[:2], qpos[3:7]) and 5 LiDAR rays.
+        """
+        if not getattr(self, "use_nav_planner", False) or getattr(self, "nav_planner", None) is None:
+            return
+
+        if env_indices is None:
+            indices = list(range(self.num_envs))
+        else:
+            indices = [int(i) for i in env_indices]
+
+        goal_xy = np.asarray(self.nav_goal_xy, dtype=np.float32)[:2]
+
+        for idx_k, env_idx in enumerate(indices):
+            d = self.datas[env_idx]
+            pos_xy = np.asarray(d.qpos[:2], dtype=np.float32)
+            quat_wxyz = np.asarray(d.qpos[3:7], dtype=np.float32)
+
+            if lidar_obs is not None:
+                lidar_arr = np.asarray(lidar_obs, dtype=np.float32)
+                if lidar_arr.ndim == 1:
+                    raw_ray = lidar_arr[-5:] if lidar_arr.shape[0] >= 5 else None
+                elif lidar_arr.ndim == 2:
+                    k = idx_k if lidar_arr.shape[0] == len(indices) else env_idx
+                    raw_ray = lidar_arr[k, 37:42] if lidar_arr.shape[1] >= 42 else lidar_arr[k, :5]
+                else:
+                    raw_ray = None
+            else:
+                raw_ray = self._get_lidar_ranges(env_idx)
+
+            cmd = self.nav_planner.compute_command_from_quat(
+                pos_xy=pos_xy,
+                quat_wxyz=quat_wxyz,
+                goal_xy=goal_xy,
+                lidar_ranges=raw_ray,
+            )
+            self.commands[env_idx, :3] = cmd
 
     def _has_active_obstacles(self) -> bool:
         """Return True if at least one obstacle geom is raised above the floor (z > 0.0)."""
@@ -435,6 +509,8 @@ class ParallelSimRunner:
         self.last_feet_contact[env_idx] = True
         if self.enable_auto_recovery and env_idx < len(self.recovery_controllers):
             self.recovery_controllers[env_idx].reset()
+        if self.use_nav_planner:
+            self.update_nav_commands(env_indices=[env_idx])
         obs = self._extract_obs(env_idx)
         if not self._has_active_obstacles():
             d_init = None
@@ -463,6 +539,9 @@ class ParallelSimRunner:
 
         for i in indices:
             self.reset_env(i)
+
+        if self.use_nav_planner:
+            self.update_nav_commands(env_indices=indices)
 
         return self.get_observations()
 
@@ -500,20 +579,7 @@ class ParallelSimRunner:
 
         # 5-ray LiDAR rangefinder readings (sensordata indices 28:33) if available
         # MuJoCo rangefinder returns -1.0 if no geom is hit within cutoff distance
-        if len(d.sensordata) >= 33:
-            raw_lidar = np.array(d.sensordata[28:33], dtype=np.float32)
-            lidar_max = getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0)
-            lidar_ranges = np.where(raw_lidar < 0.0, lidar_max, raw_lidar)
-            for k, sid in enumerate(self.lidar_site_ids):
-                if sid != -1 and 0.0 <= raw_lidar[k] < lidar_max:
-                    z_hit = float(d.site_xpos[sid, 2]) + float(raw_lidar[k]) * float(d.site_xmat[sid, 8])
-                    if z_hit <= 0.012:
-                        lidar_ranges[k] = lidar_max
-        elif self.base_obs_dim == 42:
-            lidar_max = getattr(self.cfg, "LIDAR_MAX_RANGE", 2.0)
-            lidar_ranges = np.full(5, lidar_max, dtype=np.float32)
-        else:
-            lidar_ranges = None
+        lidar_ranges = self._get_lidar_ranges(env_idx)
 
         emotion_one_hot = (
             get_emotion_one_hot(self.current_emotions[env_idx])
@@ -731,6 +797,9 @@ class ParallelSimRunner:
         self.episode_steps += 1
 
         # 4. Extract observations, compute rewards, and check done flags
+        if self.use_nav_planner:
+            self.update_nav_commands()
+
         next_obs = np.empty((self.num_envs, self.obs_dim), dtype=np.float32)
         for i in range(self.num_envs):
             next_obs[i] = self._extract_obs(i)

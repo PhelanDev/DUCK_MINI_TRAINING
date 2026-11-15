@@ -10,6 +10,7 @@ Across multiple locomotion scenarios:
 4. Hurdles / obstacle terrain (Stage 1)
 """
 
+import argparse
 import math
 from pathlib import Path
 import sys
@@ -26,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from training.env_config import _DEFAULT_CFG, quat_to_yaw
 from training.run_parallel_sim import ParallelSimRunner, has_obstacle_contact
+from training.nav_planner import LidarWaypointPlanner
 from scripts.export_policy import apply_obs_norm_to_actor
 
 __all__ = [
@@ -138,11 +140,23 @@ def run_benchmark_scenario(
     cmd_vx: float = 0.5,
     max_steps: int = 500,
     scenario_name: str = "Forward Walk",
+    use_nav_planner: bool = False,
+    goal_x: float = 2.0,
 ) -> Dict[str, Any]:
+    effective_nav = bool(use_nav_planner or getattr(runner, "use_nav_planner", False))
+    if effective_nav:
+        runner.use_nav_planner = True
+        runner.nav_goal_xy = (float(goal_x), 0.0)
+        if getattr(runner, "nav_planner", None) is None:
+            runner.nav_planner = LidarWaypointPlanner()
     obs = runner.reset()
-    runner.commands[:, 0] = cmd_vx
-    runner.commands[:, 1] = 0.0
-    runner.commands[:, 2] = 0.0
+    if effective_nav:
+        runner.update_nav_commands()
+        obs = runner.get_observations()
+    else:
+        runner.commands[:, 0] = cmd_vx
+        runner.commands[:, 1] = 0.0
+        runner.commands[:, 2] = 0.0
 
     num_envs = runner.num_envs
     alive_steps = np.zeros(num_envs, dtype=np.int32)
@@ -266,6 +280,12 @@ def run_benchmark_scenario(
 
 
 def main():
+    parser = argparse.ArgumentParser(description="🦆 MicroDuck V1 vs CyberDuck V2 Simulation Benchmark")
+    parser.add_argument("--use-nav-planner", action="store_true", help="Include Stage 1 Hurdles + L2 NavPlanner scenario")
+    parser.add_argument("--num-envs", type=int, default=16, help="Number of parallel environments (default: 16)")
+    parser.add_argument("--steps", type=int, default=500, help="Max steps per scenario (default: 500)")
+    args = parser.parse_args()
+
     v1_model_path = REPO_ROOT / "pipelines" / "rpi5_stack" / "models" / "mjcf" / "microduck_rpi5_8dof.xml"
     v2_model_path = REPO_ROOT / "duck_v2" / "cyberduck_v2.xml"
     v1_checkpoint = REPO_ROOT / "models" / "checkpoints" / "microduck_best.pt"
@@ -279,11 +299,15 @@ def main():
     v2_actor = load_actor(v2_checkpoint)
 
     scenarios = [
-        {"name": "Standard Forward Walk (0.50 m/s)", "cmd_vx": 0.50, "steps": 500, "stage": 0},
-        {"name": "Chibi Walking Pace (0.25 m/s)", "cmd_vx": 0.25, "steps": 500, "stage": 0},
-        {"name": "Stationary Balance Stand (0.0 m/s)", "cmd_vx": 0.00, "steps": 300, "stage": 0},
-        {"name": "Stage 1 Hurdles Navigation", "cmd_vx": 0.40, "steps": 500, "stage": 1},
+        {"name": "Standard Forward Walk (0.50 m/s)", "cmd_vx": 0.50, "steps": args.steps, "stage": 0, "use_nav": False},
+        {"name": "Chibi Walking Pace (0.25 m/s)", "cmd_vx": 0.25, "steps": args.steps, "stage": 0, "use_nav": False},
+        {"name": "Stationary Balance Stand (0.0 m/s)", "cmd_vx": 0.00, "steps": min(300, args.steps), "stage": 0, "use_nav": False},
+        {"name": "Stage 1 Hurdles Navigation", "cmd_vx": 0.40, "steps": args.steps, "stage": 1, "use_nav": False},
     ]
+    if args.use_nav_planner:
+        scenarios.append(
+            {"name": "Stage 1 Hurdles + L2 NavPlanner", "cmd_vx": 0.40, "steps": args.steps, "stage": 1, "use_nav": True}
+        )
 
     results = []
 
@@ -293,13 +317,19 @@ def main():
         stage_v1 = get_xml_supported_stage(v1_model_path, sc.get("stage", 0))
         r_v1 = ParallelSimRunner(
             model_path=v1_model_path,
-            num_envs=16,
+            num_envs=args.num_envs,
             max_episode_steps=sc["steps"],
             stage=stage_v1,
+            use_nav_planner=sc.get("use_nav", False),
         )
         try:
             res_v1 = run_benchmark_scenario(
-                r_v1, v1_actor, cmd_vx=sc["cmd_vx"], max_steps=sc["steps"], scenario_name=sc["name"]
+                r_v1,
+                v1_actor,
+                cmd_vx=sc["cmd_vx"],
+                max_steps=sc["steps"],
+                scenario_name=sc["name"],
+                use_nav_planner=sc.get("use_nav", False),
             )
             res_v1["model"] = "MicroDuck V1 (microduck_best.pt)"
             results.append(res_v1)
@@ -310,13 +340,19 @@ def main():
         stage_v2 = get_xml_supported_stage(v2_model_path, sc.get("stage", 0))
         r_v2 = ParallelSimRunner(
             model_path=v2_model_path,
-            num_envs=16,
+            num_envs=args.num_envs,
             max_episode_steps=sc["steps"],
             stage=stage_v2,
+            use_nav_planner=sc.get("use_nav", False),
         )
         try:
             res_v2 = run_benchmark_scenario(
-                r_v2, v2_actor, cmd_vx=sc["cmd_vx"], max_steps=sc["steps"], scenario_name=sc["name"]
+                r_v2,
+                v2_actor,
+                cmd_vx=sc["cmd_vx"],
+                max_steps=sc["steps"],
+                scenario_name=sc["name"],
+                use_nav_planner=sc.get("use_nav", False),
             )
             res_v2["model"] = "CyberDuck V2 (cyberduck_v2_best.pt)"
             results.append(res_v2)
