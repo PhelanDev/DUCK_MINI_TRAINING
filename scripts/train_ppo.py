@@ -240,7 +240,7 @@ def train_ppo(
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
     clip_epsilon: float = 0.2,
-    entropy_coef: float = 0.01,
+    entropy_coef: float = 0.002,
     value_loss_coef: float = 0.5,
     max_grad_norm: float = 0.5,
     num_epochs: int = 4,
@@ -251,7 +251,7 @@ def train_ppo(
     device: Optional[str] = None,
     verbose: bool = True,
     start_stage: int = 0,
-    hold_iters: int = 10,
+    hold_iters: int = 5,
     resume: bool = False,
     load_checkpoint: Optional[Union[str, Path]] = None,
     terrain_mode: str = "hurdles",
@@ -264,6 +264,7 @@ def train_ppo(
     min_lr: float = 1e-5,
     max_lr: float = 1e-3,
     entropy_coef_end: Optional[float] = None,
+    max_log_std: float = -1.05,
 ) -> Dict[str, Any]:
     """Execute PPO training pipeline using ParallelSimRunner."""
     if device is None:
@@ -355,12 +356,17 @@ def train_ppo(
     hidden_dim = 256
 
     # Instantiate ActorCritic network & Adam optimizer
-    model = ActorCritic(obs_dim=obs_dim, action_dim=action_dim, hidden_dim=hidden_dim).to(dev)
+    model = ActorCritic(
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        hidden_dim=hidden_dim,
+        max_log_std=max_log_std,
+    ).to(dev)
     current_lr = float(learning_rate)
     eff_entropy_end = (
         float(entropy_coef_end)
         if entropy_coef_end is not None
-        else min(float(entropy_coef), 0.002)
+        else min(float(entropy_coef), 0.0005)
     )
     optimizer = optim.Adam(model.parameters(), lr=current_lr, eps=1e-5)
 
@@ -387,6 +393,9 @@ def train_ppo(
                 if "critic_state_dict" in ckpt:
                     model.critic.load_state_dict(ckpt["critic_state_dict"])
                 model_loaded = True
+            if model_loaded:
+                with torch.no_grad():
+                    model.log_std.data.clamp_(model.min_log_std, model.max_log_std)
             if "optimizer_state_dict" in ckpt and resume:
                 try:
                     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
@@ -647,7 +656,7 @@ def train_ppo(
                     nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                     optimizer.step()
                     with torch.no_grad():
-                        model.log_std.clamp_(model.min_log_std, model.max_log_std)
+                        model.log_std.data.clamp_(model.min_log_std, model.max_log_std)
 
                     epoch_policy_loss += float(policy_loss.item())
                     epoch_value_loss += float(value_loss.item())
@@ -931,11 +940,12 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor (default: 0.99)")
     parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda parameter (default: 0.95)")
     parser.add_argument("--clip-epsilon", type=float, default=0.2, help="PPO clipping epsilon (default: 0.2)")
-    parser.add_argument("--entropy-coef", type=float, default=0.01, help="Entropy loss weight (default: 0.01)")
+    parser.add_argument("--entropy-coef", type=float, default=0.002, help="Entropy loss weight (default: 0.002)")
     parser.add_argument("--value-loss-coef", type=float, default=0.5, help="Value loss weight (default: 0.5)")
     parser.add_argument("--dry-run", action="store_true", help="Run quick lightweight iterations for CI/CD testing")
     parser.add_argument("--device", type=str, default=None, help="Device to run on ('cpu', 'cuda')")
     parser.add_argument("--start-stage", type=int, default=0, help="Initial terrain curriculum stage (0 to 3)")
+    parser.add_argument("--hold-iters", type=int, default=5, help="Number of consecutive iterations required to advance stage (default: 5)")
     parser.add_argument("--resume", action="store_true", help="Resume training from existing save-path checkpoint")
     parser.add_argument("--load-checkpoint", type=str, default=None, help="Path to checkpoint file to resume from")
     parser.add_argument("--terrain", type=str, choices=["hurdles", "stairs"], default="hurdles", help="Terrain mode: 'hurdles' or 'stairs'")
@@ -947,7 +957,8 @@ def main():
     parser.add_argument("--target-kl", type=float, default=0.015, help="Target KL divergence for adaptive LR and epoch early-stop (<=0 to disable, default: 0.015)")
     parser.add_argument("--min-lr", type=float, default=1e-5, help="Minimum learning rate for adaptive KL schedule (default: 1e-5)")
     parser.add_argument("--max-lr", type=float, default=1e-3, help="Maximum learning rate for adaptive KL schedule (default: 1e-3)")
-    parser.add_argument("--entropy-coef-end", type=float, default=None, help="Target entropy coefficient at final iteration (default: None, falls back to min(entropy_coef, 0.002))")
+    parser.add_argument("--entropy-coef-end", type=float, default=None, help="Target entropy coefficient at final iteration (default: None, falls back to min(entropy_coef, 0.0005))")
+    parser.add_argument("--max-log-std", type=float, default=-1.05, help="Maximum log standard deviation for action policy (default: -1.05)")
 
     args = parser.parse_args()
 
@@ -972,6 +983,7 @@ def main():
         device=args.device,
         verbose=True,
         start_stage=args.start_stage,
+        hold_iters=args.hold_iters,
         resume=args.resume,
         load_checkpoint=args.load_checkpoint,
         terrain_mode=args.terrain,
@@ -984,6 +996,7 @@ def main():
         min_lr=args.min_lr,
         max_lr=args.max_lr,
         entropy_coef_end=args.entropy_coef_end,
+        max_log_std=args.max_log_std,
     )
 
 
