@@ -461,15 +461,13 @@ void process_uart_packets() {
 
 void read_foot_contacts(float *contact_out) {
     // MicroDuck foot contacts: Left foot (ADC pin / FSR), Right foot (ADC pin / FSR)
-    // If hardware pin unconfigured or floating, fallback to default [1, 1, 0, 0] with throttled log
+    // If hardware pin unconfigured or floating, fallback to default [1, 1] with throttled log
     if (!s_warned_contact_fallback) {
-        Serial.println("[MCU 2 Warning] Foot contact ADC unconfigured/floating. Using fallback ground contact [1.0, 1.0, 0.0, 0.0].");
+        Serial.println("[MCU 2 Warning] Foot contact ADC unconfigured/floating. Using fallback ground contact [1.0, 1.0].");
         s_warned_contact_fallback = true;
     }
     contact_out[0] = 1.0f; // Left foot contact
     contact_out[1] = 1.0f; // Right foot contact
-    contact_out[2] = 0.0f; // Padded
-    contact_out[3] = 0.0f; // Padded
 }
 
 void read_lidar_distances(float *ranges_out) {

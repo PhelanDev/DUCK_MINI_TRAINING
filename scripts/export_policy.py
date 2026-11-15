@@ -191,7 +191,7 @@ def load_actor_from_checkpoint(
 
 
 def export_onnx(
-    model: Union[nn.Module, str, Path],
+    model: Union[nn.Module, str, Path, dict],
     output_path: Union[str, Path] = DEFAULT_ONNX_PATH,
     opset: int = 13,
 ) -> Path:
@@ -255,7 +255,7 @@ def _format_array_c(arr: np.ndarray, per_line: int = 12) -> str:
 
 
 def export_esp32_headers(
-    model: Union[nn.Module, str, Path],
+    model: Union[nn.Module, str, Path, dict],
     weights_output_path: Union[str, Path] = DEFAULT_ESP32_WEIGHTS_PATH,
     config_output_path: Union[str, Path] = DEFAULT_ESP32_CONFIG_PATH,
     scale_obs: float = 127.0,
