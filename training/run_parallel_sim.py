@@ -422,6 +422,10 @@ class ParallelSimRunner:
             self.prev_d_min[env_idx] = d_init
             self.d_min[env_idx] = d_init
             self.d_min_dot[env_idx] = 0.0
+        else:
+            self.prev_d_min[env_idx] = 0.0
+            self.d_min[env_idx] = 0.0
+            self.d_min_dot[env_idx] = 0.0
         return obs
 
     def reset(self, env_ids: Optional[Union[List[int], np.ndarray]] = None) -> np.ndarray:
@@ -642,6 +646,9 @@ class ParallelSimRunner:
             reward_d_min = self.d_min
             reward_d_min_dot = self.d_min_dot
         else:
+            self.d_min[:] = 0.0
+            self.d_min_dot[:] = 0.0
+            self.prev_d_min[:] = 0.0
             reward_d_min = None
             reward_d_min_dot = None
 
