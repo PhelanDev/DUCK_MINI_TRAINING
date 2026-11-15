@@ -14,7 +14,7 @@ import math
 from pathlib import Path
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -24,8 +24,32 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from training.env_config import _DEFAULT_CFG
-from training.run_parallel_sim import ParallelSimRunner
+from training.env_config import _DEFAULT_CFG, quat_to_yaw
+from training.run_parallel_sim import ParallelSimRunner, has_obstacle_contact
+
+__all__ = [
+    "compute_path_unstability",
+    "has_obstacle_contact",
+    "run_benchmark_scenario",
+    "get_xml_supported_stage",
+    "load_actor",
+]
+
+
+def compute_path_unstability(yaw_history: np.ndarray, dist_x: float) -> Tuple[float, float]:
+    """Compute Total Variation of yaw angles (raw rad and distance-normalized rad/m).
+
+    Handles wraparound across [-pi, pi) smoothly.
+    Returns:
+        (raw_yaw_tv_rad, norm_yaw_unstability_rad_per_m)
+    """
+    yaw_arr = np.asarray(yaw_history, dtype=np.float32)
+    if yaw_arr.size < 2:
+        return 0.0, 0.0
+    diffs = (np.diff(yaw_arr) + np.pi) % (2.0 * np.pi) - np.pi
+    raw = float(np.sum(np.abs(diffs)))
+    norm = float(raw / max(abs(float(dist_x)), 0.1))
+    return raw, norm
 
 
 def get_xml_supported_stage(xml_path: Path, requested_stage: int) -> int:
@@ -36,7 +60,11 @@ def get_xml_supported_stage(xml_path: Path, requested_stage: int) -> int:
         import mujoco
         m = mujoco.MjModel.from_xml_path(str(xml_path))
         has_stairs = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "stair_step_1") != -1
-        return requested_stage if has_stairs else 0
+        has_obstacles = (
+            mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "pillar_l1_left") != -1
+            or mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "obstacle_front") != -1
+        )
+        return requested_stage if (has_stairs or has_obstacles) else 0
     except Exception:
         return 0
 
@@ -116,6 +144,13 @@ def run_benchmark_scenario(
     # Initial positions
     start_x = np.array([d.qpos[0] for d in runner.datas], dtype=np.float32)
 
+    # Track obstacle avoidance & yaw trajectory metrics
+    yaw_histories: List[List[float]] = [
+        [float(quat_to_yaw(runner.datas[i].qpos[3:7]))] for i in range(num_envs)
+    ]
+    env_collided = np.zeros(num_envs, dtype=bool)
+    min_clearance = np.full(num_envs, 2.0, dtype=np.float32)
+
     actor_in_dim = getattr(actor, "obs_dim", None)
     if actor_in_dim is None and hasattr(actor, "__getitem__") and hasattr(actor[0], "in_features"):
         actor_in_dim = actor[0].in_features
@@ -155,6 +190,23 @@ def run_benchmark_scenario(
                 accum_torque_sq[i] += float(np.sum(ctrl ** 2))
                 accum_work[i] += float(np.sum(np.abs(ctrl * qvel))) * runner.control_dt
 
+                # Yaw trajectory & obstacle tracking
+                pre_yaw = float(infos[i].get("yaw", quat_to_yaw(runner.datas[i].qpos[3:7])))
+                yaw_histories[i].append(pre_yaw)
+
+                env_collided[i] |= bool(infos[i].get("obstacle_contact", False))
+
+                d_val = infos[i].get("d_min")
+                if d_val is None and next_obs.shape[1] >= 42:
+                    lidar_slice = (
+                        infos[i].get("terminal_obs", next_obs[i])[37:42]
+                        if dones[i]
+                        else next_obs[i, 37:42]
+                    )
+                    d_val = float(np.min(lidar_slice))
+                if d_val is not None:
+                    min_clearance[i] = min(min_clearance[i], float(d_val))
+
                 if dones[i]:
                     survived[i] = False
 
@@ -172,6 +224,14 @@ def run_benchmark_scenario(
     mean_torque_sq = float(np.mean(accum_torque_sq / np.maximum(alive_steps, 1)))
     mean_power_watt = float(np.mean(accum_work / np.maximum(alive_steps * runner.control_dt, 1e-3)))
 
+    unstab_list = [
+        compute_path_unstability(np.array(yaw_histories[i], dtype=np.float32), final_dist_x[i])[1]
+        for i in range(num_envs)
+    ]
+    mean_yaw_unstability = float(np.mean(unstab_list)) if unstab_list else 0.0
+    collision_rate_per_100 = float(np.mean(env_collided) * 100.0)
+    mean_min_clearance = float(np.mean(min_clearance))
+
     return {
         "scenario": scenario_name,
         "cmd_vx": cmd_vx,
@@ -186,6 +246,9 @@ def run_benchmark_scenario(
         "mean_tilt_deg": mean_tilt,
         "mean_torque_sq": mean_torque_sq,
         "mean_power_watt": mean_power_watt,
+        "yaw_unstability": mean_yaw_unstability,
+        "collision_rate_per_100": collision_rate_per_100,
+        "min_clearance_m": mean_min_clearance,
     }
 
 
@@ -247,21 +310,33 @@ def main():
         finally:
             r_v2.close()
 
-        print(f"  [V1] EpLen: {res_v1['mean_eplen']:.1f}/{sc['steps']} | DistX: {res_v1['mean_dist_x']:+.3f}m | Reward: {res_v1['mean_reward']:+.2f} | Tilt: {res_v1['mean_tilt_deg']:.1f}°")
-        print(f"  [V2] EpLen: {res_v2['mean_eplen']:.1f}/{sc['steps']} | DistX: {res_v2['mean_dist_x']:+.3f}m | Reward: {res_v2['mean_reward']:+.2f} | Tilt: {res_v2['mean_tilt_deg']:.1f}°")
+        print(
+            f"  [V1] EpLen: {res_v1['mean_eplen']:.1f}/{sc['steps']} | DistX: {res_v1['mean_dist_x']:+.3f}m | "
+            f"Reward: {res_v1['mean_reward']:+.2f} | Tilt: {res_v1['mean_tilt_deg']:.1f}° | "
+            f"Unstab: {res_v1['yaw_unstability']:.2f} | Coll/100: {res_v1['collision_rate_per_100']:.1f} | "
+            f"MinClr: {res_v1['min_clearance_m']:.2f}m"
+        )
+        print(
+            f"  [V2] EpLen: {res_v2['mean_eplen']:.1f}/{sc['steps']} | DistX: {res_v2['mean_dist_x']:+.3f}m | "
+            f"Reward: {res_v2['mean_reward']:+.2f} | Tilt: {res_v2['mean_tilt_deg']:.1f}° | "
+            f"Unstab: {res_v2['yaw_unstability']:.2f} | Coll/100: {res_v2['collision_rate_per_100']:.1f} | "
+            f"MinClr: {res_v2['min_clearance_m']:.2f}m"
+        )
 
-    print("\n================================================================================")
+    print("\n========================================================================================================================")
     print("DETAILED BENCHMARK SUMMARY TABLE")
-    print("================================================================================")
-    header = f"{'Model':<16} | {'Scenario':<30} | {'Surv%':<6} | {'EpLen':<8} | {'DistX (m)':<10} | {'Reward':<9} | {'Tilt°':<6} | {'Pwr (W)':<7}"
+    print("========================================================================================================================")
+    header = f"{'Model':<16} | {'Scenario':<30} | {'Surv%':<6} | {'EpLen':<8} | {'DistX (m)':<10} | {'Reward':<9} | {'Tilt°':<6} | {'Unstab':<7} | {'Coll/100':<8} | {'MinClr':<7} | {'Pwr (W)':<7}"
     print(header)
     print("-" * len(header))
     for r in results:
         m_short = "MicroDuck V1" if "V1" in r["model"] else "CyberDuck V2"
         print(
-            f"{m_short:<16} | {r['scenario'][:30]:<30} | {r['success_rate']*100:5.1f}% | {r['mean_eplen']:6.1f}   | {r['mean_dist_x']:+9.3f}  | {r['mean_reward']:+8.2f}  | {r['mean_tilt_deg']:5.1f}° | {r['mean_power_watt']:6.2f}W"
+            f"{m_short:<16} | {r['scenario'][:30]:<30} | {r['success_rate']*100:5.1f}% | {r['mean_eplen']:6.1f}   | "
+            f"{r['mean_dist_x']:+9.3f}  | {r['mean_reward']:+8.2f}  | {r['mean_tilt_deg']:5.1f}° | "
+            f"{r['yaw_unstability']:6.2f}  | {r['collision_rate_per_100']:6.1f}%  | {r['min_clearance_m']:5.2f}m  | {r['mean_power_watt']:6.2f}W"
         )
-    print("================================================================================")
+    print("========================================================================================================================")
 
 
 if __name__ == "__main__":

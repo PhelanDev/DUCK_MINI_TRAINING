@@ -45,6 +45,17 @@ from training.terrain_curriculum import apply_stage, apply_stair_stage, STAIR_ST
 from training.self_righting import FallClassifier, SelfRightingController
 
 
+def has_obstacle_contact(data: Any, obstacle_gid_set: set) -> bool:
+    """Check if any active contact involves a geom in obstacle_gid_set."""
+    if not obstacle_gid_set or getattr(data, "ncon", 0) == 0:
+        return False
+    for c_idx in range(data.ncon):
+        c = data.contact[c_idx]
+        if c.geom1 in obstacle_gid_set or c.geom2 in obstacle_gid_set:
+            return True
+    return False
+
+
 def _find_first_id(model: mujoco.MjModel, obj_type: mujoco.mjtObj, candidates: Tuple[str, ...]) -> int:
     """Find ID of first existing named object from candidate names."""
     for name in candidates:
@@ -823,6 +834,9 @@ class ParallelSimRunner:
             {k: float(v[i]) for k, v in reward_dict.items()}
             for i in range(self.num_envs)
         ]
+        active_obstacle_gids = {
+            gid for gid in self.obstacle_geom_ids if float(self.model.geom_pos[gid, 2]) > 0.0
+        }
         for i in range(self.num_envs):
             infos[i]["timeout"] = bool(timeouts[i])
             infos[i]["time_outs"] = bool(time_outs[i])
@@ -833,6 +847,9 @@ class ParallelSimRunner:
             infos[i]["fallen"] = bool(fallen[i])
             infos[i]["distance_x"] = float(root_x[i])
             infos[i]["episode_distance_y"] = float(root_y[i])
+            infos[i]["yaw"] = float(current_yaw[i])
+            infos[i]["d_min"] = float(self.d_min[i]) if curr_d_min is not None else None
+            infos[i]["obstacle_contact"] = bool(has_obstacle_contact(self.datas[i], active_obstacle_gids))
             if self.enable_auto_recovery:
                 infos[i]["recovering"] = bool(self.recovery_controllers[i].is_recovering)
                 infos[i]["recovery_state"] = int(self.recovery_controllers[i].state)
