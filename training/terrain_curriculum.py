@@ -2,7 +2,7 @@
 
 Controls progression of difficulty by:
 1. Scaling slalom pillar distance (XY scaling factor: 1.80x -> 1.35x -> 1.10x -> 1.00x).
-2. Gradually raising staircase steps & landing platform (stair_step_h: submerged -> 0.005m -> 0.010m -> 0.015m).
+2. Gradually raising staircase steps & landing platform (stair_step_h: submerged -> submerged -> 0.008m -> 0.012m).
 """
 
 from dataclasses import dataclass
@@ -29,20 +29,20 @@ STAGES: List[Stage] = [
     Stage(
         stage_id=1,
         pillar_scale=1.35,
-        stair_step_h=0.005,
-        description="Stage 1: Medium slalom (1.35x), low stairs (+5mm/step)",
+        stair_step_h=-0.020,
+        description="Stage 1: Pure slalom pillars (1.35x), submerged stairs",
     ),
     Stage(
         stage_id=2,
         pillar_scale=1.10,
-        stair_step_h=0.010,
-        description="Stage 2: Narrow slalom (1.1x), medium stairs (+10mm/step)",
+        stair_step_h=0.008,
+        description="Stage 2: Narrow slalom (1.1x), low stairs (+8mm/step, +24mm landing)",
     ),
     Stage(
         stage_id=3,
         pillar_scale=1.00,
-        stair_step_h=0.015,
-        description="Stage 3: Full challenge (1.0x slalom, +15mm/step stairs, +45mm landing)",
+        stair_step_h=0.012,
+        description="Stage 3: Full challenge (1.0x slalom, +12mm/step stairs, +36mm landing)",
     ),
 ]
 

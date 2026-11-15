@@ -201,7 +201,7 @@ class MicroDuck8DoFConfig:
             "corridor_clearance": 0.4,
             "sigma_obs": 0.3,
             "foot_clearance": 2.0,
-            "target_foot_height": 0.022,
+            "target_foot_height": 0.015,
             "stumble": 0.5,
             "w_centering": 1.5,
             "stair_ascent": 1.5,
@@ -833,7 +833,7 @@ def compute_rewards(
 
     # 9. Foot clearance reward & stumble penalty
     if foot_z is not None and foot_vel_xy is not None and foot_contact_forces is not None:
-        target_h = weights.get("target_foot_height", 0.06)
+        target_h = weights.get("target_foot_height", 0.015)
         r_clearance, r_stumble = compute_foot_clearance_and_stumble(
             foot_z=foot_z,
             foot_vel_xy=foot_vel_xy,
