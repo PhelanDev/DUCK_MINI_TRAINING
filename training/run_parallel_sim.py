@@ -670,7 +670,13 @@ class ParallelSimRunner:
 
         if curr_d_min is not None:
             self.d_min[:] = curr_d_min
-            self.d_min_dot[:] = (curr_d_min - self.prev_d_min) / self.control_dt
+            raw_dot = (curr_d_min - self.prev_d_min) / self.control_dt
+            invalid_trans = (
+                (self.prev_d_min <= 0.0)
+                | (self.prev_d_min >= 1.99)
+                | (curr_d_min >= 1.99)
+            )
+            self.d_min_dot[:] = np.where(invalid_trans, 0.0, np.clip(raw_dot, -1.0, 1.0))
             self.prev_d_min[:] = curr_d_min
             reward_d_min = self.d_min
             reward_d_min_dot = self.d_min_dot
