@@ -182,6 +182,14 @@ duckV1/
 
 ---
 
-## 7. License
+## 7. Trạng Thái Hiện Tại & Điểm Neo Khôi Phục (`v1-flat-walk-stable`)
+
+- **Đang dừng ở đâu:** Nhánh `main` gắn tag `v1-flat-walk-stable` kèm checkpoint neo `models/checkpoints/v1-flat-walk-stable.pt`; bài 1 đi bộ mặt phẳng Stage 0 (`cyberduck_v2.xml`) đang hội tụ ổn định (`Reward: -7.24 -> +2.19`, `DistX: +0.36m`, `Succ: 8%`, `Std: ~0.20`, đã triệt tiêu lỗi nổ `log_std` và đi lùi).
+- **Đã thử những gì:** Đã thử nghiệm 5 mô-đun nâng cấp (Randomize Pillars, Metrics `Unstab/Coll/MinClr`, BC Warmup Actor+Critic, 5-ray LiDAR Corridor Reward, 2-Layer Nav + SAC) và chạy audit $\ge 50$ vòng cho 6 bài; phát hiện & sửa 6 lỗi ở 7 file (tia LiDAR chạm sàn khi nghiêng thân, `gait_sync` khi đứng chôn 2 chân, kẹt giảm `LR` khi `--load-checkpoint`, biên độ BC nhỏ, nổ `CriticLoss` của SAC do $\alpha_0=1.0$, và `nav_planner` phanh sớm) — toàn bộ 7 file này đã được cất riêng sang nhánh `wip/nav-sac`.
+- **Giả thuyết tiếp theo:** Chờ đợt train PPO Stage 0 dài hạn (`2300` vòng, tăng `num_envs >= 64`) hội tụ vững dáng đi phẳng trên `main`, sau đó mới cherry-pick từng phần từ `wip/nav-sac` (ưu tiên lọc tia LiDAR chạm sàn + BC warmup) để lên Stage 1–3 né cọc mà không làm hỏng dáng đi cơ sở.
+
+---
+
+## 8. License
 
 Distributed under the [MIT License](LICENSE). Copyright (c) 2026 PhelanDev.
