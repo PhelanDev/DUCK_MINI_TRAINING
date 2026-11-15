@@ -95,6 +95,108 @@ def apply_stage(model: mujoco.MjModel, stage: int) -> None:
                 model.geom_pos[gid, 2] = top_z - half_z
 
 
+def randomize_pillars(
+    model: mujoco.MjModel,
+    stage: int,
+    rng: np.random.Generator,
+    density_rho: float = 1.0,
+    jitter_xy: float = 0.06,
+    min_spawn_dist: float = 0.30,
+    min_gap_width: float = 0.22,
+) -> List[str]:
+    """Randomize active slalom pillars, positions, and maintain safety clearances.
+
+    Prevents policy from memorizing static coordinates while ensuring:
+    1. Inactive pillars are submerged to z = -0.50m.
+    2. Active pillars stay within corridor bounds (|y| <= 0.45m).
+    3. Clear spawn distance away from robot origin (hypot(x, y) >= min_spawn_dist + r).
+    4. Passable corridor gaps between paired pillars (gap >= min_gap_width).
+    """
+    apply_stage(model, stage)
+    available = [
+        name for name in _BASE_PILLAR_POS
+        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name) != -1
+    ]
+    if stage <= 0 or density_rho <= 0.0 or not available:
+        return available
+
+    n_keep = max(1, int(np.ceil(np.clip(density_rho, 0.0, 1.0) * len(available))))
+    selected_indices = rng.choice(len(available), size=n_keep, replace=False)
+    active_set = {available[i] for i in selected_indices}
+    active_pillars = [name for name in available if name in active_set]
+
+    # Submerge inactive pillars
+    for name in available:
+        if name not in active_set:
+            gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            model.geom_pos[gid, 2] = -0.50
+
+    # Jitter and enforce spawn clearance for active pillars
+    for name in active_pillars:
+        gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+        r = float(model.geom_size[gid, 0])
+        jitter = rng.uniform(-jitter_xy, jitter_xy, size=2)
+        px = float(model.geom_pos[gid, 0] + jitter[0])
+        py = float(model.geom_pos[gid, 1] + jitter[1])
+        py = float(np.clip(py, -0.45, 0.45))
+
+        req_dist = min_spawn_dist + r
+        dist = float(np.hypot(px, py))
+        if dist < req_dist:
+            if dist < 1e-6:
+                px = req_dist
+                py = 0.0
+            else:
+                scale = req_dist / dist
+                px *= scale
+                py *= scale
+                if abs(py) > 0.45:
+                    py = float(np.clip(py, -0.45, 0.45))
+                    rem_sq = req_dist**2 - py**2
+                    if rem_sq > 0.0:
+                        sign_x = 1.0 if px >= 0 else -1.0
+                        px = sign_x * float(np.sqrt(rem_sq))
+
+        model.geom_pos[gid, 0] = px
+        model.geom_pos[gid, 1] = py
+
+    # Guarantee passable gap between paired pillars (L1 left/right, L3 left/right)
+    pairs = [
+        ("pillar_l1_left", "pillar_l1_right"),
+        ("pillar_l3_left", "pillar_l3_right"),
+    ]
+    for left_name, right_name in pairs:
+        if left_name in active_set and right_name in active_set:
+            gid_l = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, left_name)
+            gid_r = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, right_name)
+            r_l = float(model.geom_size[gid_l, 0])
+            r_r = float(model.geom_size[gid_r, 0])
+            target_dist = min(0.90, min_gap_width + r_l + r_r)
+            py_l = float(model.geom_pos[gid_l, 1])
+            py_r = float(model.geom_pos[gid_r, 1])
+
+            if py_l - py_r < target_dist:
+                half_t = target_dist / 2.0
+                center_y = float(np.clip((py_l + py_r) / 2.0, -0.45 + half_t, 0.45 - half_t))
+                py_l = center_y + half_t
+                py_r = center_y - half_t
+                model.geom_pos[gid_l, 1] = py_l
+                model.geom_pos[gid_r, 1] = py_r
+
+                # Re-verify spawn distance if py adjustment shifted pillar inward
+                for gid, py_val in [(gid_l, py_l), (gid_r, py_r)]:
+                    r_p = float(model.geom_size[gid, 0])
+                    req = min_spawn_dist + r_p
+                    px_val = float(model.geom_pos[gid, 0])
+                    if np.hypot(px_val, py_val) < req:
+                        rem_sq = req**2 - py_val**2
+                        if rem_sq > 0.0:
+                            sign_x = 1.0 if px_val >= 0 else -1.0
+                            model.geom_pos[gid, 0] = sign_x * float(np.sqrt(rem_sq))
+
+    return active_pillars
+
+
 STAGE_MIN_DISTANCE_X: Dict[int, float] = {
     0: 0.8,   # Stage 0 -> 1: Flat floor clearance >= 0.8m (prevent overfitting to flat floor)
     1: 1.2,   # Stage 1 -> 2: 5mm stair clearance >= 1.2m
