@@ -184,6 +184,7 @@ class MicroDuck8DoFConfig:
             "foot_contact": 1.0,
             "double_support_penalty": -0.5,
             "obstacle_avoidance": 0.2,
+            "corridor_clearance": 0.4,
             "sigma_obs": 0.3,
             "foot_clearance": 2.0,
             "stumble": 0.5,
@@ -463,6 +464,47 @@ def avoid_vel_penalty(
     approach_speed = np.maximum(0.0, -d_dot)
     penalty = -approach_speed * np.exp(-d / sigma_obs)
     return penalty.astype(np.float32)
+
+
+def corridor_clearance_reward(
+    lidar_ranges: np.ndarray,
+    max_range: float = 2.0,
+    activation_dist: float = 1.2,
+) -> Union[float, np.ndarray]:
+    """Compute corridor clearance reward from 5-ray LiDAR.
+
+    Awards higher reward when robot is centered between left/right obstacles and has
+    an open corridor ahead. Active only when closest detected obstacle is within activation_dist.
+
+    Args:
+        lidar_ranges: Array of LiDAR ray distances, shape (..., 5) or (5,)
+        max_range: Maximum ray distance for normalizing forward clearance (default 2.0m)
+        activation_dist: Activation threshold distance (default 1.2m)
+
+    Returns:
+        Reward in [0, 1]: float if 1D array, np.ndarray (float32) if batched.
+    """
+    ranges = np.asarray(lidar_ranges, dtype=np.float32)
+    is_batch = ranges.ndim > 1
+
+    if ranges.size == 0 or ranges.shape[-1] < 5:
+        if is_batch:
+            return np.zeros(ranges.shape[:-1], dtype=np.float32)
+        return 0.0
+
+    d_min = np.min(ranges, axis=-1)
+    active = d_min < activation_dist
+    right = np.min(ranges[..., :2], axis=-1)
+    center = ranges[..., 2]
+    left = np.min(ranges[..., 3:5], axis=-1)
+
+    symmetry = np.clip(1.0 - np.abs(left - right) / np.maximum(left + right, 1e-3), 0.0, 1.0)
+    forward_opening = np.clip(center / float(max_range), 0.0, 1.0)
+    rew = np.where(active, forward_opening * symmetry, 0.0)
+
+    if not is_batch:
+        return float(rew)
+    return rew.astype(np.float32)
 
 
 def compute_foot_clearance_and_stumble(
@@ -765,6 +807,18 @@ def compute_rewards(
     else:
         r_obstacle = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
+    # Corridor clearance reward (active in hurdles mode with forward walk gate)
+    if terrain_mode == "hurdles" and lidar_ranges is not None:
+        raw_clearance = corridor_clearance_reward(lidar_ranges)
+        if is_batch:
+            fwd_gate = (vel_x > 0.02) & is_walking_cmd & walk_mode_mask
+            r_corridor_clearance = np.where(fwd_gate, raw_clearance, 0.0).astype(np.float32)
+        else:
+            fwd_gate = bool((float(vel_x) > 0.02) and is_walking_cmd and walk_mode_mask)
+            r_corridor_clearance = float(raw_clearance) if fwd_gate else 0.0
+    else:
+        r_corridor_clearance = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
+
     # 9. Foot clearance reward & stumble penalty
     if foot_z is not None and foot_vel_xy is not None and foot_contact_forces is not None:
         target_h = weights.get("target_foot_height", 0.06)
@@ -999,6 +1053,7 @@ def compute_rewards(
         + weights.get("backward_vel_penalty", -2.0) * r_backward_vel
         + weights.get("foot_slip_penalty", -0.8) * r_foot_slip
         + weights.get("obstacle_avoidance", 0.2) * r_obstacle
+        + weights.get("corridor_clearance", 0.4) * r_corridor_clearance
         + weights.get("foot_clearance", 2.0) * r_clearance
         + weights.get("stumble", 0.5) * r_stumble
         + (weights.get("w_centering", 1.5) * r_centering if terrain_mode == "stairs" else 0.0)
@@ -1032,6 +1087,7 @@ def compute_rewards(
             "foot_slip_penalty": float(r_foot_slip),
             "double_support_penalty": float(weights.get("double_support_penalty", -0.5) * r_double_support),
             "obstacle_avoidance": float(r_obstacle),
+            "corridor_clearance": float(r_corridor_clearance),
             "foot_clearance": float(r_clearance),
             "rew_foot_clearance": float(r_clearance),
             "stumble": float(r_stumble),
@@ -1067,6 +1123,7 @@ def compute_rewards(
         "foot_slip_penalty": r_foot_slip.astype(np.float32),
         "double_support_penalty": (weights.get("double_support_penalty", -0.5) * r_double_support).astype(np.float32),
         "obstacle_avoidance": r_obstacle.astype(np.float32),
+        "corridor_clearance": r_corridor_clearance.astype(np.float32),
         "foot_clearance": r_clearance.astype(np.float32),
         "rew_foot_clearance": r_clearance.astype(np.float32),
         "stumble": r_stumble.astype(np.float32),
