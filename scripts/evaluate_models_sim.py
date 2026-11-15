@@ -26,6 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from training.env_config import _DEFAULT_CFG, quat_to_yaw
 from training.run_parallel_sim import ParallelSimRunner, has_obstacle_contact
+from scripts.export_policy import apply_obs_norm_to_actor
 
 __all__ = [
     "compute_path_unstability",
@@ -95,6 +96,15 @@ def load_actor(checkpoint_path: Path) -> nn.Module:
             action_dim = int(state_dict[key].shape[0])
             break
 
+    critic_obs_dim = None
+    if isinstance(cp, dict):
+        if "critic_obs_dim" in cp:
+            critic_obs_dim = int(cp["critic_obs_dim"])
+        elif "model_state_dict" in cp and "critic.0.weight" in cp["model_state_dict"]:
+            critic_obs_dim = int(cp["model_state_dict"]["critic.0.weight"].shape[1])
+        elif "critic.0.weight" in cp:
+            critic_obs_dim = int(cp["critic.0.weight"].shape[1])
+
     actor = nn.Sequential(
         nn.Linear(obs_dim, hidden_dim),
         nn.ELU(),
@@ -111,10 +121,13 @@ def load_actor(checkpoint_path: Path) -> nn.Module:
     else:
         actor.load_state_dict(state_dict)
 
+    apply_obs_norm_to_actor(actor, cp)
+
     actor.eval()
     actor.obs_dim = obs_dim
     actor.hidden_dim = hidden_dim
     actor.action_dim = action_dim
+    actor.critic_obs_dim = critic_obs_dim
     actor.stage = int(cp.get("stage", 0)) if isinstance(cp, dict) else 0
     return actor
 

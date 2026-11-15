@@ -42,6 +42,7 @@ const uint8_t SERVO_PINS[8] = {6, 7, 8, 9, 10, 11, 12, 13};
 const float JOINT_MIN_LIMITS[8] = {-1.57f, -0.52f, -0.44f, -0.87f, 0.00f, -0.44f, -0.87f, 0.00f};
 const float JOINT_MAX_LIMITS[8] = { 1.57f,  0.78f,  0.44f,  0.87f, 1.48f,  0.44f,  0.87f, 1.48f};
 const float JOINT_NOMINAL_POS[8] = { 0.00f,  0.00f,  0.00f, -0.15f, 0.15f,  0.00f, -0.15f, 0.15f};
+const float JOINT_ACTION_SCALE[8] = {0.15f, 0.15f, 0.25f, 0.45f, 0.50f, 0.25f, 0.45f, 0.50f};
 
 // MG996R Safety Constraints
 #define MAX_VELOCITY_RAD_S 6.0f     // ~344 deg/s max angular velocity
@@ -525,8 +526,23 @@ void assemble_observation(float *obs_out) {
         obs_out[25 + i] = g_last_raw_actions[i];
     }
 
-    // [33..36]: Feet contact sensors (4) - [Left, Right, Padded, Padded]
+    // [33..34]: Feet contact sensors (2) - [Left, Right]
     read_foot_contacts(&obs_out[33]);
+
+    // [35..36]: Gait phase clock [sin(phase), cos(phase)] (T=0.8s, dt=0.02s) matching compute_gait_phase
+    static uint32_t s_gait_step = 0;
+    bool is_moving = (fabsf(g_cmd_pkt.vx) > 0.01f || fabsf(g_cmd_pkt.vy) > 0.01f || fabsf(g_cmd_pkt.wz) > 0.01f);
+    if (is_moving) {
+        s_gait_step++;
+        float phase = fmodf((float)s_gait_step * CONTROL_DT / 0.8f, 1.0f);
+        float two_pi_phase = 2.0f * (float)PI * phase;
+        obs_out[35] = sinf(two_pi_phase);
+        obs_out[36] = cosf(two_pi_phase);
+    } else {
+        s_gait_step = 0;
+        obs_out[35] = 0.0f;
+        obs_out[36] = 1.0f;
+    }
 
     // [37..41]: 5-Ray ToF LiDAR rangefinder distances from MCU 1 (5)
     read_lidar_distances(&obs_out[37]);
@@ -552,8 +568,8 @@ void evaluate_locomotion_policy(const float *obs, float *target_angles_out) {
         raw_act = constrain(raw_act, -1.0f, 1.0f);
         g_last_raw_actions[i] = raw_act;
 
-        // Nominal-centered scaling: action 0.0 corresponds to nominal_qpos
-        float target_angle = (raw_act >= 0.0f) ? (JOINT_NOMINAL_POS[i] + raw_act * (JOINT_MAX_LIMITS[i] - JOINT_NOMINAL_POS[i])) : (JOINT_NOMINAL_POS[i] + raw_act * (JOINT_NOMINAL_POS[i] - JOINT_MIN_LIMITS[i]));
+        // Residual action scaling matching training/env_config.py: scale_actions(..., nominal_centered=True)
+        float target_angle = JOINT_NOMINAL_POS[i] + raw_act * JOINT_ACTION_SCALE[i];
         target_angles_out[i] = constrain(target_angle, JOINT_MIN_LIMITS[i], JOINT_MAX_LIMITS[i]);
     }
 }

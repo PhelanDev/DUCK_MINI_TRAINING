@@ -9,7 +9,7 @@ Exports trained Actor policy checkpoints to deployment targets:
 from pathlib import Path
 import argparse
 import sys
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import numpy as np
 import onnx
@@ -49,23 +49,107 @@ class PolicyOnnxWrapper(nn.Module):
         return self.actor(obs)
 
 
+def apply_obs_norm_to_actor(actor: nn.Module, ckpt: Any) -> nn.Module:
+    """Fold observation normalization (mean, var) from ckpt['obs_rms'] into actor's first linear layer.
+
+    Folds:
+        inv_std = 1.0 / sqrt(var + eps)
+        w_fused = w * inv_std
+        b_fused = b - w_fused @ mean
+    Guarantees idempotency (does not double-fuse) and finite checks.
+    """
+    if getattr(actor, "_obs_norm_applied", False):
+        return actor
+
+    if not isinstance(ckpt, dict) or "obs_rms" not in ckpt or ckpt["obs_rms"] is None:
+        return actor
+
+    obs_rms = ckpt["obs_rms"]
+    if isinstance(obs_rms, dict):
+        mean = obs_rms.get("mean")
+        var = obs_rms.get("var")
+        eps = float(obs_rms.get("epsilon", 1e-4))
+    else:
+        mean = getattr(obs_rms, "mean", None)
+        var = getattr(obs_rms, "var", None)
+        eps = float(getattr(obs_rms, "epsilon", 1e-4))
+
+    if mean is None or var is None:
+        return actor
+
+    mean = np.asarray(mean, dtype=np.float32).ravel()
+    var = np.asarray(var, dtype=np.float32).ravel()
+
+    # Find the first nn.Linear layer in actor
+    linear_layer = None
+    if isinstance(actor, (nn.Sequential, nn.ModuleList)) and len(actor) > 0 and isinstance(actor[0], nn.Linear):
+        linear_layer = actor[0]
+    else:
+        for m in actor.modules():
+            if isinstance(m, nn.Linear):
+                linear_layer = m
+                break
+
+    if linear_layer is None:
+        return actor
+
+    in_features = linear_layer.in_features
+    if mean.shape[0] < in_features or var.shape[0] < in_features:
+        return actor
+    mean = mean[:in_features]
+    var = var[:in_features]
+
+    if not (np.all(np.isfinite(mean)) and np.all(np.isfinite(var)) and np.all(var >= 0)):
+        return actor
+
+    inv_std = 1.0 / np.sqrt(var + eps)
+    w = linear_layer.weight.detach().cpu().numpy().astype(np.float32)
+    b = (
+        linear_layer.bias.detach().cpu().numpy().astype(np.float32)
+        if linear_layer.bias is not None
+        else np.zeros(linear_layer.out_features, dtype=np.float32)
+    )
+
+    w_fused = w * inv_std  # shape (out_features, in_features)
+    b_fused = b - (w_fused @ mean)  # shape (out_features,)
+
+    linear_layer.weight.data = torch.from_numpy(w_fused).to(
+        device=linear_layer.weight.device, dtype=linear_layer.weight.dtype
+    )
+    if linear_layer.bias is not None:
+        linear_layer.bias.data = torch.from_numpy(b_fused).to(
+            device=linear_layer.bias.device, dtype=linear_layer.bias.dtype
+        )
+    else:
+        linear_layer.bias = nn.Parameter(
+            torch.from_numpy(b_fused).to(
+                device=linear_layer.weight.device, dtype=linear_layer.weight.dtype
+            )
+        )
+
+    actor._obs_norm_applied = True
+    return actor
+
+
 def load_actor_from_checkpoint(
-    checkpoint_or_model: Union[str, Path, nn.Module],
+    checkpoint_or_model: Union[str, Path, nn.Module, dict],
     obs_dim: int = 42,
     action_dim: int = 8,
     hidden_dim: int = 256,
 ) -> nn.Module:
-    """Load Actor network from checkpoint file or return existing module."""
+    """Load Actor network from checkpoint file or dict, folding obs_rms if present."""
     if isinstance(checkpoint_or_model, nn.Module):
         if hasattr(checkpoint_or_model, "actor"):
             return checkpoint_or_model.actor
         return checkpoint_or_model
 
-    ckpt_path = Path(checkpoint_or_model).resolve()
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"Checkpoint file not found at {ckpt_path}")
-
-    ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    if isinstance(checkpoint_or_model, dict):
+        ckpt = checkpoint_or_model
+    else:
+        ckpt_path = Path(checkpoint_or_model).resolve()
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Checkpoint file not found at {ckpt_path}")
+        ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
 
     obs_d = ckpt.get("obs_dim", obs_dim) if isinstance(ckpt, dict) else obs_dim
     # Infer observation dimension directly from state_dict weights to be fully resilient
@@ -77,19 +161,33 @@ def load_actor_from_checkpoint(
         elif "0.weight" in ckpt:
             obs_d = int(ckpt["0.weight"].shape[1])
 
+    critic_obs_d = None
+    if isinstance(ckpt, dict):
+        if "critic_obs_dim" in ckpt:
+            critic_obs_d = int(ckpt["critic_obs_dim"])
+        elif "model_state_dict" in ckpt and "critic.0.weight" in ckpt["model_state_dict"]:
+            critic_obs_d = int(ckpt["model_state_dict"]["critic.0.weight"].shape[1])
+        elif "critic.0.weight" in ckpt:
+            critic_obs_d = int(ckpt["critic.0.weight"].shape[1])
+
     act_d = ckpt.get("action_dim", action_dim) if isinstance(ckpt, dict) else action_dim
     hid_d = ckpt.get("hidden_dim", hidden_dim) if isinstance(ckpt, dict) else hidden_dim
 
-    model = ActorCritic(obs_dim=obs_d, action_dim=act_d, hidden_dim=hid_d)
+    model = ActorCritic(obs_dim=obs_d, action_dim=act_d, hidden_dim=hid_d, critic_obs_dim=critic_obs_d)
 
-    if "model_state_dict" in ckpt:
-        model.load_state_dict(ckpt["model_state_dict"])
-    elif "actor_state_dict" in ckpt:
-        model.actor.load_state_dict(ckpt["actor_state_dict"])
+    if isinstance(ckpt, dict):
+        if "model_state_dict" in ckpt:
+            model.load_state_dict(ckpt["model_state_dict"])
+        elif "actor_state_dict" in ckpt:
+            model.actor.load_state_dict(ckpt["actor_state_dict"])
+        else:
+            model.load_state_dict(ckpt)
     else:
         model.load_state_dict(ckpt)
 
-    return model.actor
+    actor = model.actor
+    apply_obs_norm_to_actor(actor, ckpt)
+    return actor
 
 
 def export_onnx(
