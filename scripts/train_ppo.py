@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
+import uuid
 
 import numpy as np
 import torch
@@ -49,12 +50,14 @@ class RunningMeanStd:
         shape: Union[int, Tuple[int, ...]] = (),
         epsilon: float = 1e-4,
         clip: float = 10.0,
+        min_std: float = 0.10,
     ):
         if isinstance(shape, int):
             shape = (shape,)
         self.shape = shape
         self.epsilon = float(epsilon)
         self.clip = float(clip)
+        self.min_std = float(min_std)
         self.mean = np.zeros(self.shape, dtype=np.float64)
         self.var = np.ones(self.shape, dtype=np.float64)
         self.count = 1e-4
@@ -84,17 +87,18 @@ class RunningMeanStd:
         self.count = new_count
 
     def normalize(self, x: Union[np.ndarray, torch.Tensor]) -> Union[np.ndarray, torch.Tensor]:
-        """Normalize observation x: (x - mean) / sqrt(var + eps), clipped to [-clip, clip]."""
+        """Normalize observation x: (x - mean) / max(sqrt(var + eps), min_std), clipped to [-clip, clip]."""
         if isinstance(x, torch.Tensor):
             mean_t = torch.as_tensor(self.mean, dtype=x.dtype, device=x.device)
             var_t = torch.as_tensor(self.var, dtype=x.dtype, device=x.device)
-            norm = (x - mean_t) / torch.sqrt(var_t + self.epsilon)
+            std_t = torch.clamp(torch.sqrt(var_t + self.epsilon), min=self.min_std)
+            norm = (x - mean_t) / std_t
             if self.clip > 0:
                 norm = torch.clamp(norm, -self.clip, self.clip)
             return norm
         else:
             x_arr = np.asarray(x, dtype=np.float32)
-            std = np.sqrt(self.var + self.epsilon).astype(np.float32)
+            std = np.maximum(np.sqrt(self.var + self.epsilon).astype(np.float32), self.min_std)
             norm = (x_arr - self.mean.astype(np.float32)) / std
             if self.clip > 0:
                 norm = np.clip(norm, -self.clip, self.clip)
@@ -108,6 +112,7 @@ class RunningMeanStd:
             "shape": self.shape,
             "clip": self.clip,
             "epsilon": self.epsilon,
+            "min_std": self.min_std,
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
@@ -118,6 +123,8 @@ class RunningMeanStd:
             self.clip = float(state_dict["clip"])
         if "epsilon" in state_dict:
             self.epsilon = float(state_dict["epsilon"])
+        if "min_std" in state_dict:
+            self.min_std = float(state_dict["min_std"])
 
 
 class ActorCritic(nn.Module):
@@ -376,6 +383,27 @@ def evaluate_deterministic_rollout(
         eval_runner.close()
         if was_training:
             model.train()
+
+
+def _atomic_torch_save(payload: Dict[str, Any], target_path: Union[str, Path]) -> None:
+    """Save PyTorch checkpoint payload atomically using a temporary file and os.replace.
+
+    Avoids partial/corrupt checkpoint reads when external processes (such as
+    interactive_viewer.py) monitor and hot-reload checkpoint files.
+    """
+    target = Path(target_path).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        torch.save(payload, str(tmp_path))
+        os.replace(str(tmp_path), str(target))
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def train_ppo(
@@ -1104,7 +1132,7 @@ def train_ppo(
                     "best_reward": best_reward,
                     "best_distance_x": best_dist_x,
                 }
-                torch.save(best_ckpt, str(best_save_path))
+                _atomic_torch_save(best_ckpt, best_save_path)
                 if verbose:
                     print(
                         f"[PPO] [BEST] New best model saved: {best_save_path.name} "
@@ -1136,8 +1164,8 @@ def train_ppo(
                     "best_reward": best_reward,
                     "best_distance_x": best_dist_x,
                 }
-                torch.save(ckpt, str(save_path))
-                torch.save(ckpt, str(latest_save_path))
+                _atomic_torch_save(ckpt, save_path)
+                _atomic_torch_save(ckpt, latest_save_path)
                 if verbose:
                     print(f"[PPO] Periodic checkpoint saved: {save_path.name} & {latest_save_path.name} (iter {iteration})")
 
@@ -1167,10 +1195,10 @@ def train_ppo(
             "best_reward": best_reward,
             "best_distance_x": best_dist_x,
         }
-        torch.save(checkpoint, str(save_path))
-        torch.save(checkpoint, str(latest_save_path))
+        _atomic_torch_save(checkpoint, save_path)
+        _atomic_torch_save(checkpoint, latest_save_path)
         if not best_save_path.exists():
-            torch.save(checkpoint, str(best_save_path))
+            _atomic_torch_save(checkpoint, best_save_path)
         if verbose:
             print(f"[PPO] Checkpoint saved successfully: {save_path} ({total_timesteps} steps in {elapsed_total:.2f}s)")
 

@@ -49,11 +49,12 @@ class PolicyOnnxWrapper(nn.Module):
         return self.actor(obs)
 
 
-def apply_obs_norm_to_actor(actor: nn.Module, ckpt: Any) -> nn.Module:
+def apply_obs_norm_to_actor(actor: nn.Module, ckpt: Any, min_std: float = 0.10) -> nn.Module:
     """Fold observation normalization (mean, var) from ckpt['obs_rms'] into actor's first linear layer.
 
     Folds:
-        inv_std = 1.0 / sqrt(var + eps)
+        std = max(sqrt(var + eps), min_std)
+        inv_std = 1.0 / std
         w_fused = w * inv_std
         b_fused = b - w_fused @ mean
     Guarantees idempotency (does not double-fuse) and finite checks.
@@ -69,10 +70,12 @@ def apply_obs_norm_to_actor(actor: nn.Module, ckpt: Any) -> nn.Module:
         mean = obs_rms.get("mean")
         var = obs_rms.get("var")
         eps = float(obs_rms.get("epsilon", 1e-4))
+        eff_min_std = float(obs_rms.get("min_std", min_std))
     else:
         mean = getattr(obs_rms, "mean", None)
         var = getattr(obs_rms, "var", None)
         eps = float(getattr(obs_rms, "epsilon", 1e-4))
+        eff_min_std = float(getattr(obs_rms, "min_std", min_std))
 
     if mean is None or var is None:
         return actor
@@ -102,7 +105,8 @@ def apply_obs_norm_to_actor(actor: nn.Module, ckpt: Any) -> nn.Module:
     if not (np.all(np.isfinite(mean)) and np.all(np.isfinite(var)) and np.all(var >= 0)):
         return actor
 
-    inv_std = 1.0 / np.sqrt(var + eps)
+    std = np.maximum(np.sqrt(var + eps), eff_min_std)
+    inv_std = 1.0 / std
     w = linear_layer.weight.detach().cpu().numpy().astype(np.float32)
     b = (
         linear_layer.bias.detach().cpu().numpy().astype(np.float32)
