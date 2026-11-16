@@ -649,6 +649,35 @@ def policy_step(policy: Any, obs: np.ndarray) -> np.ndarray:
     return np.clip(actions, -1.0, 1.0).astype(np.float32)
 
 
+def _maybe_hot_reload_policy(
+    policy_path: Optional[Union[str, Path]],
+    current_policy: Any,
+    last_mtime: float,
+    last_check_wall: float,
+    check_interval: float = 1.0,
+    now: Optional[float] = None,
+) -> Tuple[Any, float, float]:
+    """Check if policy file on disk has updated mtime and hot-reload weights.
+
+    Throttles stat calls to at most once per `check_interval` seconds. Safely falls
+    back to current_policy on any exception (e.g. file lock, half-written checkpoint).
+    """
+    now_t = time.time() if now is None else float(now)
+    if not policy_path or current_policy is None or (now_t - last_check_wall) < check_interval:
+        return (current_policy, last_mtime, last_check_wall)
+
+    try:
+        mtime = os.path.getmtime(str(policy_path))
+        if mtime > last_mtime:
+            new_policy = load_viewer_policy(policy_path)
+            print(f"\n[HOT-RELOAD] Đã tải trọng số policy mới từ {policy_path} (mtime={mtime:.1f})")
+            return (new_policy, mtime, now_t)
+        return (current_policy, last_mtime, now_t)
+    except Exception:
+        # File might be temporarily locked or mid-write by train_ppo.py
+        return (current_policy, last_mtime, now_t)
+
+
 def run_simulation_headless(
     model_path: Union[str, Path] = "models/mjcf/microduck_8dof.xml",
     pose: str = "stand",
@@ -852,6 +881,14 @@ def run_interactive_viewer(
             step_count = 0
 
             policy = load_viewer_policy(policy_path) if policy_path else None
+            policy_mtime = 0.0
+            last_reload_check = 0.0
+            if policy_path and os.path.exists(str(policy_path)):
+                try:
+                    policy_mtime = os.path.getmtime(str(policy_path))
+                    last_reload_check = time.time()
+                except Exception:
+                    pass
             control_dt = 0.02
             decimation = max(1, int(round(control_dt / dt)))
             policy_episode_step = 0
@@ -869,6 +906,9 @@ def run_interactive_viewer(
 
                 if policy is not None:
                     if step_count % decimation == 0:
+                        policy, policy_mtime, last_reload_check = _maybe_hot_reload_policy(
+                            policy_path, policy, policy_mtime, last_reload_check
+                        )
                         obs = extract_viewer_observation(
                             model,
                             data,
@@ -1021,6 +1061,14 @@ def run_opencv_viewer(
     renderer = mujoco.Renderer(model, 480, 640)
 
     policy = load_viewer_policy(policy_path) if policy_path else None
+    policy_mtime = 0.0
+    last_reload_check = 0.0
+    if policy_path and os.path.exists(str(policy_path)):
+        try:
+            policy_mtime = os.path.getmtime(str(policy_path))
+            last_reload_check = time.time()
+        except Exception:
+            pass
     control_dt = 0.02
     decimation = max(1, int(round(control_dt / dt)))
     policy_episode_step = 0
@@ -1074,6 +1122,10 @@ def run_opencv_viewer(
                 break
 
             if not paused:
+                if policy is not None:
+                    policy, policy_mtime, last_reload_check = _maybe_hot_reload_policy(
+                        policy_path, policy, policy_mtime, last_reload_check
+                    )
                 steps_per_frame = int(round(1.0 / (30.0 * dt)))
                 for _ in range(steps_per_frame):
                     if policy is not None:
