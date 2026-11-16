@@ -692,54 +692,72 @@ class ParallelSimRunner:
             else:
                 actor_obs = raw_arr
 
-        active_obstacle_gids = [
-            gid for gid in self.obstacle_geom_ids if float(self.model.geom_pos[gid, 2]) > 0.0
-        ]
-        has_obs = len(active_obstacle_gids) > 0
-        if has_obs:
-            obs_xy = np.array([self.model.geom_pos[gid, :2] for gid in active_obstacle_gids], dtype=np.float32)
-            obs_radii = np.array([self.model.geom_size[gid, 0] for gid in active_obstacle_gids], dtype=np.float32)
-
         stage_norm = float(getattr(self, "curriculum_stage", 0)) / 3.0
         priv_extra = np.zeros((n_envs, 11), dtype=np.float32)
 
-        for k, idx in enumerate(indices):
-            d = self.datas[idx]
-            # 1. Base linear velocity in body frame (3)
-            base_lin_vel_world = d.qvel[0:3].astype(np.float32)
-            base_quat = d.qpos[3:7].astype(np.float32)
-            base_lin_vel_body = quat_rotate_inverse(base_quat, base_lin_vel_world)
-            priv_extra[k, 0:3] = base_lin_vel_body
+        # 1. Base linear velocity in body frame (3)
+        base_lin_vel_world = np.stack([self.datas[i].qvel[0:3] for i in indices], axis=0).astype(np.float32)
+        base_quats = np.stack([self.datas[i].qpos[3:7] for i in indices], axis=0).astype(np.float32)
+        priv_extra[:, 0:3] = quat_rotate_inverse(base_quats, base_lin_vel_world)
 
-            # 2. Foot contact forces Z (2)
-            if len(d.sensordata) >= 12:
-                priv_extra[k, 3] = float(d.sensordata[10])
-                priv_extra[k, 4] = float(d.sensordata[11])
+        # 2. Foot contact forces Z (2)
+        if len(self.datas[indices[0]].sensordata) >= 12:
+            priv_extra[:, 3:5] = np.stack([self.datas[i].sensordata[10:12] for i in indices], axis=0).astype(np.float32)
 
-            # 3. Terrain height at feet (2)
-            if self.left_foot_bid != -1 and self.right_foot_bid != -1:
-                priv_extra[k, 5] = self._get_terrain_height_at_xy(float(d.xpos[self.left_foot_bid][0]), float(d.xpos[self.left_foot_bid][1]))
-                priv_extra[k, 6] = self._get_terrain_height_at_xy(float(d.xpos[self.right_foot_bid][0]), float(d.xpos[self.right_foot_bid][1]))
+        # 3. Terrain height at feet (2)
+        active_terrain_gids = [
+            gid for gid in (getattr(self, "terrain_gids", None) or [])
+            if float(self.model.geom_pos[gid, 2] + self.model.geom_size[gid, 2]) > 0.0
+        ]
+        if active_terrain_gids and self.left_foot_bid != -1 and self.right_foot_bid != -1:
+            g_pos = self.model.geom_pos[active_terrain_gids]
+            g_size = self.model.geom_size[active_terrain_gids]
+            gx = g_pos[:, 0]
+            gy = g_pos[:, 1]
+            sx = g_size[:, 0]
+            sy = g_size[:, 1]
+            top_z = g_pos[:, 2] + g_size[:, 2]
 
-            # 4. Nearest obstacle dist (1) & rel XY in body frame (2)
-            if has_obs:
-                base_xy = d.qpos[0:2].astype(np.float32)
-                diff = obs_xy - base_xy
-                dist = np.linalg.norm(diff, axis=-1) - obs_radii
-                min_i = int(np.argmin(dist))
-                priv_extra[k, 7] = float(np.clip(dist[min_i], 0.0, None))
-                yaw = float(quat_to_yaw(base_quat))
-                cos_y, sin_y = np.cos(yaw), np.sin(yaw)
-                dx_w, dy_w = float(diff[min_i, 0]), float(diff[min_i, 1])
-                priv_extra[k, 8] = float(cos_y * dx_w + sin_y * dy_w)
-                priv_extra[k, 9] = float(-sin_y * dx_w + cos_y * dy_w)
-            else:
-                priv_extra[k, 7] = 2.0
-                priv_extra[k, 8] = 2.0
-                priv_extra[k, 9] = 0.0
+            left_pos = np.stack([self.datas[i].xpos[self.left_foot_bid, :2] for i in indices], axis=0)
+            right_pos = np.stack([self.datas[i].xpos[self.right_foot_bid, :2] for i in indices], axis=0)
+            feet_xy = np.stack([left_pos, right_pos], axis=1)  # (n_envs, 2, 2)
 
-            # 5. Curriculum stage norm (1)
-            priv_extra[k, 10] = stage_norm
+            fx = feet_xy[..., 0:1]  # (n_envs, 2, 1)
+            fy = feet_xy[..., 1:2]  # (n_envs, 2, 1)
+
+            contained = (np.abs(fx - gx) <= sx) & (np.abs(fy - gy) <= sy)  # (n_envs, 2, K)
+            candidates = np.where(contained, top_z, 0.0)
+            priv_extra[:, 5:7] = np.max(candidates, axis=-1).astype(np.float32)
+
+        # 4. Nearest obstacle dist (1) & rel XY in body frame (2)
+        active_obstacle_gids = [
+            gid for gid in self.obstacle_geom_ids if float(self.model.geom_pos[gid, 2]) > 0.0
+        ]
+        if len(active_obstacle_gids) > 0:
+            obs_xy = np.array([self.model.geom_pos[gid, :2] for gid in active_obstacle_gids], dtype=np.float32)
+            obs_radii = np.array([self.model.geom_size[gid, 0] for gid in active_obstacle_gids], dtype=np.float32)
+            base_xy = np.stack([self.datas[i].qpos[0:2] for i in indices], axis=0).astype(np.float32)
+            diff = obs_xy[None, :, :] - base_xy[:, None, :]  # (n_envs, M, 2)
+            dist = np.linalg.norm(diff, axis=-1) - obs_radii[None, :]  # (n_envs, M)
+            min_i = np.argmin(dist, axis=-1)  # (n_envs,)
+            row_idx = np.arange(n_envs)
+            priv_extra[:, 7] = np.clip(dist[row_idx, min_i], 0.0, None)
+
+            yaws = quat_to_yaw(base_quats)
+            cos_y = np.cos(yaws)
+            sin_y = np.sin(yaws)
+            min_diff = diff[row_idx, min_i, :]  # (n_envs, 2)
+            dx_w = min_diff[:, 0]
+            dy_w = min_diff[:, 1]
+            priv_extra[:, 8] = cos_y * dx_w + sin_y * dy_w
+            priv_extra[:, 9] = -sin_y * dx_w + cos_y * dy_w
+        else:
+            priv_extra[:, 7] = 2.0
+            priv_extra[:, 8] = 2.0
+            priv_extra[:, 9] = 0.0
+
+        # 5. Curriculum stage norm (1)
+        priv_extra[:, 10] = stage_norm
 
         return np.concatenate([actor_obs, priv_extra], axis=-1).astype(np.float32)
 

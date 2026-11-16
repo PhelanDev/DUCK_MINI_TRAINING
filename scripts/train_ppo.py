@@ -345,42 +345,52 @@ def evaluate_deterministic_rollout(
     max_steps: int = 250,
     device: Union[str, torch.device] = "cpu",
     cmd_vx: float = 0.22,
+    eval_runner: Optional[ParallelSimRunner] = None,
 ) -> Tuple[float, float]:
     """Run one deterministic (noise-free) episode and return (max_dist_x, mean_step_reward)."""
-    eval_runner = ParallelSimRunner(
-        model_path=str(model_path),
-        num_envs=1,
-        decimation=10,
-        stage=stage,
-        terrain_mode=terrain_mode,
-        stand_still=stand_still,
-        friction_range=(1.2, 1.2),
-        randomize_pillars=False,
-    )
+    owns_runner = eval_runner is None
+    if owns_runner:
+        runner = ParallelSimRunner(
+            model_path=str(model_path),
+            num_envs=1,
+            decimation=10,
+            stage=stage,
+            terrain_mode=terrain_mode,
+            stand_still=stand_still,
+            friction_range=(1.2, 1.2),
+            randomize_pillars=False,
+        )
+    else:
+        runner = eval_runner
+        if runner.curriculum_stage != stage:
+            runner.set_stage(stage)
+        runner.stand_still = bool(stand_still)
+
     was_training = model.training
     model.eval()
     try:
-        obs_raw = eval_runner.reset()
-        eval_runner.commands[0] = [0.0 if stand_still else float(cmd_vx), 0.0, 0.0]
-        obs_raw[0] = eval_runner._extract_obs(0)
+        obs_raw = runner.reset()
+        runner.commands[0] = [0.0 if stand_still else float(cmd_vx), 0.0, 0.0]
+        obs_raw[0] = runner._extract_obs(0)
         total_rew = 0.0
         steps_run = 0
-        max_x = float(eval_runner.datas[0].qpos[0])
+        max_x = float(runner.datas[0].qpos[0])
         for _ in range(max(1, int(max_steps))):
             obs_norm = obs_rms.normalize(obs_raw)
             obs_t = torch.as_tensor(obs_norm, dtype=torch.float32, device=device)
             with torch.no_grad():
                 act_np = np.clip(model.forward_actor(obs_t).cpu().numpy(), -1.0, 1.0)
-            obs_raw, rewards_np, dones_np, _ = eval_runner.step_arrays(act_np)
-            eval_runner.commands[0] = [0.0 if stand_still else float(cmd_vx), 0.0, 0.0]
+            obs_raw, rewards_np, dones_np, _ = runner.step_arrays(act_np)
+            runner.commands[0] = [0.0 if stand_still else float(cmd_vx), 0.0, 0.0]
             total_rew += float(rewards_np[0])
             steps_run += 1
             if bool(dones_np[0]):
                 break
-            max_x = max(max_x, float(eval_runner.datas[0].qpos[0]))
+            max_x = max(max_x, float(runner.datas[0].qpos[0]))
         return float(max_x), float(total_rew / max(1, steps_run))
     finally:
-        eval_runner.close()
+        if owns_runner:
+            runner.close()
         if was_training:
             model.train()
 
@@ -717,6 +727,7 @@ def train_ppo(
     current_critic_obs = torch.as_tensor(critic_obs_rms.normalize(current_critic_raw), dtype=torch.float32, device=dev)
 
     start_time = time.perf_counter()
+    eval_runner: Optional[ParallelSimRunner] = None
     with torch.no_grad():
         initial_action_std = float(
             torch.exp(torch.clamp(model.log_std, model.min_log_std, model.max_log_std)).mean().item()
@@ -1055,6 +1066,17 @@ def train_ppo(
             if verbose and (iteration % print_interval == 0 or iteration == start_iteration or iteration == total_target_iters):
                 det_suffix = ""
                 if not dry_run and rollout_steps >= 64:
+                    if eval_runner is None:
+                        eval_runner = ParallelSimRunner(
+                            model_path=str(sim_model_path),
+                            num_envs=1,
+                            decimation=10,
+                            stage=rollout_stage,
+                            terrain_mode=terrain_mode,
+                            stand_still=getattr(runner, "stand_still", False),
+                            friction_range=(1.2, 1.2),
+                            randomize_pillars=False,
+                        )
                     det_dist_x, det_rew = evaluate_deterministic_rollout(
                         model=model,
                         obs_rms=obs_rms,
@@ -1062,8 +1084,9 @@ def train_ppo(
                         stage=rollout_stage,
                         terrain_mode=terrain_mode,
                         stand_still=getattr(runner, "stand_still", False),
-                        max_steps=250,
+                        max_steps=150,
                         device=dev,
+                        eval_runner=eval_runner,
                     )
                     det_suffix = f" | DetDistX: {det_dist_x:4.2f}m | DetRew: {det_rew:+.3f}"
                 print(
@@ -1204,6 +1227,8 @@ def train_ppo(
 
     finally:
         runner.close()
+        if eval_runner is not None:
+            eval_runner.close()
 
     return {
         "success": True,

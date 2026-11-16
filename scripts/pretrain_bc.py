@@ -14,7 +14,8 @@ _ROOT = str(Path(__file__).resolve().parent.parent)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from scripts.train_ppo import ActorCritic
+from scripts.export_policy import apply_obs_norm_to_actor
+from scripts.train_ppo import ActorCritic, RunningMeanStd
 from training.advanced_gaits import BipedalGaitGenerator
 from training.env_config import unscale_actions
 from training.run_parallel_sim import ParallelSimRunner
@@ -107,11 +108,19 @@ def train_behavior_cloning(
     obs: np.ndarray, actions: np.ndarray, returns: Optional[np.ndarray] = None,
     obs_dim: int = 42, action_dim: int = 8, hidden_dim: int = 256,
     epochs: int = 30, batch_size: int = 256, lr: float = 1e-3, device: str = "cpu",
+    obs_rms: Optional[RunningMeanStd] = None,
 ) -> Tuple[ActorCritic, List[float]]:
     """Train Actor (MSE) and Critic (SmoothL1) to avoid cold critic shock at PPO iteration 1."""
     model = ActorCritic(obs_dim=obs_dim, action_dim=action_dim, hidden_dim=hidden_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
+
+    if obs_rms is None:
+        obs_rms = RunningMeanStd(shape=obs_dim, clip=10.0, min_std=0.10)
+    obs_rms.update(obs)
+    norm_obs = obs_rms.normalize(obs)
+    model._bc_obs_rms = obs_rms
+
+    obs_t = torch.as_tensor(norm_obs, dtype=torch.float32, device=device)
     act_t = torch.as_tensor(actions, dtype=torch.float32, device=device)
     ret_t = torch.as_tensor(returns, dtype=torch.float32, device=device) if returns is not None else None
 
@@ -134,11 +143,17 @@ def train_behavior_cloning(
 
 
 def save_bc_checkpoint(
-    path: Union[str, Path], model: ActorCritic, obs_dim: int, action_dim: int, hidden_dim: int = 256
+    path: Union[str, Path],
+    model: ActorCritic,
+    obs_dim: int,
+    action_dim: int,
+    hidden_dim: int = 256,
+    obs_rms: Optional[RunningMeanStd] = None,
 ) -> Path:
     """Save ActorCritic weights into a PPO-compatible warm start checkpoint."""
     out_path = Path(path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    eff_rms = obs_rms if obs_rms is not None else getattr(model, "_bc_obs_rms", None)
     payload = {
         "actor_state_dict": model.actor.state_dict(),
         "critic_state_dict": model.critic.state_dict(),
@@ -148,6 +163,8 @@ def save_bc_checkpoint(
         "stage": 0,
         "iterations": 0,
     }
+    if eff_rms is not None:
+        payload["obs_rms"] = eff_rms.state_dict()
     torch.save(payload, str(out_path))
     return out_path
 
@@ -178,6 +195,8 @@ def main():
                 teacher.actor.load_state_dict(ckpt["actor_state_dict"])
             elif "model_state_dict" in ckpt:
                 teacher.load_state_dict(ckpt["model_state_dict"])
+            if "obs_rms" in ckpt:
+                apply_obs_norm_to_actor(teacher.actor, ckpt)
             obs, acts, rets = collect_teacher_demonstrations(runner, teacher, num_steps=args.steps)
     finally:
         runner.close()

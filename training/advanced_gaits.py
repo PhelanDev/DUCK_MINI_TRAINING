@@ -82,29 +82,34 @@ class BipedalGaitGenerator:
         self,
         t: float,
         freq: Optional[float] = None,
-        roll_amp: float = 0.04,
+        roll_amp: float = 0.05,
         pitch_amp: float = 0.06,
-        knee_amp: float = 0.10,
+        knee_amp: float = 0.08,
     ) -> np.ndarray:
         """Nominal forward stepping gait with subtle head counter-motion."""
         f = freq if freq is not None else self.default_freq
         phase = 2.0 * math.pi * f * t
-        s = math.sin(phase)
+        sv = math.sin(phase)
+        cv = math.cos(phase)
 
         # Lateral shift toward support foot
-        l_roll = roll_amp * s
-        r_roll = roll_amp * s
+        l_roll = roll_amp * sv
+        r_roll = roll_amp * sv
 
-        # Leg swing centered at nominal -0.15 rad
-        l_pitch = -0.15 - pitch_amp * s
-        r_pitch = -0.15 + pitch_amp * s
+        # Leg swing and knee lift
+        r_lift = max(0.0, sv)
+        l_lift = max(0.0, -sv)
+
+        # Coupled hip-knee quadrature swing
+        l_pitch = -0.15 - 0.5 * knee_amp * l_lift - pitch_amp * cv
+        r_pitch = -0.15 - 0.5 * knee_amp * r_lift + pitch_amp * cv
 
         # Knee flexion for clearance
-        l_knee = 0.15 + knee_amp * max(0.0, s)
-        r_knee = 0.15 + knee_amp * max(0.0, -s)
+        l_knee = 0.15 + knee_amp * l_lift
+        r_knee = 0.15 + knee_amp * r_lift
 
         # Subtle head counter-yaw and pitch
-        head_yaw = -0.05 * s
+        head_yaw = -0.05 * sv
         head_pitch = 0.02
 
         raw = np.array(
@@ -118,8 +123,8 @@ class BipedalGaitGenerator:
         t: float,
         freq: Optional[float] = None,
         sway_amp: float = 0.09,
-        pitch_amp: float = 0.08,
-        knee_amp: float = 0.14,
+        pitch_amp: float = 0.06,
+        knee_amp: float = 0.10,
     ) -> np.ndarray:
         """Iconic duck waddling gait: exaggerated hip roll sway and bionic duck head nodding.
 
@@ -129,24 +134,28 @@ class BipedalGaitGenerator:
         """
         f = freq if freq is not None else (self.default_freq * 0.9)
         phase = 2.0 * math.pi * f * t
-        s = math.sin(phase)
-        c = math.cos(phase)
+        sv = math.sin(phase)
+        cv = math.cos(phase)
 
         # Exaggerated hip roll sway (synchronized left-right pelvis tilt)
-        l_roll = sway_amp * s
-        r_roll = sway_amp * s
+        l_roll = sway_amp * sv
+        r_roll = sway_amp * sv
 
-        # Sagittal swing shifted 90 deg (cos phase) so maximum swing occurs when CoM is loaded
-        l_pitch = -0.15 - pitch_amp * c
-        r_pitch = -0.15 + pitch_amp * c
+        # Leg swing and knee lift
+        r_lift = max(0.0, sv)
+        l_lift = max(0.0, -sv)
 
-        # Higher knee lift for adorable waddle clearance
-        l_knee = 0.15 + knee_amp * max(0.0, c)
-        r_knee = 0.15 + knee_amp * max(0.0, -c)
+        # Coupled hip-knee quadrature swing
+        l_pitch = -0.15 - 0.5 * knee_amp * l_lift - pitch_amp * cv
+        r_pitch = -0.15 - 0.5 * knee_amp * r_lift + pitch_amp * cv
+
+        # Higher knee lift for clearance
+        l_knee = 0.15 + knee_amp * l_lift
+        r_knee = 0.15 + knee_amp * r_lift
 
         # Bionic duck head nodding: double-frequency pitch nod, gentle counter-yaw
-        head_nod = 0.05 + 0.07 * abs(s)
-        head_yaw = -0.08 * s
+        head_nod = 0.05 + 0.07 * abs(sv)
+        head_yaw = -0.08 * sv
 
         raw = np.array(
             [head_yaw, head_nod, l_roll, l_pitch, l_knee, r_roll, r_pitch, r_knee],
