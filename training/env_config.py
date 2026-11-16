@@ -705,8 +705,10 @@ def compute_rewards(
             is_dwell = (dst > 0.20) & is_walking_cmd & (~is_sit) & (~is_lie)
             r_track_lin_vel = np.where(is_dwell, np.minimum(0.0, r_track_lin_vel), r_track_lin_vel).astype(np.float32)
             r_double_support = np.where(is_dwell, 1.0, 0.0).astype(np.float32)
+            upright_dwell_scale = np.where(is_dwell, 0.4, 1.0).astype(np.float32)
         else:
             r_double_support = np.zeros(base_lin.shape[0], dtype=np.float32)
+            upright_dwell_scale = np.ones(base_lin.shape[0], dtype=np.float32)
     else:
         if double_support_time is not None:
             dst = float(double_support_time)
@@ -714,10 +716,13 @@ def compute_rewards(
             if is_dwell:
                 r_track_lin_vel = min(0.0, r_track_lin_vel)
                 r_double_support = 1.0
+                upright_dwell_scale = 0.4
             else:
                 r_double_support = 0.0
+                upright_dwell_scale = 1.0
         else:
             r_double_support = 0.0
+            upright_dwell_scale = 1.0
 
     # Feet air time reward: reward swing duration on touchdown (cyclic gait step reward)
     # Trampling guard patch: require actual forward movement vel_x >= 0.05 m/s
@@ -1061,7 +1066,7 @@ def compute_rewards(
 
     total = (
         weights.get("tracking_lin_vel", 3.0) * r_track_lin_vel
-        + weights.get("upright", 1.5) * r_upright
+        + weights.get("upright", 1.5) * r_upright * upright_dwell_scale
         + forward_gate * (
             weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
             + weights.get("foot_contact", 1.0) * r_foot_contact
