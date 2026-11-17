@@ -216,6 +216,7 @@ class MicroDuck8DoFConfig:
             "heading_penalty": -2.0,
             "leg_pose_penalty": -0.10,
             "gait_sync": 1.2,
+            "forward_progress": 40.0,
         }
     )
 
@@ -596,11 +597,19 @@ def compute_rewards(
     current_yaw: Optional[Union[float, np.ndarray]] = None,
     target_yaw: Union[float, np.ndarray] = 0.0,
     clock_sin: Optional[Union[float, np.ndarray]] = None,
-) -> Dict[str, Union[float, np.ndarray]]:
+    delta_root_x: Optional[Union[float, np.ndarray]] = None,
+    standstill_time: Optional[Union[float, np.ndarray]] = None,
+    swing_valid: Optional[np.ndarray] = None,
+    return_components: bool = False,
+) -> Union[
+    Dict[str, Union[float, np.ndarray]],
+    Tuple[Dict[str, Union[float, np.ndarray]], Dict[str, Union[float, np.ndarray]]],
+]:
     """Compute balanced reward terms and total reward for RL training.
 
     Supports both single environment (1D arrays -> float rewards) and
     batched environments (2D arrays of shape (N, ...) -> 1D arrays of shape (N,)).
+    When return_components=True, returns (reward_dict, weighted_terms_dict).
     """
     if weights is None:
         weights = _DEFAULT_CFG.REWARD_WEIGHTS
@@ -614,6 +623,59 @@ def compute_rewards(
     f_contact = np.asarray(foot_contact, dtype=np.float32)
 
     is_batch = base_lin.ndim > 1
+    use_runner_contract = (
+        (delta_root_x is not None)
+        or (standstill_time is not None)
+        or (swing_valid is not None)
+    )
+
+    if is_batch:
+        n_envs = base_lin.shape[0]
+        if delta_root_x is None:
+            dx = np.zeros(n_envs, dtype=np.float32)
+        else:
+            dx_arr = np.broadcast_to(np.asarray(delta_root_x, dtype=np.float32), (n_envs,))
+            dx = np.where(np.isfinite(dx_arr), dx_arr, 0.0).astype(np.float32)
+
+        has_standstill = standstill_time is not None
+        if has_standstill:
+            st_arr = np.broadcast_to(np.asarray(standstill_time, dtype=np.float32), (n_envs,))
+            st_pos = np.where(np.isfinite(st_arr) & (st_arr > 0.0), st_arr, 0.0).astype(np.float32)
+        else:
+            st_pos = None
+
+        has_swing_valid = swing_valid is not None
+        if has_swing_valid:
+            sv_raw = np.asarray(swing_valid, dtype=bool)
+            if sv_raw.shape == (2,):
+                sv_arr = np.broadcast_to(sv_raw, (n_envs, 2))
+            else:
+                assert sv_raw.shape == (n_envs, 2), (
+                    f"Expected swing_valid shape ({n_envs}, 2) or (2,), got {sv_raw.shape}"
+                )
+                sv_arr = sv_raw
+        else:
+            sv_arr = None
+    else:
+        if delta_root_x is None:
+            dx = 0.0
+        else:
+            dx_val = float(np.asarray(delta_root_x, dtype=np.float32).item())
+            dx = dx_val if np.isfinite(dx_val) else 0.0
+
+        has_standstill = standstill_time is not None
+        if has_standstill:
+            st_val = float(np.asarray(standstill_time, dtype=np.float32).item())
+            st_pos = st_val if (np.isfinite(st_val) and st_val > 0.0) else 0.0
+        else:
+            st_pos = None
+
+        has_swing_valid = swing_valid is not None
+        if has_swing_valid:
+            sv_arr = np.asarray(swing_valid, dtype=bool)
+            assert sv_arr.shape == (2,), f"Expected swing_valid shape (2,), got {sv_arr.shape}"
+        else:
+            sv_arr = None
 
     # Target yaw rate (around Z axis in rad/s)
     if is_batch:
@@ -666,27 +728,18 @@ def compute_rewards(
         if is_sit or is_lie:
             r_track_lin_vel = 0.0
 
-    # Standstill penalty: if commanded forward (cmd_lin[..., 0] > 0.05) and base_lin_vel_x < 0.05 m/s
-    # penalize standing still (-0.5 per step) to force locomotion (disabled when sitting or lying)
+    # Backward velocity penalty and active walking mask
     is_walking_cmd = cmd_x > 0.05
-    is_standstill = (vel_x < 0.05) & is_walking_cmd
-    r_standstill = np.where(is_standstill, 1.0, 0.0).astype(np.float32)
     if is_batch:
-        r_standstill = np.where(is_sit | is_lie, 0.0, r_standstill).astype(np.float32)
-    elif is_sit or is_lie:
-        r_standstill = 0.0
-
-    # Backward velocity penalty: heavy penalty if agent walks backward while commanded to walk forward
-    if is_batch:
-        is_backward = (vel_x < -0.01) & is_walking_cmd & (~is_sit) & (~is_lie)
-        r_backward_vel = np.where(is_backward, 1.0 + 5.0 * np.abs(vel_x), 0.0).astype(np.float32)
         active_walk = is_walking_cmd & (~is_sit) & (~is_lie)
+        is_backward = (vel_x < -0.01) & active_walk
+        r_backward_vel = np.where(is_backward, 1.0 + 5.0 * np.abs(vel_x), 0.0).astype(np.float32)
         gate_val = np.where(vel_x < 0.0, 0.0, np.where(vel_x < 0.05, 0.2, 1.0))
         forward_gate = np.where(active_walk, gate_val, 1.0).astype(np.float32)
     else:
-        is_backward = (vel_x < -0.01) and bool(is_walking_cmd) and (not is_sit) and (not is_lie)
-        r_backward_vel = float(1.0 + 5.0 * abs(vel_x)) if is_backward else 0.0
         active_walk = bool(is_walking_cmd) and (not is_sit) and (not is_lie)
+        is_backward = (vel_x < -0.01) and active_walk
+        r_backward_vel = float(1.0 + 5.0 * abs(vel_x)) if is_backward else 0.0
         if active_walk:
             if vel_x < 0.0:
                 forward_gate = 0.0
@@ -697,32 +750,71 @@ def compute_rewards(
         else:
             forward_gate = 1.0
 
-    # Double support dwell penalty (> 0.20s): if walking commanded and both feet stick to floor > 0.2s,
-    # zero out forward linear velocity reward and apply double_support_penalty (-0.5 per step)
+    # Weighted world-X forward progress reward (computed once at weight 40.0)
+    w_fwd_progress = float(weights.get("forward_progress", 40.0))
+    if is_batch:
+        eff_dx = np.where(dx > 0.0, np.where(vel_x > 0.0, dx, 0.0), 2.0 * dx)
+        r_forward_progress = np.where(active_walk, w_fwd_progress * eff_dx, 0.0).astype(np.float32)
+    else:
+        if active_walk:
+            eff_dx = (dx if float(vel_x) > 0.0 else 0.0) if dx > 0.0 else (2.0 * dx)
+            r_forward_progress = float(w_fwd_progress * eff_dx)
+        else:
+            r_forward_progress = 0.0
+
+    # Standstill penalty scaled by standstill_time when provided
+    is_standstill = (vel_x < 0.05) & active_walk
+    if is_batch:
+        st_scale = (
+            (1.0 + np.clip(st_pos / 0.10, 0.0, 3.0))
+            if has_standstill
+            else 1.0
+        )
+        r_standstill = np.where(is_standstill, st_scale, 0.0).astype(np.float32)
+    else:
+        st_scale = (
+            float(1.0 + np.clip(st_pos / 0.10, 0.0, 3.0))
+            if has_standstill
+            else 1.0
+        )
+        r_standstill = st_scale if is_standstill else 0.0
+
+    # Double support dwell penalty (> 0.12s under runner contract, > 0.20s legacy)
+    # and upright scaling (0.25 under runner contract when standstill >= 0.10s or dst > 0.12s; 0.4 legacy)
+    dst_thresh = (0.12 if use_runner_contract else 0.20) + 1e-6
+    dwell_upright_val = 0.25 if use_runner_contract else 0.4
     if is_batch:
         if double_support_time is not None:
-            dst = np.asarray(double_support_time, dtype=np.float32)
-            is_dwell = (dst > 0.20) & is_walking_cmd & (~is_sit) & (~is_lie)
-            r_track_lin_vel = np.where(is_dwell, np.minimum(0.0, r_track_lin_vel), r_track_lin_vel).astype(np.float32)
-            r_double_support = np.where(is_dwell, 1.0, 0.0).astype(np.float32)
-            upright_dwell_scale = np.where(is_dwell, 0.4, 1.0).astype(np.float32)
+            dst = np.asarray(double_support_time, dtype=np.float64)
+            is_double_dwell = (dst > dst_thresh) & active_walk
+            r_track_lin_vel = np.where(is_double_dwell, np.minimum(0.0, r_track_lin_vel), r_track_lin_vel).astype(np.float32)
+            r_double_support = np.where(is_double_dwell, 1.0, 0.0).astype(np.float32)
         else:
+            is_double_dwell = np.zeros(base_lin.shape[0], dtype=bool)
             r_double_support = np.zeros(base_lin.shape[0], dtype=np.float32)
-            upright_dwell_scale = np.ones(base_lin.shape[0], dtype=np.float32)
+
+        if use_runner_contract and has_standstill:
+            is_standstill_dwell = (st_pos >= 0.10 - 1e-6) & active_walk
+        else:
+            is_standstill_dwell = np.zeros(base_lin.shape[0], dtype=bool)
+        upright_dwell_scale = np.where(is_double_dwell | is_standstill_dwell, dwell_upright_val, 1.0).astype(np.float32)
     else:
         if double_support_time is not None:
             dst = float(double_support_time)
-            is_dwell = (dst > 0.20) and bool(is_walking_cmd) and (not is_sit) and (not is_lie)
-            if is_dwell:
+            is_double_dwell = (dst > dst_thresh) and active_walk
+            if is_double_dwell:
                 r_track_lin_vel = min(0.0, r_track_lin_vel)
                 r_double_support = 1.0
-                upright_dwell_scale = 0.4
             else:
                 r_double_support = 0.0
-                upright_dwell_scale = 1.0
         else:
+            is_double_dwell = False
             r_double_support = 0.0
-            upright_dwell_scale = 1.0
+
+        is_standstill_dwell = bool(
+            use_runner_contract and has_standstill and (st_pos >= 0.10 - 1e-6) and active_walk
+        )
+        upright_dwell_scale = dwell_upright_val if (is_double_dwell or is_standstill_dwell) else 1.0
 
     # Feet air time reward: reward swing duration on touchdown (cyclic gait step reward)
     # Trampling guard patch: require actual forward movement vel_x >= 0.05 m/s
@@ -794,9 +886,21 @@ def compute_rewards(
     cmd_speed = np.linalg.norm(cmd_lin[..., :2], axis=-1) + np.abs(cmd_yaw_rate)
     is_moving_cmd = cmd_speed > 0.05
     forward_gait_gate = (vel_x > 0.02).astype(np.float32)
+    if has_swing_valid:
+        left_c_bool = f_contact[..., 0] > 0.0
+        right_c_bool = f_contact[..., 1] > 0.0
+        valid_single_support = (
+            (left_c_bool & (~right_c_bool) & sv_arr[..., 1])
+            | (right_c_bool & (~left_c_bool) & sv_arr[..., 0])
+        )
+        single_contact_walk = np.where(active_walk, valid_single_support, (num_contacts == 1))
+    else:
+        valid_single_support = None
+        single_contact_walk = (num_contacts == 1)
+
     r_foot_contact = np.where(
         is_moving_cmd,
-        (num_contacts == 1).astype(np.float32) * forward_gait_gate,
+        single_contact_walk.astype(np.float32) * forward_gait_gate,
         (num_contacts == 2).astype(np.float32) * 0.5,
     ).astype(np.float32)
     if is_batch:
@@ -806,8 +910,7 @@ def compute_rewards(
             r_foot_contact,
         ).astype(np.float32)
     else:
-        if is_moving_cmd and vel_x < -1e-4:
-            r_foot_contact = 0.0
+        r_foot_contact = 0.0 if (is_moving_cmd and float(vel_x) < -1e-4) else float(r_foot_contact)
 
     # 8. Obstacle avoidance reward / penalty
     if d_min is not None and d_min_dot is not None:
@@ -1014,7 +1117,8 @@ def compute_rewards(
     else:
         r_heading = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
-    # Leg pose penalty (penalizes deviation from DEFAULT_NOMINAL_QPOS[2:8] in WALK mode)
+    # Leg pose penalty (penalizes deviation from DEFAULT_NOMINAL_QPOS[2:8] in WALK mode;
+    # scaled to 0.25 only during active walking with forward body speed > 0.05 and accepted dx > 0)
     if joint_pos is not None:
         q_pos = np.asarray(joint_pos, dtype=np.float32)
         q_legs = q_pos[..., 2:8]
@@ -1022,9 +1126,15 @@ def compute_rewards(
         leg_err_sq = np.sum(np.square(q_legs - nom_legs), axis=-1)
         w_leg_pose = weights.get("leg_pose_penalty", -0.10)
         if is_batch:
-            r_leg_pose = (w_leg_pose * leg_err_sq * walk_mode_mask).astype(np.float32)
+            leg_pose_scale = np.where(active_walk & (vel_x > 0.05) & (dx > 0.0), 0.25, 1.0)
+            r_leg_pose = (w_leg_pose * leg_err_sq * walk_mode_mask * leg_pose_scale).astype(np.float32)
         else:
-            r_leg_pose = float(w_leg_pose * leg_err_sq) if walk_mode_mask else 0.0
+            # Keep the scalar branch on the same float32 threshold as the
+            # vectorized branch.  Converting the value to Python float first
+            # turns float32(0.05) into 0.050000000745..., incorrectly opening
+            # the progress-only relaxation at the boundary.
+            leg_pose_scale = 0.25 if (active_walk and vel_x > np.float32(0.05) and dx > 0.0) else 1.0
+            r_leg_pose = float(w_leg_pose * leg_err_sq * leg_pose_scale) if walk_mode_mask else 0.0
     else:
         r_leg_pose = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
@@ -1051,56 +1161,74 @@ def compute_rewards(
             mode_gate = walk_mode_mask.astype(np.float32)
             dwell_gate = (1.0 - r_double_support).astype(np.float32)
             contact_gate = ((left_c + right_c) > 0.0).astype(np.float32)
-            r_gait_sync = (w_gait_sync * sync_score * fwd_gate * mode_gate * dwell_gate * contact_gate).astype(np.float32)
+            swing_gate = (
+                np.where(active_walk, valid_single_support.astype(np.float32), 1.0).astype(np.float32)
+                if has_swing_valid
+                else 1.0
+            )
+            r_gait_sync = (
+                w_gait_sync * sync_score * fwd_gate * mode_gate * dwell_gate * contact_gate * swing_gate
+            ).astype(np.float32)
         else:
             fwd_gate = 1.0 if (float(vel_x) > 0.02 and bool(is_moving_cmd)) else 0.0
             mode_gate = 1.0 if walk_mode_mask else 0.0
             dwell_gate = 1.0 - float(r_double_support)
             contact_gate = 1.0 if (float(left_c) + float(right_c)) > 0.0 else 0.0
-            r_gait_sync = float(w_gait_sync * sync_score * fwd_gate * mode_gate * dwell_gate * contact_gate)
+            swing_gate = (
+                (1.0 if bool(valid_single_support) else 0.0)
+                if (has_swing_valid and active_walk)
+                else 1.0
+            )
+            r_gait_sync = float(
+                w_gait_sync * sync_score * fwd_gate * mode_gate * dwell_gate * contact_gate * swing_gate
+            )
     else:
         r_gait_sync = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
     w_limit = weights.get("joint_limit_penalty", -0.2)
     limit_scale = -w_limit if w_limit < 0 else w_limit
+    zero_val = np.zeros(base_lin.shape[0], dtype=np.float32) if is_batch else 0.0
 
-    total = (
-        weights.get("tracking_lin_vel", 3.0) * r_track_lin_vel
-        + weights.get("upright", 1.5) * r_upright * upright_dwell_scale
-        + forward_gate * (
-            weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel
-            + weights.get("foot_contact", 1.0) * r_foot_contact
-            + weights.get("emotion_tracking", 0.5) * r_emotion
-        )
-        + weights.get("orientation_penalty", -2.0) * r_orientation_penalty
-        + weights.get("head_pos_penalty", -1.0) * r_head_pos_penalty
-        + weights.get("torque_penalty", -0.001) * r_torque_penalty
-        + weights.get("joint_vel_penalty", -0.0001) * r_joint_vel_penalty
-        + weights.get("joint_acc_penalty", -0.01) * r_joint_acc_penalty
-        + weights.get("action_rate_penalty", -0.10) * r_action_rate_penalty
-        + weights.get("backward_vel_penalty", -2.0) * r_backward_vel
-        + weights.get("foot_slip_penalty", -0.8) * r_foot_slip
-        + weights.get("obstacle_avoidance", 0.2) * r_obstacle
-        + weights.get("corridor_clearance", 0.4) * r_corridor_clearance
-        + weights.get("foot_clearance", 2.0) * r_clearance
-        + weights.get("stumble", 0.5) * r_stumble
-        + (weights.get("w_centering", 1.5) * r_centering if terrain_mode == "stairs" else 0.0)
-        + weights.get("stair_ascent", 0.0) * r_stair_ascent
-        + weights.get("alive_bonus", 0.05) * r_alive
-        + weights.get("standstill_penalty", -0.5) * r_standstill
-        + weights.get("double_support_penalty", -0.5) * r_double_support
-        + weights.get("feet_air_time", 2.0) * r_feet_air_time
-        + weights.get("sitting_pose", 2.0) * r_sit
-        + weights.get("lying_pose", 2.0) * r_lie
-        + limit_scale * r_joint_limit
-        + r_heading
-        + r_leg_pose
-        + r_gait_sync
-    )
+    raw_weighted_terms: Dict[str, Union[float, np.ndarray]] = {
+        "tracking_lin_vel": weights.get("tracking_lin_vel", 3.0) * r_track_lin_vel,
+        "upright": weights.get("upright", 1.5) * r_upright * upright_dwell_scale,
+        "tracking_ang_vel": forward_gate * weights.get("tracking_ang_vel", 0.5) * r_track_ang_vel,
+        "foot_contact": forward_gate * weights.get("foot_contact", 1.0) * r_foot_contact,
+        "emotion_tracking": forward_gate * weights.get("emotion_tracking", 0.5) * r_emotion,
+        "orientation_penalty": weights.get("orientation_penalty", -2.0) * r_orientation_penalty,
+        "head_pos_penalty": weights.get("head_pos_penalty", -1.0) * r_head_pos_penalty,
+        "torque_penalty": weights.get("torque_penalty", -0.001) * r_torque_penalty,
+        "joint_vel_penalty": weights.get("joint_vel_penalty", -0.0001) * r_joint_vel_penalty,
+        "joint_acc_penalty": weights.get("joint_acc_penalty", -0.01) * r_joint_acc_penalty,
+        "action_rate_penalty": weights.get("action_rate_penalty", -0.10) * r_action_rate_penalty,
+        "backward_vel_penalty": weights.get("backward_vel_penalty", -2.0) * r_backward_vel,
+        "foot_slip_penalty": weights.get("foot_slip_penalty", -0.8) * r_foot_slip,
+        "obstacle_avoidance": weights.get("obstacle_avoidance", 0.2) * r_obstacle,
+        "corridor_clearance": weights.get("corridor_clearance", 0.4) * r_corridor_clearance,
+        "foot_clearance": weights.get("foot_clearance", 2.0) * r_clearance,
+        "stumble": weights.get("stumble", 0.5) * r_stumble,
+        "w_centering": weights.get("w_centering", 1.5) * r_centering if terrain_mode == "stairs" else zero_val,
+        "stair_ascent": weights.get("stair_ascent", 0.0) * r_stair_ascent,
+        "alive_bonus": weights.get("alive_bonus", 0.05) * r_alive,
+        "standstill_penalty": weights.get("standstill_penalty", -0.5) * r_standstill,
+        "double_support_penalty": weights.get("double_support_penalty", -0.5) * r_double_support,
+        "feet_air_time": weights.get("feet_air_time", 2.0) * r_feet_air_time,
+        "sitting_pose": weights.get("sitting_pose", 2.0) * r_sit,
+        "lying_pose": weights.get("lying_pose", 2.0) * r_lie,
+        "joint_limit_penalty": limit_scale * r_joint_limit,
+        "heading_penalty": r_heading,
+        "leg_pose_penalty": r_leg_pose,
+        "gait_sync": r_gait_sync,
+        "forward_progress": r_forward_progress,
+    }
 
     if not is_batch:
-        return {
-            "total_reward": float(total),
+        weighted_terms: Dict[str, Union[float, np.ndarray]] = {
+            k: float(v) for k, v in raw_weighted_terms.items()
+        }
+        total = float(sum(weighted_terms.values()))
+        reward_dict: Dict[str, Union[float, np.ndarray]] = {
+            "total_reward": total,
             "tracking_lin_vel": float(r_track_lin_vel),
             "tracking_ang_vel": float(r_track_ang_vel),
             "upright": float(r_upright),
@@ -1110,10 +1238,10 @@ def compute_rewards(
             "joint_vel_penalty": float(r_joint_vel_penalty),
             "joint_acc_penalty": float(r_joint_acc_penalty),
             "action_rate_penalty": float(r_action_rate_penalty),
-            "backward_vel_penalty": float(weights.get("backward_vel_penalty", -2.0) * r_backward_vel),
+            "backward_vel_penalty": float(weighted_terms["backward_vel_penalty"]),
             "foot_contact": float(r_foot_contact),
             "foot_slip_penalty": float(r_foot_slip),
-            "double_support_penalty": float(weights.get("double_support_penalty", -0.5) * r_double_support),
+            "double_support_penalty": float(weighted_terms["double_support_penalty"]),
             "obstacle_avoidance": float(r_obstacle),
             "corridor_clearance": float(r_corridor_clearance),
             "foot_clearance": float(r_clearance),
@@ -1121,9 +1249,9 @@ def compute_rewards(
             "stumble": float(r_stumble),
             "pen_stumble": float(r_stumble),
             "stair_ascent": float(r_stair_ascent),
-            "alive_bonus": float(weights.get("alive_bonus", 0.05) * r_alive),
-            "standstill_penalty": float(weights.get("standstill_penalty", -0.5) * r_standstill),
-            "feet_air_time": float(weights.get("feet_air_time", 2.0) * r_feet_air_time),
+            "alive_bonus": float(weighted_terms["alive_bonus"]),
+            "standstill_penalty": float(weighted_terms["standstill_penalty"]),
+            "feet_air_time": float(weighted_terms["feet_air_time"]),
             "emotion_tracking": float(r_emotion),
             "sitting_pose": float(r_sit),
             "r_sit": float(r_sit),
@@ -1133,10 +1261,19 @@ def compute_rewards(
             "heading_penalty": float(r_heading),
             "leg_pose_penalty": float(r_leg_pose),
             "gait_sync": float(r_gait_sync),
+            "forward_progress": float(r_forward_progress),
         }
+        return (reward_dict, weighted_terms) if return_components else reward_dict
 
-    return {
-        "total_reward": total.astype(np.float32),
+    weighted_terms_batch: Dict[str, Union[float, np.ndarray]] = {
+        k: np.asarray(v, dtype=np.float32) for k, v in raw_weighted_terms.items()
+    }
+    total_batch = np.zeros(base_lin.shape[0], dtype=np.float32)
+    for term_arr in weighted_terms_batch.values():
+        total_batch += term_arr
+
+    reward_dict_batch: Dict[str, Union[float, np.ndarray]] = {
+        "total_reward": total_batch.astype(np.float32),
         "tracking_lin_vel": r_track_lin_vel.astype(np.float32),
         "tracking_ang_vel": r_track_ang_vel.astype(np.float32),
         "upright": r_upright.astype(np.float32),
@@ -1146,10 +1283,10 @@ def compute_rewards(
         "joint_vel_penalty": r_joint_vel_penalty.astype(np.float32),
         "joint_acc_penalty": r_joint_acc_penalty.astype(np.float32),
         "action_rate_penalty": r_action_rate_penalty.astype(np.float32),
-        "backward_vel_penalty": (weights.get("backward_vel_penalty", -2.0) * r_backward_vel).astype(np.float32),
+        "backward_vel_penalty": weighted_terms_batch["backward_vel_penalty"],
         "foot_contact": r_foot_contact.astype(np.float32),
         "foot_slip_penalty": r_foot_slip.astype(np.float32),
-        "double_support_penalty": (weights.get("double_support_penalty", -0.5) * r_double_support).astype(np.float32),
+        "double_support_penalty": weighted_terms_batch["double_support_penalty"],
         "obstacle_avoidance": r_obstacle.astype(np.float32),
         "corridor_clearance": r_corridor_clearance.astype(np.float32),
         "foot_clearance": r_clearance.astype(np.float32),
@@ -1157,9 +1294,9 @@ def compute_rewards(
         "stumble": r_stumble.astype(np.float32),
         "pen_stumble": r_stumble.astype(np.float32),
         "stair_ascent": r_stair_ascent.astype(np.float32),
-        "alive_bonus": (weights.get("alive_bonus", 0.05) * r_alive).astype(np.float32),
-        "standstill_penalty": (weights.get("standstill_penalty", -0.5) * r_standstill).astype(np.float32),
-        "feet_air_time": (weights.get("feet_air_time", 2.0) * r_feet_air_time).astype(np.float32),
+        "alive_bonus": weighted_terms_batch["alive_bonus"],
+        "standstill_penalty": weighted_terms_batch["standstill_penalty"],
+        "feet_air_time": weighted_terms_batch["feet_air_time"],
         "emotion_tracking": r_emotion.astype(np.float32),
         "sitting_pose": r_sit.astype(np.float32),
         "r_sit": r_sit.astype(np.float32),
@@ -1169,7 +1306,9 @@ def compute_rewards(
         "heading_penalty": r_heading.astype(np.float32),
         "leg_pose_penalty": r_leg_pose.astype(np.float32),
         "gait_sync": r_gait_sync.astype(np.float32),
+        "forward_progress": r_forward_progress.astype(np.float32),
     }
+    return (reward_dict_batch, weighted_terms_batch) if return_components else reward_dict_batch
 
 
 # ==============================================================================

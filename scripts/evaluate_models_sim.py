@@ -28,7 +28,7 @@ if str(REPO_ROOT) not in sys.path:
 from training.env_config import _DEFAULT_CFG, quat_to_yaw
 from training.run_parallel_sim import ParallelSimRunner, has_obstacle_contact
 from training.nav_planner import LidarWaypointPlanner
-from scripts.export_policy import apply_obs_norm_to_actor
+from scripts.export_policy import load_actor_from_checkpoint, PolicyOnnxWrapper
 
 __all__ = [
     "compute_path_unstability",
@@ -74,62 +74,12 @@ def get_xml_supported_stage(xml_path: Path, requested_stage: int) -> int:
 
 def load_actor(checkpoint_path: Path) -> nn.Module:
     cp = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    state_dict = cp.get("actor_state_dict", cp.get("model_state_dict", cp))
-
-    obs_dim = 42
-    hidden_dim = 256
-    action_dim = 8
-
-    if isinstance(cp, dict):
-        obs_dim = cp.get("obs_dim", obs_dim)
-        hidden_dim = cp.get("hidden_dim", hidden_dim)
-        action_dim = cp.get("action_dim", action_dim)
-
-    # Infer from state_dict keys/shapes if available
-    if "0.weight" in state_dict:
-        obs_dim = int(state_dict["0.weight"].shape[1])
-        hidden_dim = int(state_dict["0.weight"].shape[0])
-    elif "actor.0.weight" in state_dict:
-        obs_dim = int(state_dict["actor.0.weight"].shape[1])
-        hidden_dim = int(state_dict["actor.0.weight"].shape[0])
-
-    for key in ("4.weight", "actor.4.weight", "2.weight", "actor.2.weight"):
-        if key in state_dict:
-            action_dim = int(state_dict[key].shape[0])
-            break
-
-    critic_obs_dim = None
-    if isinstance(cp, dict):
-        if "critic_obs_dim" in cp:
-            critic_obs_dim = int(cp["critic_obs_dim"])
-        elif "model_state_dict" in cp and "critic.0.weight" in cp["model_state_dict"]:
-            critic_obs_dim = int(cp["model_state_dict"]["critic.0.weight"].shape[1])
-        elif "critic.0.weight" in cp:
-            critic_obs_dim = int(cp["critic.0.weight"].shape[1])
-
-    actor = nn.Sequential(
-        nn.Linear(obs_dim, hidden_dim),
-        nn.ELU(),
-        nn.Linear(hidden_dim, hidden_dim),
-        nn.ELU(),
-        nn.Linear(hidden_dim, action_dim),
-    )
-
-    if "actor_state_dict" in cp:
-        actor.load_state_dict(cp["actor_state_dict"])
-    elif "model_state_dict" in cp:
-        sub = {k.replace("actor.", ""): v for k, v in cp["model_state_dict"].items() if k.startswith("actor.")}
-        actor.load_state_dict(sub if sub else cp["model_state_dict"])
-    else:
-        actor.load_state_dict(state_dict)
-
-    apply_obs_norm_to_actor(actor, cp)
-
-    actor.eval()
-    actor.obs_dim = obs_dim
-    actor.hidden_dim = hidden_dim
-    actor.action_dim = action_dim
-    actor.critic_obs_dim = critic_obs_dim
+    raw_actor = load_actor_from_checkpoint(cp)
+    actor = PolicyOnnxWrapper(raw_actor).eval()
+    actor.obs_dim = raw_actor[0].in_features
+    actor.hidden_dim = raw_actor[0].out_features
+    actor.action_dim = raw_actor[4].out_features
+    actor.critic_obs_dim = cp.get("critic_obs_dim") if isinstance(cp, dict) else None
     actor.stage = int(cp.get("stage", 0)) if isinstance(cp, dict) else 0
     return actor
 

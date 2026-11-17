@@ -208,7 +208,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         type=str,
-        default="models/mjcf/microduck_8dof.xml",
+        default=None,
         help="Path to MicroDuck 8-DOF MJCF model XML file",
     )
     parser.add_argument(
@@ -537,6 +537,70 @@ def extract_viewer_observation(
         return np.concatenate(parts, axis=-1).astype(np.float32)
 
 
+def resolve_viewer_model_path(model_arg=None, policy_path=None) -> str:
+    """Resolve omitted model from reliable metadata; explicit paths are never replaced."""
+    root = Path(__file__).resolve().parent.parent
+    default = root / "models/mjcf/microduck_8dof.xml"
+    known = {"microduck_8dof.xml": default, "cyberduck_v2.xml": root / "duck_v2/cyberduck_v2.xml",
+             "microduck_rpi5_8dof.xml": root / "pipelines/rpi5_stack/models/mjcf/microduck_rpi5_8dof.xml",
+             "microduck_esp32_8dof.xml": root / "pipelines/dual_esp32s3_stack/models/mjcf/microduck_esp32_8dof.xml"}
+    metadata = {}
+    if policy_path is not None:
+        p = Path(policy_path)
+        if not p.exists():
+            raise FileNotFoundError(f"Policy file not found: {p}")
+        if p.suffix.lower() == ".onnx":
+            import onnxruntime as ort
+            metadata = ort.InferenceSession(str(p), providers=["CPUExecutionProvider"]).get_modelmeta().custom_metadata_map
+        else:
+            import torch
+            ckpt = torch.load(p, map_location="cpu", weights_only=False)
+            metadata = ckpt if isinstance(ckpt, dict) else {}
+    expected = None
+    if metadata.get("model_path"):
+        expected = Path(str(metadata["model_path"]).replace("\\", "/"))
+        if not expected.is_absolute():
+            expected = root / expected
+        if not expected.is_file():
+            raise FileNotFoundError(f"Checkpoint model_path does not exist: {expected}")
+        if metadata.get("model_name") and str(metadata["model_name"]) != expected.name:
+            raise ValueError("Checkpoint model_name conflicts with model_path")
+    elif metadata.get("model_name"):
+        name = str(metadata["model_name"])
+        if name not in known:
+            raise ValueError(f"Unknown checkpoint model_name: {name}")
+        expected = known[name]
+    if model_arg is not None:
+        selected = Path(str(model_arg).replace("\\", "/"))
+        if not selected.is_absolute():
+            selected = root / selected
+        if expected is not None and selected.resolve() != expected.resolve():
+            raise ValueError(f"Explicit model {selected} conflicts with checkpoint model {expected}")
+    elif expected is not None:
+        selected = expected
+    elif policy_path is not None and Path(policy_path).stem.lower().startswith("cyberduck_v2_"):
+        selected = known["cyberduck_v2.xml"]
+    else:
+        selected = default
+    if not selected.is_file():
+        raise FileNotFoundError(f"Viewer model not found: {selected}")
+    if policy_path:
+        print(f"[POLICY] model={selected.resolve()} checkpoint={policy_path}")
+    return str(selected.resolve())
+
+
+def _validate_viewer_policy_dimensions(policy):
+    if hasattr(policy, "get_inputs"):
+        obs_width = policy.get_inputs()[0].shape[-1]
+        action_width = policy.get_outputs()[0].shape[-1]
+    else:
+        import torch.nn as nn
+        layers = [m for m in policy.modules() if isinstance(m, nn.Linear)]
+        obs_width, action_width = layers[0].in_features, layers[-1].out_features
+    if obs_width not in (37, 42) or action_width != 8:
+        raise ValueError(f"Unsupported viewer policy dimensions: obs={obs_width}, actions={action_width}")
+
+
 def load_viewer_policy(
     policy_path: Union[str, Path],
     obs_dim: int = 42,
@@ -561,35 +625,15 @@ def load_viewer_policy(
                 "onnxruntime is required to load .onnx policies. Run: pip install onnxruntime"
             ) from e
         session = ort.InferenceSession(str(p_path), providers=["CPUExecutionProvider"])
+        _validate_viewer_policy_dimensions(session)
         return session
 
-    # Default to PyTorch checkpoint (.pt, .pth, etc.)
-    try:
-        from scripts.export_policy import load_actor_from_checkpoint
-        actor = load_actor_from_checkpoint(
-            p_path, obs_dim=obs_dim, action_dim=action_dim
-        )
-        actor.eval()
-        return actor
-    except Exception:
-        import torch
-        from scripts.train_ppo import ActorCritic
-        ckpt = torch.load(str(p_path), map_location="cpu", weights_only=False)
-        obs_d = ckpt.get("obs_dim", obs_dim) if isinstance(ckpt, dict) else obs_dim
-        act_d = ckpt.get("action_dim", action_dim) if isinstance(ckpt, dict) else action_dim
-        hid_d = ckpt.get("hidden_dim", 256) if isinstance(ckpt, dict) else 256
-        model = ActorCritic(obs_dim=obs_d, action_dim=act_d, hidden_dim=hid_d)
-        if isinstance(ckpt, dict):
-            if "model_state_dict" in ckpt:
-                model.load_state_dict(ckpt["model_state_dict"])
-            elif "actor_state_dict" in ckpt:
-                model.actor.load_state_dict(ckpt["actor_state_dict"])
-            else:
-                model.load_state_dict(ckpt)
-        else:
-            model.load_state_dict(ckpt)
-        model.eval()
-        return model.actor
+    from scripts.export_policy import load_actor_from_checkpoint
+    actor = load_actor_from_checkpoint(p_path, obs_dim=obs_dim, action_dim=action_dim)
+    _validate_viewer_policy_dimensions(actor)
+    actor.eval()
+    return actor
+
 
 
 def policy_step(policy: Any, obs: np.ndarray) -> np.ndarray:
@@ -622,6 +666,8 @@ def policy_step(policy: Any, obs: np.ndarray) -> np.ndarray:
                 break
 
     if expected_dim is not None and expected_dim > 0:
+        if obs_arr.shape[-1] != expected_dim and {obs_arr.shape[-1], expected_dim} != {37, 42}:
+            raise ValueError(f"Policy observation mismatch: {obs_arr.shape[-1]} vs {expected_dim}")
         if obs_arr.shape[-1] > expected_dim:
             obs_arr = obs_arr[:, :expected_dim]
         elif obs_arr.shape[-1] < expected_dim:
@@ -640,12 +686,15 @@ def policy_step(policy: Any, obs: np.ndarray) -> np.ndarray:
         import torch
         with torch.no_grad():
             obs_tensor = torch.from_numpy(obs_arr)
-            if hasattr(policy, "actor"):
-                out = policy.actor(obs_tensor)
+            from scripts.export_policy import policy_actor_forward
+            if hasattr(policy, "forward_actor"):
+                out = policy.forward_actor(obs_tensor)
             else:
-                out = policy(obs_tensor)
+                out = policy_actor_forward(policy, obs_tensor)
             actions = out.cpu().numpy().ravel().astype(np.float32)
 
+    if actions.shape != (8,) or not np.isfinite(actions).all():
+        raise ValueError("Invalid policy action shape or non-finite action")
     return np.clip(actions, -1.0, 1.0).astype(np.float32)
 
 
@@ -670,16 +719,20 @@ def _maybe_hot_reload_policy(
         mtime = os.path.getmtime(str(policy_path))
         if mtime > last_mtime:
             new_policy = load_viewer_policy(policy_path)
+            current_model = getattr(current_policy, "_model_metadata", {})
+            new_model = getattr(new_policy, "_model_metadata", {})
+            if current_model and new_model and current_model != new_model:
+                raise ValueError("Hot-reload model metadata changed; reopen the viewer")
             print(f"\n[HOT-RELOAD] Đã tải trọng số policy mới từ {policy_path} (mtime={mtime:.1f})")
             return (new_policy, mtime, now_t)
         return (current_policy, last_mtime, now_t)
-    except Exception:
-        # File might be temporarily locked or mid-write by train_ppo.py
+    except Exception as exc:
+        print(f"[HOT-RELOAD] Keeping last valid policy: {exc}")
         return (current_policy, last_mtime, now_t)
 
 
 def run_simulation_headless(
-    model_path: Union[str, Path] = "models/mjcf/microduck_8dof.xml",
+    model_path: Optional[Union[str, Path]] = None,
     pose: str = "stand",
     duration: float = 1.0,
     gait_demo: bool = False,
@@ -698,7 +751,8 @@ def run_simulation_headless(
     if not _MUJOCO_AVAILABLE:
         raise RuntimeError("MuJoCo library is not available in current environment.")
 
-    model_path = str(model_path)
+    model_path = resolve_viewer_model_path(model_path, policy_path)
+    policy = load_viewer_policy(policy_path) if policy_path else None
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
 
@@ -707,7 +761,6 @@ def run_simulation_headless(
     total_steps = int(max(1, duration / dt))
     sim_time = 0.0
 
-    policy = load_viewer_policy(policy_path) if policy_path else None
     control_dt = 0.02
     decimation = max(1, int(round(control_dt / dt)))
     policy_episode_step = 0
@@ -802,7 +855,7 @@ def configure_viewer_camera(
 
 
 def run_interactive_viewer(
-    model_path: Union[str, Path] = "models/mjcf/microduck_8dof.xml",
+    model_path: Optional[Union[str, Path]] = None,
     pose: str = "stand",
     duration: Optional[float] = None,
     gait_demo: bool = False,
@@ -821,7 +874,8 @@ def run_interactive_viewer(
         print("[LỖI] Không tìm thấy thư viện mujoco. Vui lòng cài đặt: pip install mujoco")
         return
 
-    model_path = str(model_path)
+    model_path = resolve_viewer_model_path(model_path, policy_path)
+    policy = load_viewer_policy(policy_path) if policy_path else None
     if not os.path.exists(model_path):
         print(f"[LỖI] Không tìm thấy tệp mô hình: {model_path}")
         return
@@ -880,7 +934,6 @@ def run_interactive_viewer(
             start_wall_time = time.time()
             step_count = 0
 
-            policy = load_viewer_policy(policy_path) if policy_path else None
             policy_mtime = 0.0
             last_reload_check = 0.0
             if policy_path and os.path.exists(str(policy_path)):
@@ -1008,7 +1061,7 @@ def run_interactive_viewer(
 
 
 def run_opencv_viewer(
-    model_path: Union[str, Path] = "models/mjcf/microduck_8dof.xml",
+    model_path: Optional[Union[str, Path]] = None,
     pose: str = "stand",
     duration: Optional[float] = None,
     gait_demo: bool = False,
@@ -1035,7 +1088,8 @@ def run_opencv_viewer(
         print("[LỖI] Không tìm thấy thư viện opencv-python (cv2).")
         return
 
-    model_path = str(model_path)
+    model_path = resolve_viewer_model_path(model_path, policy_path)
+    policy = load_viewer_policy(policy_path) if policy_path else None
     if not os.path.exists(model_path):
         print(f"[LỖI] Không tìm thấy tệp mô hình: {model_path}")
         return
@@ -1060,7 +1114,6 @@ def run_opencv_viewer(
 
     renderer = mujoco.Renderer(model, 480, 640)
 
-    policy = load_viewer_policy(policy_path) if policy_path else None
     policy_mtime = 0.0
     last_reload_check = 0.0
     if policy_path and os.path.exists(str(policy_path)):
@@ -1391,7 +1444,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.interactive:
-        run_interactive_cli(model_path=args.model, dt=args.dt)
+        run_interactive_cli(model_path=resolve_viewer_model_path(args.model), dt=args.dt)
     elif args.headless:
         print("[CHẾ ĐỘ HEADLESS] Đang chạy kiểm thử mô phỏng không giao diện...")
         run_duration = args.duration if args.duration is not None else 2.0

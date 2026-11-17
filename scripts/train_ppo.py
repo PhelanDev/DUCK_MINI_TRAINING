@@ -9,6 +9,7 @@ from pathlib import Path
 import argparse
 import math
 import os
+import pickle
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -146,6 +147,7 @@ class ActorCritic(nn.Module):
         min_log_std: float = -3.0,
         max_log_std: float = 0.0,
         critic_obs_dim: Optional[int] = None,
+        squash_actions: bool = False,
     ):
         super().__init__()
         if min_log_std > max_log_std:
@@ -158,6 +160,7 @@ class ActorCritic(nn.Module):
         self.hidden_dim = int(hidden_dim)
         self.min_log_std = float(min_log_std)
         self.max_log_std = float(max_log_std)
+        self.squash_actions = bool(squash_actions)
 
         # Actor Network (Mean Action)
         self.actor = nn.Sequential(
@@ -208,7 +211,8 @@ class ActorCritic(nn.Module):
 
     def forward_actor(self, obs: torch.Tensor) -> torch.Tensor:
         """Deterministic policy forward pass (mean action)."""
-        return self.actor(obs)
+        raw = self.actor(obs)
+        return torch.tanh(raw) if self.squash_actions else raw
 
     def forward_critic(self, obs: torch.Tensor) -> torch.Tensor:
         """Critic value estimation forward pass."""
@@ -225,7 +229,9 @@ class ActorCritic(nn.Module):
         obs: torch.Tensor,
         action: Optional[torch.Tensor] = None,
         critic_obs: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        pre_tanh_action: Optional[torch.Tensor] = None,
+        return_pre_tanh: bool = False,
+    ) -> tuple:
         """Sample actions from policy distribution or evaluate given actions.
 
         Returns:
@@ -236,15 +242,33 @@ class ActorCritic(nn.Module):
         std = torch.exp(clamped_log_std).expand_as(mean)
         dist = torch.distributions.Normal(mean, std)
 
-        if action is None:
-            action = dist.sample()
-
-        log_prob = dist.log_prob(action).sum(dim=-1)
+        if self.squash_actions:
+            if pre_tanh_action is not None:
+                latent = pre_tanh_action.detach()
+                expected = torch.tanh(latent)
+                if action is not None and not torch.allclose(action, expected, atol=1e-6, rtol=1e-6):
+                    raise ValueError("action does not match pre_tanh_action")
+                action = expected
+            elif action is None:
+                latent = dist.sample()
+                action = torch.tanh(latent)
+            else:
+                if not torch.isfinite(action).all() or torch.any(action.abs() >= 1):
+                    raise ValueError("Saturated actions require pre_tanh_action")
+                latent = torch.atanh(action.detach())
+            log_jacobian = 2.0 * (math.log(2.0) - latent - F.softplus(-2.0 * latent))
+            log_prob = (dist.log_prob(latent) - log_jacobian).sum(dim=-1)
+        else:
+            action = dist.sample() if action is None else action
+            latent = action.detach()
+            log_prob = dist.log_prob(action).sum(dim=-1)
+        # Regularize the base Gaussian; this is not transformed-policy entropy.
         entropy = dist.entropy().sum(dim=-1)
         c_obs = critic_obs if critic_obs is not None else obs
         value = self.forward_critic(c_obs)
 
-        return action, log_prob, entropy, value
+        result = (action, log_prob, entropy, value)
+        return (*result, latent.detach()) if return_pre_tanh else result
 
     def load_state_dict(self, state_dict: Dict[str, Any], strict: bool = True):
         """Adaptive load_state_dict to smoothly support checkpoints with different critic_obs_dim."""
@@ -335,6 +359,37 @@ def apply_timeout_bootstrap(
     return out
 
 
+def deterministic_eval_protocol(model_path, terrain_mode, obs_dim, squash_actions):
+    """Identity of the fixed benchmark used for walking checkpoint selection."""
+    path = Path(model_path).resolve()
+    return {
+        "version": 1, "commands": [0.18, 0.22, 0.25], "seeds": [0, 1, 2],
+        "friction": 1.2, "max_steps": 250, "control_dt": 0.02,
+        "model_path": path.relative_to(REPO_ROOT).as_posix() if path.is_relative_to(REPO_ROOT) else str(path),
+        "terrain_mode": terrain_mode, "obs_dim": obs_dim,
+        "squash_actions": bool(squash_actions), "mode": "walk",
+    }
+
+
+def select_deterministic_candidate(candidate, previous):
+    """Return eligibility and reason without mutating either selection record."""
+    if not all(math.isfinite(candidate[k]) for k in ("det_distance_x", "det_reward")):
+        return False, "non_finite_evaluation"
+    if candidate["det_distance_x"] < 0.05:
+        return False, "below_walking_threshold"
+    if previous is None:
+        return True, "first_qualified_candidate"
+    if previous["protocol"] != candidate["protocol"]:
+        return False, "incompatible_evaluation_protocol"
+    if candidate["stage"] < previous["stage"]:
+        return False, "lower_stage"
+    if candidate["stage"] > previous["stage"]:
+        return True, "qualified_higher_stage"
+    improved = (candidate["det_distance_x"], candidate["det_reward"]) > (
+        previous["det_distance_x"], previous["det_reward"])
+    return improved, "deterministic_improvement" if improved else "no_deterministic_improvement"
+
+
 def evaluate_deterministic_rollout(
     model: ActorCritic,
     obs_rms: RunningMeanStd,
@@ -344,55 +399,71 @@ def evaluate_deterministic_rollout(
     stand_still: bool = False,
     max_steps: int = 250,
     device: Union[str, torch.device] = "cpu",
-    cmd_vx: float = 0.22,
+    cmd_vx: Optional[float] = None,
     eval_runner: Optional[ParallelSimRunner] = None,
+    num_episodes: int = 3,
+    commands: Optional[List[float]] = None,
+    seeds: Optional[List[int]] = None,
 ) -> Tuple[float, float]:
-    """Run one deterministic (noise-free) episode and return (max_dist_x, mean_step_reward)."""
+    """Mean final displacement and mean episode step reward on fixed resets."""
+    if num_episodes < 1 or max_steps < 1:
+        raise ValueError("Evaluation requires positive episode and step counts")
+    commands = list(commands) if commands is not None else (
+        [float(cmd_vx)] * num_episodes if cmd_vx is not None else
+        [0.18, 0.22, 0.25] if num_episodes == 3 else [0.22] * num_episodes)
+    seeds = list(seeds) if seeds is not None else list(range(num_episodes))
+    if len(commands) != num_episodes or len(seeds) != num_episodes:
+        raise ValueError("Evaluation command/seed schedule must match num_episodes")
     owns_runner = eval_runner is None
-    if owns_runner:
-        runner = ParallelSimRunner(
-            model_path=str(model_path),
-            num_envs=1,
-            decimation=10,
-            stage=stage,
-            terrain_mode=terrain_mode,
-            stand_still=stand_still,
-            friction_range=(1.2, 1.2),
-            randomize_pillars=False,
-        )
-    else:
-        runner = eval_runner
-        if runner.curriculum_stage != stage:
-            runner.set_stage(stage)
-        runner.stand_still = bool(stand_still)
-
+    runner = eval_runner if eval_runner is not None else ParallelSimRunner(
+        model_path=str(model_path), num_envs=1, decimation=10, stage=stage,
+        terrain_mode=terrain_mode, stand_still=stand_still,
+        friction_range=(1.2, 1.2), randomize_pillars=False,
+    )
+    if runner.num_envs != 1:
+        raise ValueError("Deterministic evaluation requires a dedicated single-env runner")
+    prior_rng = runner.rng
+    prior_friction = runner.friction_range
     was_training = model.training
     model.eval()
     try:
-        obs_raw = runner.reset()
-        runner.commands[0] = [0.0 if stand_still else float(cmd_vx), 0.0, 0.0]
-        obs_raw[0] = runner._extract_obs(0)
-        total_rew = 0.0
-        steps_run = 0
-        max_x = float(runner.datas[0].qpos[0])
-        for _ in range(max(1, int(max_steps))):
-            obs_norm = obs_rms.normalize(obs_raw)
-            obs_t = torch.as_tensor(obs_norm, dtype=torch.float32, device=device)
-            with torch.no_grad():
-                act_np = np.clip(model.forward_actor(obs_t).cpu().numpy(), -1.0, 1.0)
-            obs_raw, rewards_np, dones_np, _ = runner.step_arrays(act_np)
-            runner.commands[0] = [0.0 if stand_still else float(cmd_vx), 0.0, 0.0]
-            total_rew += float(rewards_np[0])
-            steps_run += 1
-            if bool(dones_np[0]):
-                break
-            max_x = max(max_x, float(runner.datas[0].qpos[0]))
-        return float(max_x), float(total_rew / max(1, steps_run))
+        if runner.curriculum_stage != stage:
+            runner.set_stage(stage)
+        runner.stand_still = bool(stand_still)
+        runner.friction_range = (1.2, 1.2)
+        distances, episode_rewards = [], []
+        for command, seed in zip(commands, seeds):
+            runner.rng = np.random.default_rng(seed)
+            obs_raw = runner.reset()
+            runner.commands[0] = [0.0 if stand_still else command, 0.0, 0.0]
+            obs_raw[0] = runner._extract_obs(0)
+            start_x = float(runner.datas[0].qpos[0])
+            end_x, total_reward, steps_run = start_x, 0.0, 0
+            for _ in range(max_steps):
+                obs_t = torch.as_tensor(obs_rms.normalize(obs_raw), dtype=torch.float32, device=device)
+                with torch.no_grad():
+                    action = model.forward_actor(obs_t).cpu().numpy()
+                if not model.squash_actions:
+                    action = np.clip(action, -1.0, 1.0)
+                obs_raw, rewards, dones, info = runner.step_arrays(action)
+                total_reward += float(rewards[0])
+                steps_run += 1
+                if bool(dones[0]):
+                    # Terminal coordinates must be captured before the runner auto-reset.
+                    end_x = float(info["terminal_distances_x"][0])
+                    break
+                end_x = float(runner.datas[0].qpos[0])
+                runner.commands[0] = [0.0 if stand_still else command, 0.0, 0.0]
+                obs_raw[0] = runner._extract_obs(0)
+            distances.append(end_x - start_x)
+            episode_rewards.append(total_reward / steps_run)
+        return float(np.mean(distances)), float(np.mean(episode_rewards))
     finally:
+        runner.rng = prior_rng
+        runner.friction_range = prior_friction
+        model.train(was_training)
         if owns_runner:
             runner.close()
-        if was_training:
-            model.train()
 
 
 def _atomic_torch_save(payload: Dict[str, Any], target_path: Union[str, Path]) -> None:
@@ -492,31 +563,30 @@ def train_ppo(
         best_save_path.parent.mkdir(parents=True, exist_ok=True)
 
     latest_save_path = save_path.parent / f"{ckpt_prefix}_latest.pt"
+    if best_save_path in (save_path, latest_save_path):
+        raise ValueError("best_save_path must be separate from progress checkpoint paths")
+    if load_checkpoint is not None and not resume:
+        source_path = Path(load_checkpoint).resolve()
+        if source_path in (save_path, latest_save_path, best_save_path):
+            raise ValueError("Transfer requires new output paths; do not overwrite the source checkpoint")
 
-    # Historical best tracking
-    best_reward = -float("inf")
-    best_dist_x = -float("inf")
+    # The actual best file is the only authority for historical selection.
+    best_record = None
     best_stage = current_stage
-    has_prev_best = False
-
+    best_reward = best_dist_x = -float("inf")
     if resume and best_save_path.exists():
         try:
-            prev_best = torch.load(str(best_save_path), map_location="cpu", weights_only=False)
-            best_reward = float(
-                prev_best.get(
-                    "best_reward",
-                    prev_best.get("metrics", {}).get("mean_reward", -float("inf")),
-                )
-            )
-            best_dist_x = float(
-                prev_best.get(
-                    "best_distance_x",
-                    prev_best.get("metrics", {}).get("mean_distance_x", -float("inf")),
-                )
-            )
-            best_stage = int(prev_best.get("best_stage", prev_best.get("stage", current_stage)))
-            has_prev_best = True
-        except Exception:
+            previous = torch.load(str(best_save_path), map_location="cpu", weights_only=False)
+            record = previous.get("best_selection")
+            if (isinstance(record, dict) and isinstance(record.get("protocol"), dict)
+                    and record["protocol"].get("mode") == "walk"
+                    and all(math.isfinite(float(record[k])) for k in ("det_distance_x", "det_reward"))
+                    and float(record["det_distance_x"]) >= 0.05):
+                best_record = dict(record)
+                best_stage = int(record["stage"])
+                best_reward = float(record["mean_reward"])
+                best_dist_x = float(record["mean_distance_x"])
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError, EOFError, pickle.UnpicklingError):
             pass
 
     # Initialize environment
@@ -554,6 +624,7 @@ def train_ppo(
         hidden_dim=hidden_dim,
         max_log_std=max_log_std,
         critic_obs_dim=critic_obs_dim,
+        squash_actions=True,
     ).to(dev)
 
     obs_rms = RunningMeanStd(shape=obs_dim, clip=10.0)
@@ -589,6 +660,8 @@ def train_ppo(
     if ckpt_to_load is not None:
         if ckpt_to_load.exists():
             ckpt = torch.load(str(ckpt_to_load), map_location=dev, weights_only=False)
+            if resume:
+                model.squash_actions = bool(ckpt.get("squash_actions", False))
             if "obs_rms" in ckpt:
                 try:
                     obs_rms.load_state_dict(ckpt["obs_rms"])
@@ -671,12 +744,6 @@ def train_ppo(
             if resume:
                 loaded_iters = int(ckpt.get("iterations", 0))
                 total_timesteps = int(ckpt.get("total_timesteps", 0))
-                if "best_reward" in ckpt:
-                    best_reward = max(best_reward, float(ckpt["best_reward"]))
-                if "best_distance_x" in ckpt:
-                    best_dist_x = max(best_dist_x, float(ckpt["best_distance_x"]))
-                if not has_prev_best and "best_stage" in ckpt:
-                    best_stage = int(ckpt["best_stage"])
                 if "learning_rate" in ckpt:
                     current_lr = float(ckpt["learning_rate"])
                     if target_kl > 0:
@@ -712,6 +779,7 @@ def train_ppo(
     obs_buffer = torch.zeros((rollout_steps, num_envs, obs_dim), dtype=torch.float32, device=dev)
     critic_obs_buffer = torch.zeros((rollout_steps, num_envs, critic_obs_dim), dtype=torch.float32, device=dev)
     actions_buffer = torch.zeros((rollout_steps, num_envs, action_dim), dtype=torch.float32, device=dev)
+    latent_buffer = torch.zeros_like(actions_buffer)
     log_probs_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
     raw_rewards_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
     rewards_buffer = torch.zeros((rollout_steps, num_envs), dtype=torch.float32, device=dev)
@@ -745,6 +813,26 @@ def train_ppo(
         "action_std_mean": initial_action_std,
     }
 
+    eval_protocol = deterministic_eval_protocol(sim_model_path, terrain_mode, obs_dim, model.squash_actions)
+
+    def checkpoint_payload(iteration, stage, selection):
+        return {
+            "model_state_dict": model.state_dict(), "actor_state_dict": model.actor.state_dict(),
+            "critic_state_dict": model.critic.state_dict(), "optimizer_state_dict": optimizer.state_dict(),
+            "obs_dim": obs_dim, "critic_obs_dim": critic_obs_dim, "action_dim": action_dim,
+            "hidden_dim": hidden_dim, "obs_rms": obs_rms.state_dict(),
+            "critic_obs_rms": critic_obs_rms.state_dict(), "squash_actions": model.squash_actions,
+            "model_path": eval_protocol["model_path"], "model_name": sim_model_path.name,
+            "iterations": iteration, "learning_rate": current_lr, "stage": stage,
+            "terrain_mode": terrain_mode, "total_timesteps": total_timesteps,
+            "elapsed_seconds": time.perf_counter() - start_time, "metrics": dict(metrics),
+            "evaluation_protocol": dict(eval_protocol), "best_selection": selection,
+            "best_stage": selection["stage"] if selection else stage,
+            "best_reward": selection["mean_reward"] if selection else -float("inf"),
+            "best_distance_x": selection["mean_distance_x"] if selection else -float("inf"),
+            "best_det_distance_x": selection["det_distance_x"] if selection else -float("inf"),
+        }
+
     start_iteration = loaded_iters + 1
     total_target_iters = loaded_iters + max_iterations
 
@@ -770,21 +858,35 @@ def train_ppo(
             # ------------------------------------------------------------------
             # Phase 1: Rollout Collection
             # ------------------------------------------------------------------
+            rollout_stage = current_stage
+            rollout_standing = bool(getattr(runner, "stand_still", False))
             model.eval()
+            action_stats = np.zeros(3, dtype=np.float64)
+            component_totals = {}
             step_lin_vels: List[float] = []
             for step in range(rollout_steps):
                 with torch.no_grad():
-                    actions, log_probs, _, values = model.get_action_and_value(
-                        current_obs, critic_obs=current_critic_obs
+                    actions, log_probs, _, values, latent = model.get_action_and_value(
+                        current_obs, critic_obs=current_critic_obs, return_pre_tanh=True
                     )
+                    deterministic_actions = model.forward_actor(current_obs)
+                    action_stats += [float(deterministic_actions.abs().mean()),
+                                     float((actions - deterministic_actions).abs().mean()),
+                                     float((actions.abs() > 0.99).float().mean())]
 
-                # Send clipped actions to physics simulator
+                # Squashed samples reach physics unchanged; legacy policies keep their old clipping.
                 actions_np = actions.cpu().numpy()
-                actions_clamped = np.clip(actions_np, -1.0, 1.0)
+                if not np.all(np.isfinite(actions_np)):
+                    raise ValueError("Non-finite policy action")
+                if model.squash_actions and np.any(np.abs(actions_np) > 1):
+                    raise ValueError("Squashed policy action outside [-1, 1]")
+                actions_clamped = actions_np if model.squash_actions else np.clip(actions_np, -1.0, 1.0)
 
                 if hasattr(runner, "step_arrays"):
                     next_obs_raw, rewards_np, dones_np, step_info = runner.step_arrays(actions_clamped)
                     step_lin_vels.append(float(step_info["tracking_lin_vel"]))
+                    for key, val in step_info.get("reward_components", {}).items():
+                        component_totals[key] = component_totals.get(key, 0.0) + float(val)
                     raw_step_rewards = torch.as_tensor(rewards_np, dtype=torch.float32, device=dev)
                     raw_rewards_buffer[step] = raw_step_rewards
 
@@ -830,6 +932,7 @@ def train_ppo(
                 # Store into buffers
                 obs_buffer[step] = current_obs
                 critic_obs_buffer[step] = current_critic_obs
+                latent_buffer[step] = latent
                 actions_buffer[step] = actions
                 log_probs_buffer[step] = log_probs
                 values_buffer[step] = values
@@ -863,6 +966,7 @@ def train_ppo(
             b_obs = obs_buffer.reshape(-1, obs_dim)
             b_critic_obs = critic_obs_buffer.reshape(-1, critic_obs_dim)
             b_actions = actions_buffer.reshape(-1, action_dim)
+            b_latents = latent_buffer.reshape(-1, action_dim)
             b_log_probs = log_probs_buffer.reshape(-1)
             b_advantages = advantages.reshape(-1)
             b_returns = returns.reshape(-1)
@@ -903,7 +1007,8 @@ def train_ppo(
                     mb_inds = indices[start_idx:end_idx]
 
                     _, new_log_probs, entropy, new_values = model.get_action_and_value(
-                        b_obs[mb_inds], b_actions[mb_inds], critic_obs=b_critic_obs[mb_inds]
+                        b_obs[mb_inds], b_actions[mb_inds], critic_obs=b_critic_obs[mb_inds],
+                        pre_tanh_action=b_latents[mb_inds] if model.squash_actions else None,
                     )
 
                     log_ratio = new_log_probs - b_log_probs[mb_inds]
@@ -998,6 +1103,57 @@ def train_ppo(
             cohort_success_rate = runner.get_success_rate(stage_req_dist)
             rew_lin_vel_ratio = float(np.mean(step_lin_vels)) if step_lin_vels else 0.0
 
+            metrics["mean_reward"] = float(raw_rewards_buffer.mean().item())
+            metrics["bootstrapped_mean_reward"] = float(rewards_buffer.mean().item())
+            metrics["mean_distance_x"] = float(mean_dist_x)
+            metrics["mean_distance_y"] = float(mean_dist_y)
+            metrics["success_rate"] = float(cohort_success_rate)
+            metrics["stage"] = current_stage
+            metrics["hold_count"] = hold_count
+
+            metrics["base_gaussian_entropy"] = metrics["entropy"]
+            metrics["action_mean_abs"], metrics["action_noise_delta"], metrics["action_saturation_frac"] = (
+                action_stats / rollout_steps).tolist()
+            metrics["reward_components"] = {k: v / rollout_steps for k, v in component_totals.items()}
+            metrics["evaluation_stage"] = rollout_stage
+            metrics["evaluation_iteration"] = iteration
+            metrics["evaluation_mode"] = "stand" if rollout_standing else "walk"
+            metrics["evaluation_protocol"] = dict(eval_protocol)
+            metrics["det_distance_x"] = metrics["det_reward"] = None
+            metrics["best_rejection_reason"] = "dry_run" if dry_run else "standing_rollout"
+            allow_best_eval = not (transfer_loaded and iteration == start_iteration
+                                   and total_target_iters > start_iteration)
+            if not dry_run and not rollout_standing and not allow_best_eval:
+                metrics["best_rejection_reason"] = "transfer_warmup"
+            if not dry_run and not rollout_standing and allow_best_eval:
+                if eval_runner is None:
+                    eval_runner = ParallelSimRunner(
+                        model_path=str(sim_model_path), num_envs=1, decimation=10,
+                        stage=rollout_stage, terrain_mode=terrain_mode, stand_still=False,
+                        friction_range=(1.2, 1.2), randomize_pillars=False,
+                    )
+                det_x, det_reward = evaluate_deterministic_rollout(
+                    model=model, obs_rms=obs_rms, model_path=sim_model_path,
+                    stage=rollout_stage, terrain_mode=terrain_mode, max_steps=250,
+                    device=dev, eval_runner=eval_runner,
+                )
+                metrics["det_distance_x"], metrics["det_reward"] = det_x, det_reward
+                candidate = {
+                    "stage": rollout_stage, "iteration": iteration, "protocol": dict(eval_protocol),
+                    "det_distance_x": float(det_x) if det_x is not None else float("nan"),
+                    "det_reward": float(det_reward) if det_reward is not None else float("nan"),
+                    "mean_reward": metrics["mean_reward"], "mean_distance_x": metrics["mean_distance_x"],
+                }
+                accepted, reason = select_deterministic_candidate(candidate, best_record)
+                metrics["best_rejection_reason"] = None if accepted else reason
+                if accepted:
+                    _atomic_torch_save(checkpoint_payload(iteration, rollout_stage, candidate), best_save_path)
+                    best_record = candidate
+                    best_stage = rollout_stage
+                    best_reward, best_dist_x = candidate["mean_reward"], candidate["mean_distance_x"]
+                    if verbose:
+                        print(f"[PPO] [BEST] {best_save_path.name}: DetDistX={det_x:.3f}m")
+
             if terrain_mode == "stairs":
                 new_stage, hold_count = next_stair_stage(
                     stage=current_stage,
@@ -1053,140 +1209,20 @@ def train_ppo(
                             "Unlocking walking velocity commands!"
                         )
 
-            metrics["mean_reward"] = float(raw_rewards_buffer.mean().item())
-            metrics["bootstrapped_mean_reward"] = float(rewards_buffer.mean().item())
-            metrics["mean_distance_x"] = float(mean_dist_x)
-            metrics["mean_distance_y"] = float(mean_dist_y)
-            metrics["success_rate"] = float(cohort_success_rate)
             metrics["stage"] = current_stage
             metrics["hold_count"] = hold_count
-
-            iter_fps = batch_size / max(1e-6, (time.perf_counter() - iter_start))
             print_interval = max(1, min(log_interval, max_iterations))
             if verbose and (iteration % print_interval == 0 or iteration == start_iteration or iteration == total_target_iters):
-                det_suffix = ""
-                if not dry_run and rollout_steps >= 64:
-                    if eval_runner is None:
-                        eval_runner = ParallelSimRunner(
-                            model_path=str(sim_model_path),
-                            num_envs=1,
-                            decimation=10,
-                            stage=rollout_stage,
-                            terrain_mode=terrain_mode,
-                            stand_still=getattr(runner, "stand_still", False),
-                            friction_range=(1.2, 1.2),
-                            randomize_pillars=False,
-                        )
-                    det_dist_x, det_rew = evaluate_deterministic_rollout(
-                        model=model,
-                        obs_rms=obs_rms,
-                        model_path=sim_model_path,
-                        stage=rollout_stage,
-                        terrain_mode=terrain_mode,
-                        stand_still=getattr(runner, "stand_still", False),
-                        max_steps=150,
-                        device=dev,
-                        eval_runner=eval_runner,
-                    )
-                    det_suffix = f" | DetDistX: {det_dist_x:4.2f}m | DetRew: {det_rew:+.3f}"
-                print(
-                    f"[Iteration {iteration:04d}/{total_target_iters}] "
-                    f"Stage: {current_stage} | "
-                    f"EpLen: {mean_ep_len:5.1f}/500 | "
-                    f"DistX: {mean_dist_x:4.2f}m | "
-                    f"Succ: {cohort_success_rate*100:4.1f}% | "
-                    f"Reward: {metrics['mean_reward']:+.3f} | "
-                    f"PiLoss: {metrics['policy_loss']:.4f} | "
-                    f"ValLoss: {metrics['value_loss']:.4f} | "
-                    f"KL: {metrics['approx_kl']:.4f} | "
-                    f"LR: {metrics['learning_rate']:.1e} | "
-                    f"Std: {metrics['action_std_mean']:.3f} | "
-                    f"FPS: {iter_fps:.0f}"
-                    f"{det_suffix}",
-                    flush=True,
-                )
-
-            # Check for historical best model (Reward and DistX peak without policy collapse)
-            cur_reward = metrics["mean_reward"]
-            cur_dist_x = metrics["mean_distance_x"]
-            is_best = False
-
-            allow_best_eval = not (
-                transfer_loaded
-                and iteration == start_iteration
-                and total_target_iters > start_iteration
-            )
-            if not dry_run and iteration > 0 and allow_best_eval:
-                if rollout_stage > best_stage and cur_dist_x >= 0.0 and (cur_dist_x > 0.0 or cur_reward > 0.0):
-                    is_best = True
-                    best_stage = rollout_stage
-                    best_reward = cur_reward
-                    best_dist_x = cur_dist_x
-                elif rollout_stage == best_stage:
-                    if (
-                        (cur_reward >= best_reward and cur_dist_x >= best_dist_x)
-                        and (cur_reward > best_reward or cur_dist_x > best_dist_x)
-                    ) or (cur_dist_x > best_dist_x and cur_reward >= best_reward - 0.05):
-                        is_best = True
-                        best_reward = max(best_reward, cur_reward)
-                        best_dist_x = max(best_dist_x, cur_dist_x)
-
-            if is_best:
-                elapsed_cur = time.perf_counter() - start_time
-                best_ckpt = {
-                    "model_state_dict": model.state_dict(),
-                    "actor_state_dict": model.actor.state_dict(),
-                    "critic_state_dict": model.critic.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "obs_dim": obs_dim,
-                    "critic_obs_dim": critic_obs_dim,
-                    "obs_rms": obs_rms.state_dict(),
-                    "critic_obs_rms": critic_obs_rms.state_dict(),
-                    "action_dim": action_dim,
-                    "hidden_dim": hidden_dim,
-                    "iterations": iteration,
-                    "learning_rate": current_lr,
-                    "stage": rollout_stage,
-                    "best_stage": best_stage,
-                    "terrain_mode": terrain_mode,
-                    "total_timesteps": total_timesteps,
-                    "elapsed_seconds": elapsed_cur,
-                    "metrics": metrics,
-                    "best_reward": best_reward,
-                    "best_distance_x": best_dist_x,
-                }
-                _atomic_torch_save(best_ckpt, best_save_path)
-                if verbose:
-                    print(
-                        f"[PPO] [BEST] New best model saved: {best_save_path.name} "
-                        f"(Reward: {cur_reward:+.3f}, DistX: {cur_dist_x:4.2f}m, Iter {iteration})"
-                    )
+                det_suffix = (f" | DetDistX: {metrics['det_distance_x']:.2f}m | DetRew: {metrics['det_reward']:+.3f}"
+                              if metrics["det_distance_x"] is not None and metrics["det_reward"] is not None else "")
+                print(f"[Iteration {iteration:04d}/{total_target_iters}] Stage: {current_stage} | "
+                      f"EpLen: {mean_ep_len:.1f} | DistX: {mean_dist_x:.2f}m | "
+                      f"Reward: {metrics['mean_reward']:+.3f} | KL: {metrics['approx_kl']:.4f}"
+                      f"{det_suffix}", flush=True)
 
             # Periodic checkpoint saving (latest model)
             if not dry_run and save_interval > 0 and (iteration % save_interval == 0):
-                elapsed_cur = time.perf_counter() - start_time
-                ckpt = {
-                    "model_state_dict": model.state_dict(),
-                    "actor_state_dict": model.actor.state_dict(),
-                    "critic_state_dict": model.critic.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "obs_dim": obs_dim,
-                    "critic_obs_dim": critic_obs_dim,
-                    "obs_rms": obs_rms.state_dict(),
-                    "critic_obs_rms": critic_obs_rms.state_dict(),
-                    "action_dim": action_dim,
-                    "hidden_dim": hidden_dim,
-                    "iterations": iteration,
-                    "learning_rate": current_lr,
-                    "stage": current_stage,
-                    "best_stage": best_stage,
-                    "terrain_mode": terrain_mode,
-                    "total_timesteps": total_timesteps,
-                    "elapsed_seconds": elapsed_cur,
-                    "metrics": metrics,
-                    "best_reward": best_reward,
-                    "best_distance_x": best_dist_x,
-                }
+                ckpt = checkpoint_payload(iteration, current_stage, best_record)
                 _atomic_torch_save(ckpt, save_path)
                 _atomic_torch_save(ckpt, latest_save_path)
                 if verbose:
@@ -1196,32 +1232,9 @@ def train_ppo(
         # Phase 4: Save Model Checkpoint
         # ------------------------------------------------------------------
         elapsed_total = time.perf_counter() - start_time
-        checkpoint = {
-            "model_state_dict": model.state_dict(),
-            "actor_state_dict": model.actor.state_dict(),
-            "critic_state_dict": model.critic.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "obs_dim": obs_dim,
-            "critic_obs_dim": critic_obs_dim,
-            "obs_rms": obs_rms.state_dict(),
-            "critic_obs_rms": critic_obs_rms.state_dict(),
-            "action_dim": action_dim,
-            "hidden_dim": hidden_dim,
-            "iterations": total_target_iters,
-            "learning_rate": current_lr,
-            "stage": current_stage,
-            "best_stage": best_stage,
-            "terrain_mode": terrain_mode,
-            "total_timesteps": total_timesteps,
-            "elapsed_seconds": elapsed_total,
-            "metrics": metrics,
-            "best_reward": best_reward,
-            "best_distance_x": best_dist_x,
-        }
+        checkpoint = checkpoint_payload(total_target_iters, current_stage, best_record)
         _atomic_torch_save(checkpoint, save_path)
         _atomic_torch_save(checkpoint, latest_save_path)
-        if not best_save_path.exists():
-            _atomic_torch_save(checkpoint, best_save_path)
         if verbose:
             print(f"[PPO] Checkpoint saved successfully: {save_path} ({total_timesteps} steps in {elapsed_total:.2f}s)")
 
@@ -1236,7 +1249,7 @@ def train_ppo(
         "total_timesteps": total_timesteps,
         "checkpoint_path": str(save_path),
         "latest_checkpoint_path": str(latest_save_path),
-        "best_checkpoint_path": str(best_save_path),
+        "best_checkpoint_path": str(best_save_path) if best_record is not None else None,
         "metrics": metrics,
         "stage": current_stage,
         "best_stage": best_stage,

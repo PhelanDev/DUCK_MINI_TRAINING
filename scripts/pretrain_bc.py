@@ -14,7 +14,7 @@ _ROOT = str(Path(__file__).resolve().parent.parent)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from scripts.export_policy import apply_obs_norm_to_actor
+from scripts.export_policy import load_actor_from_checkpoint, policy_actor_forward
 from scripts.train_ppo import ActorCritic, RunningMeanStd
 from training.advanced_gaits import BipedalGaitGenerator
 from training.env_config import unscale_actions
@@ -95,7 +95,7 @@ def collect_teacher_demonstrations(
         feed = obs[:, :in_dim] if obs.shape[1] >= in_dim else np.pad(obs, ((0, 0), (0, in_dim - obs.shape[1])))
         with torch.no_grad():
             t_obs = torch.as_tensor(feed, dtype=torch.float32)
-            out = teacher_actor.forward_actor(t_obs) if hasattr(teacher_actor, "forward_actor") else teacher_actor(t_obs)
+            out = teacher_actor.forward_actor(t_obs) if hasattr(teacher_actor, "forward_actor") else policy_actor_forward(teacher_actor, t_obs)
             if isinstance(out, tuple):
                 out = out[0]
             act = out.detach().cpu().numpy()
@@ -189,14 +189,7 @@ def main():
         else:
             if not args.teacher_checkpoint:
                 raise ValueError("--teacher-checkpoint is required when --mode=teacher")
-            ckpt = torch.load(args.teacher_checkpoint, map_location="cpu", weights_only=False)
-            teacher = ActorCritic(obs_dim=ckpt.get("obs_dim", 37), action_dim=ckpt.get("action_dim", 8))
-            if "actor_state_dict" in ckpt:
-                teacher.actor.load_state_dict(ckpt["actor_state_dict"])
-            elif "model_state_dict" in ckpt:
-                teacher.load_state_dict(ckpt["model_state_dict"])
-            if "obs_rms" in ckpt:
-                apply_obs_norm_to_actor(teacher.actor, ckpt)
+            teacher = load_actor_from_checkpoint(args.teacher_checkpoint)
             obs, acts, rets = collect_teacher_demonstrations(runner, teacher, num_steps=args.steps)
     finally:
         runner.close()

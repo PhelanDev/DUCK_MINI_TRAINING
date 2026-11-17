@@ -103,6 +103,108 @@ def extract_filtered_lidar_ranges(
     return None
 
 
+_SOLE_SAMPLE_SIGNS: np.ndarray = np.array(
+    [
+        [-1.0, -1.0, -1.0],
+        [-1.0, -1.0, 1.0],
+        [-1.0, 1.0, -1.0],
+        [-1.0, 1.0, 1.0],
+        [1.0, -1.0, -1.0],
+        [1.0, -1.0, 1.0],
+        [1.0, 1.0, -1.0],
+        [1.0, 1.0, 1.0],
+        [0.0, 0.0, -1.0],
+    ],
+    dtype=np.float64,
+)
+
+
+def update_gait_hysteresis_state(
+    active_walk: np.ndarray,
+    body_vx: np.ndarray,
+    accepted_dx: np.ndarray,
+    curr_contact: np.ndarray,
+    sole_clearance: np.ndarray,
+    standstill_time: np.ndarray,
+    progress_streak: np.ndarray,
+    double_support_time: np.ndarray,
+    swing_clear_time: np.ndarray,
+    swing_clear_steps: np.ndarray,
+    dt: float,
+    clearance_thresh: float = 0.008,
+    min_swing_time: float = 0.04,
+    min_swing_steps: int = 2,
+) -> np.ndarray:
+    """Update walking standstill, swing-gate, and double-support hysteresis timers in place.
+
+    Returns per-foot boolean swing_valid mask of shape (N, 2).
+    """
+    n_envs = active_walk.shape[0]
+    dt_f = float(dt)
+
+    inactive = ~active_walk
+    if np.any(inactive):
+        standstill_time[inactive] = 0.0
+        progress_streak[inactive] = 0
+        double_support_time[inactive] = 0.0
+        swing_clear_time[inactive] = 0.0
+        swing_clear_steps[inactive] = 0
+
+    qualifying_move = active_walk & (body_vx >= 0.05) & (accepted_dx > 0.0)
+    slow_standstill = active_walk & (body_vx < 0.04)
+    hold_band = active_walk & (~qualifying_move) & (~slow_standstill)
+
+    if np.any(qualifying_move):
+        progress_streak[qualifying_move] += 1
+        reset_st = qualifying_move & (progress_streak >= 2)
+        standstill_time[reset_st] = 0.0
+    if np.any(slow_standstill):
+        standstill_time[slow_standstill] += dt_f
+        progress_streak[slow_standstill] = 0
+    if np.any(hold_band):
+        progress_streak[hold_band] = 0
+
+    c_left = curr_contact[:, 0]
+    c_right = curr_contact[:, 1]
+    left_cand = active_walk & (~c_left) & c_right & (sole_clearance[:, 0] >= clearance_thresh)
+    right_cand = active_walk & (~c_right) & c_left & (sole_clearance[:, 1] >= clearance_thresh)
+
+    if np.any(left_cand):
+        swing_clear_steps[left_cand, 0] += 1
+        swing_clear_time[left_cand, 0] += dt_f
+    swing_clear_steps[~left_cand, 0] = 0
+    swing_clear_time[~left_cand, 0] = 0.0
+
+    if np.any(right_cand):
+        swing_clear_steps[right_cand, 1] += 1
+        swing_clear_time[right_cand, 1] += dt_f
+    swing_clear_steps[~right_cand, 1] = 0
+    swing_clear_time[~right_cand, 1] = 0.0
+
+    swing_valid = np.zeros((n_envs, 2), dtype=bool)
+    swing_valid[:, 0] = (
+        left_cand
+        & (swing_clear_steps[:, 0] >= min_swing_steps)
+        & (swing_clear_time[:, 0] >= min_swing_time - 1e-7)
+    )
+    swing_valid[:, 1] = (
+        right_cand
+        & (swing_clear_steps[:, 1] >= min_swing_steps)
+        & (swing_clear_time[:, 1] >= min_swing_time - 1e-7)
+    )
+
+    both_contact = active_walk & c_left & c_right
+    any_swing_valid = active_walk & (swing_valid[:, 0] | swing_valid[:, 1])
+    if np.any(both_contact):
+        fwd_moving = np.abs(body_vx) >= 0.05
+        dt_accum = np.where(fwd_moving, 0.5 * dt_f, dt_f)
+        double_support_time[both_contact] += dt_accum[both_contact]
+    if np.any(any_swing_valid):
+        double_support_time[any_swing_valid] = 0.0
+
+    return swing_valid
+
+
 class ParallelSimRunner:
     """Vectorized / batched simulation runner for MicroDuck 8-DOF."""
 
@@ -203,7 +305,13 @@ class ParallelSimRunner:
         self.completed_distances_y: deque = deque(maxlen=100)
         self.feet_air_time = np.zeros((self.num_envs, 2), dtype=np.float32)
         self.last_feet_contact = np.ones((self.num_envs, 2), dtype=bool)
-        self.double_support_time = np.zeros(self.num_envs, dtype=np.float32)
+        self.double_support_time = np.zeros(self.num_envs, dtype=np.float64)
+        self.prev_root_x = np.zeros(self.num_envs, dtype=np.float64)
+        self.prev_world_vx = np.zeros(self.num_envs, dtype=np.float64)
+        self.standstill_time = np.zeros(self.num_envs, dtype=np.float64)
+        self.progress_streak = np.zeros(self.num_envs, dtype=np.int32)
+        self.swing_clear_time = np.zeros((self.num_envs, 2), dtype=np.float64)
+        self.swing_clear_steps = np.zeros((self.num_envs, 2), dtype=np.int32)
         self.last_joint_vel = np.zeros((self.num_envs, 8), dtype=np.float32)
         self.rng = np.random.default_rng(seed=42)
         self.current_emotions = self.rng.integers(0, NUM_EMOTIONS, size=self.num_envs, dtype=np.int32)
@@ -263,6 +371,27 @@ class ParallelSimRunner:
             if gname and ("stair" in gname or "platform" in gname):
                 stair_gids.append(gid)
         self.terrain_gids = stair_gids
+        self.terrain_box_gids: List[int] = [
+            gid
+            for gid in range(self.model.ngeom)
+            if self.model.geom_bodyid[gid] == 0
+            and self.model.geom_type[gid] == mujoco.mjtGeom.mjGEOM_BOX
+        ]
+        if (
+            self.left_foot_gid != -1
+            and self.right_foot_gid != -1
+            and self.model.geom_type[self.left_foot_gid] == mujoco.mjtGeom.mjGEOM_BOX
+            and self.model.geom_type[self.right_foot_gid] == mujoco.mjtGeom.mjGEOM_BOX
+        ):
+            self._sole_pts_local: Optional[np.ndarray] = np.stack(
+                [
+                    _SOLE_SAMPLE_SIGNS * self.model.geom_size[self.left_foot_gid],
+                    _SOLE_SAMPLE_SIGNS * self.model.geom_size[self.right_foot_gid],
+                ],
+                axis=0,
+            )
+        else:
+            self._sole_pts_local = None
         if stair_gids:
             self.stair_min_x = float(min(self.model.geom_pos[g, 0] - self.model.geom_size[g, 0] for g in stair_gids))
             self.stair_max_x = float(max(self.model.geom_pos[g, 0] + self.model.geom_size[g, 0] for g in stair_gids))
@@ -534,6 +663,12 @@ class ParallelSimRunner:
         self.last_targets[env_idx] = d.qpos[7:15].astype(np.float32)
         self.last_joint_vel[env_idx] = 0.0
         self.double_support_time[env_idx] = 0.0
+        self.prev_root_x[env_idx] = float(d.qpos[0])
+        self.prev_world_vx[env_idx] = float(d.qvel[0])
+        self.standstill_time[env_idx] = 0.0
+        self.progress_streak[env_idx] = 0
+        self.swing_clear_time[env_idx] = 0.0
+        self.swing_clear_steps[env_idx] = 0
         self.episode_steps[env_idx] = 0
         self.feet_air_time[env_idx] = 0.0
         self.last_feet_contact[env_idx] = True
@@ -657,6 +792,61 @@ class ParallelSimRunner:
                 if top_z > h and abs(x - gx) <= sx and abs(y - gy) <= sy:
                     h = top_z
         return float(h)
+
+    def _compute_sole_clearance(self) -> np.ndarray:
+        """Compute sole-to-local-terrain clearance (m) for both feet, shape (num_envs, 2)."""
+        floor_z = (
+            float(
+                self.model.geom_pos[self.floor_gid, 2]
+                + (
+                    self.model.geom_size[self.floor_gid, 2]
+                    if self.model.geom_type[self.floor_gid] == mujoco.mjtGeom.mjGEOM_BOX
+                    else 0.0
+                )
+            )
+            if self.floor_gid != -1
+            else 0.0
+        )
+
+        active_boxes = [
+            gid
+            for gid in getattr(self, "terrain_box_gids", ())
+            if float(self.model.geom_pos[gid, 2] + self.model.geom_size[gid, 2]) > floor_z
+            and (int(self.model.geom_contype[gid]) != 0 or int(self.model.geom_conaffinity[gid]) != 0)
+        ]
+
+        if self._sole_pts_local is not None:
+            l_gid = self.left_foot_gid
+            r_gid = self.right_foot_gid
+            centers = np.array(
+                [[d.geom_xpos[l_gid], d.geom_xpos[r_gid]] for d in self.datas],
+                dtype=np.float64,
+            )
+            rmats = np.array(
+                [[d.geom_xmat[l_gid], d.geom_xmat[r_gid]] for d in self.datas],
+                dtype=np.float64,
+            ).reshape(self.num_envs, 2, 3, 3)
+            pts_world = centers[:, :, None, :] + np.einsum("efij,fpj->efpi", rmats, self._sole_pts_local)
+
+            if active_boxes:
+                g_pos = self.model.geom_pos[active_boxes]
+                g_size = self.model.geom_size[active_boxes]
+                top_z = g_pos[:, 2] + g_size[:, 2]
+                px = pts_world[..., 0:1]
+                py = pts_world[..., 1:2]
+                contained = (np.abs(px - g_pos[:, 0]) <= g_size[:, 0]) & (
+                    np.abs(py - g_pos[:, 1]) <= g_size[:, 1]
+                )
+                terrain_z = np.maximum(floor_z, np.max(np.where(contained, top_z, floor_z), axis=-1))
+            else:
+                terrain_z = floor_z
+
+            min_clr = np.min(pts_world[..., 2] - terrain_z, axis=-1)
+            return np.where(np.isfinite(min_clr), np.maximum(0.0, min_clr), 0.0).astype(np.float32)
+
+        # Unsupported sole geometry cannot establish clearance. Body-origin height
+        # is not a safe substitute: it can unlock the swing gate on a resting foot.
+        return np.zeros((self.num_envs, 2), dtype=np.float32)
 
     def get_privileged_obs(
         self,
@@ -793,6 +983,12 @@ class ParallelSimRunner:
             self.action_dim,
         ), f"Expected action shape ({self.num_envs}, {self.action_dim}), got {actions.shape}"
 
+        pre_step_finite = np.array(
+            [np.all(np.isfinite(d.qpos)) and np.all(np.isfinite(d.qvel)) for d in self.datas],
+            dtype=bool,
+        )
+        vx_world_before = np.array([d.qvel[0] for d in self.datas], dtype=np.float64)
+
         # 1. Scale actions to joint limits around nominal stance (vectorized)
         scaled_targets = scale_actions(actions, self.cfg, nominal_centered=True)
 
@@ -907,22 +1103,60 @@ class ParallelSimRunner:
 
         # Extract foot kinematics and 3D contact forces for clearance and stumble rewards
         foot_z, foot_vel_xy, foot_contact_forces = self._extract_foot_dynamics()
-        root_x = np.array([d.qpos[0] for d in self.datas], dtype=np.float32)
+        root_x_f64 = np.array([d.qpos[0] for d in self.datas], dtype=np.float64)
+        vx_world_after = np.array([d.qvel[0] for d in self.datas], dtype=np.float64)
+        root_x = root_x_f64.astype(np.float32)
         root_y = np.array([d.qpos[1] for d in self.datas], dtype=np.float32)
         root_z = np.array([d.qpos[2] for d in self.datas], dtype=np.float32)
+
+        # World-X displacement consistency check (against world-X velocity, before clipping)
+        raw_dx = root_x_f64 - self.prev_root_x
+        mean_world_vx = 0.5 * (vx_world_before + vx_world_after)
+        finite_disp = (
+            pre_step_finite
+            & np.isfinite(self.prev_root_x)
+            & np.isfinite(root_x_f64)
+            & np.isfinite(vx_world_before)
+            & np.isfinite(vx_world_after)
+            & np.isfinite(raw_dx)
+        )
+        vel_diff = np.abs(raw_dx / max(self.control_dt, 1e-8) - mean_world_vx)
+        vel_tol = 0.05 + 0.25 * np.abs(mean_world_vx)
+        valid_disp = finite_disp & (vel_diff <= vel_tol)
+        max_dx = 0.02 * (self.control_dt / 0.02)
+        accepted_dx = np.where(valid_disp, np.clip(raw_dx, -max_dx, max_dx), 0.0).astype(np.float32)
+        invalid_disp_mask = ~valid_disp
+        invalid_displacement_count = int(np.sum(invalid_disp_mask))
+        self.prev_root_x[:] = root_x_f64
+        self.prev_world_vx[:] = vx_world_after
 
         # Feet air time tracking: left foot (0) and right foot (1)
         curr_contact = (foot_contact[:, :2] > 0.5)
         touchdown = curr_contact & (~self.last_feet_contact)
         self.feet_air_time[~curr_contact] += self.control_dt
 
-        both_contact = curr_contact[:, 0] & curr_contact[:, 1]
-        fwd_moving = np.abs(base_lin_vel_body[:, 0]) >= 0.05
-        dt_accum = np.where(fwd_moving, 0.5 * self.control_dt, self.control_dt).astype(np.float32)
-        self.double_support_time = np.where(both_contact, self.double_support_time + dt_accum, 0.0).astype(np.float32)
+        sole_clearance = self._compute_sole_clearance()
+        active_walk = (
+            (self.commands[:, 0] > 0.05)
+            & (self.cmd_modes != int(LocomotionMode.SIT))
+            & (self.cmd_modes != int(LocomotionMode.LIE))
+        )
+        swing_valid = update_gait_hysteresis_state(
+            active_walk=active_walk,
+            body_vx=base_lin_vel_body[:, 0],
+            accepted_dx=accepted_dx,
+            curr_contact=curr_contact,
+            sole_clearance=sole_clearance,
+            standstill_time=self.standstill_time,
+            progress_streak=self.progress_streak,
+            double_support_time=self.double_support_time,
+            swing_clear_time=self.swing_clear_time,
+            swing_clear_steps=self.swing_clear_steps,
+            dt=self.control_dt,
+        )
 
         # Vectorized reward computation across all environments
-        reward_dict = compute_rewards(
+        reward_dict, weighted_terms = compute_rewards(
             base_lin_vel=base_lin_vel_body,
             cmd_lin_vel=cmd_lin_vel,
             base_ang_vel=base_ang_vel_body,
@@ -955,6 +1189,10 @@ class ParallelSimRunner:
             current_yaw=current_yaw,
             target_yaw=0.0,
             clock_sin=clock_sin,
+            delta_root_x=accepted_dx,
+            standstill_time=self.standstill_time,
+            swing_valid=swing_valid,
+            return_components=True,
         )
         rewards = reward_dict["total_reward"]
         self.last_joint_vel[:] = joint_vel
@@ -965,7 +1203,7 @@ class ParallelSimRunner:
 
         # Vectorized termination check: fall over, excessive tilt, numerical divergence, or timeout
         grav_z = proj_grav[:, 2]
-        diverged = np.array([
+        diverged = (~pre_step_finite) | np.array([
             (not np.all(np.isfinite(d.qpos))) or (not np.all(np.isfinite(d.qvel)))
             for d in self.datas
         ], dtype=bool)
@@ -1047,14 +1285,19 @@ class ParallelSimRunner:
                         ctrl.reset()
 
         fall_penalty = float(self.cfg.REWARD_WEIGHTS.get("fall_penalty", -5.0))
+        fall_penalty_vec = np.where(fallen, fall_penalty, 0.0).astype(np.float32)
         if np.any(fallen):
-            rewards = rewards.copy()
-            rewards[fallen] += fall_penalty
+            rewards = (rewards + fall_penalty_vec).astype(np.float32)
+        weighted_terms["fall_penalty"] = fall_penalty_vec
 
         dones = fallen | timeouts
         time_outs = timeouts & ~fallen
 
         self.last_actions[:] = actions
+
+        delta_root_x_mean = float(np.mean(accepted_dx))
+        standstill_time_mean = float(np.mean(self.standstill_time))
+        terminal_distances_x = root_x.copy()
 
         if fast:
             if np.any(time_outs):
@@ -1064,6 +1307,8 @@ class ParallelSimRunner:
             else:
                 terminal_obs = np.empty((0, self.obs_dim), dtype=np.float32)
                 terminal_critic_obs = np.empty((0, self.privileged_obs_dim), dtype=np.float32)
+
+            reward_components = {k: float(np.mean(v)) for k, v in weighted_terms.items()}
 
             if np.any(dones):
                 for i in np.where(dones)[0]:
@@ -1076,6 +1321,11 @@ class ParallelSimRunner:
                 "tracking_lin_vel": float(np.mean(reward_dict["tracking_lin_vel"])) if "tracking_lin_vel" in reward_dict else 0.0,
                 "terminal_obs": terminal_obs,
                 "terminal_critic_obs": terminal_critic_obs,
+                "reward_components": reward_components,
+                "delta_root_x_mean": delta_root_x_mean,
+                "standstill_time_mean": standstill_time_mean,
+                "invalid_displacement_count": invalid_displacement_count,
+                "terminal_distances_x": terminal_distances_x,
             }
             return next_obs, rewards, dones, fast_info
 
@@ -1100,6 +1350,11 @@ class ParallelSimRunner:
             infos[i]["yaw"] = float(current_yaw[i])
             infos[i]["d_min"] = float(self.d_min[i]) if curr_d_min is not None else None
             infos[i]["obstacle_contact"] = bool(has_obstacle_contact(self.datas[i], active_obstacle_gids))
+            infos[i]["delta_root_x"] = float(accepted_dx[i])
+            infos[i]["standstill_time"] = float(self.standstill_time[i])
+            infos[i]["invalid_displacement"] = bool(invalid_disp_mask[i])
+            infos[i]["swing_valid"] = swing_valid[i].copy()
+            infos[i]["reward_components"] = {k: float(v[i]) for k, v in weighted_terms.items()}
             if self.enable_auto_recovery:
                 infos[i]["recovering"] = bool(self.recovery_controllers[i].is_recovering)
                 infos[i]["recovery_state"] = int(self.recovery_controllers[i].state)

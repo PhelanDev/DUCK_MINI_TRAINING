@@ -8,11 +8,12 @@ Exports trained Actor policy checkpoints to deployment targets:
 
 from pathlib import Path
 import argparse
+import copy
+import hashlib
 import sys
 from typing import Any, Optional, Tuple, Union
 
 import numpy as np
-import onnx
 import torch
 import torch.nn as nn
 
@@ -46,91 +47,77 @@ class PolicyOnnxWrapper(nn.Module):
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         """Forward pass taking observation [batch, 42] -> action [batch, 8]."""
-        return self.actor(obs)
+        return policy_actor_forward(self.actor, obs)
+
+
+def policy_actor_forward(actor: nn.Module, obs: torch.Tensor) -> torch.Tensor:
+    """Apply the checkpoint's raw-input bounds and output transform once."""
+    if hasattr(actor, "_obs_clip_lower"):
+        obs = torch.maximum(torch.minimum(obs, actor._obs_clip_upper), actor._obs_clip_lower)
+    output = actor(obs)
+    return torch.tanh(output) if getattr(actor, "_squash_actions", False) else output
 
 
 def apply_obs_norm_to_actor(actor: nn.Module, ckpt: Any, min_std: float = 0.10) -> nn.Module:
-    """Fold observation normalization (mean, var) from ckpt['obs_rms'] into actor's first linear layer.
+    """Validate and fold affine RMS; retain raw-input bounds for clipping."""
+    if not isinstance(ckpt, dict) or "obs_rms" not in ckpt:
+        return actor
+    linear = next((m for m in actor.modules() if isinstance(m, nn.Linear)), None)
+    if linear is None:
+        raise ValueError("Invalid obs_rms: actor has no linear input layer")
+    rms = ckpt["obs_rms"]
+    if rms is None:
+        raise ValueError("Invalid obs_rms: statistics are None")
+    get = rms.get if isinstance(rms, dict) else lambda key, default=None: getattr(rms, key, default)
+    try:
+        def numeric(value, scalar=False):
+            array = np.asarray(value)
+            if array.dtype.kind not in "iuf" or (scalar and array.ndim != 0):
+                raise ValueError("statistics must be numeric arrays or numeric scalars")
+            return float(array) if scalar else array.astype(np.float32)
 
-    Folds:
-        std = max(sqrt(var + eps), min_std)
-        inv_std = 1.0 / std
-        w_fused = w * inv_std
-        b_fused = b - w_fused @ mean
-    Guarantees idempotency (does not double-fuse) and finite checks.
-    """
+        mean = numeric(get("mean"))
+        var = numeric(get("var"))
+        eps = numeric(get("epsilon", 1e-4), scalar=True)
+        minimum = numeric(get("min_std", min_std), scalar=True)
+        clip = numeric(get("clip", 10.0), scalar=True)
+        count = numeric(get("count", 0.0), scalar=True)
+        if mean.shape != (linear.in_features,) or var.shape != mean.shape:
+            raise ValueError("shape must match actor input width")
+        if not (np.isfinite(mean).all() and np.isfinite(var).all() and (var >= 0).all()
+                and np.isfinite([eps, minimum, clip, count]).all() and eps > 0 and minimum > 0 and count >= 0):
+            raise ValueError("non-finite or invalid statistics")
+        std = np.maximum(np.sqrt(var + eps), minimum)
+        if not np.isfinite(std).all() or (std <= 0).any():
+            raise ValueError("invalid standard deviation")
+        lower, upper = mean - clip * std, mean + clip * std
+        if clip > 0 and not (np.isfinite(lower).all() and np.isfinite(upper).all()):
+            raise ValueError("invalid clipping bounds")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"Invalid obs_rms: {exc}") from exc
+    identity = hashlib.sha256(mean.tobytes() + var.tobytes()
+                              + np.asarray([eps, minimum, clip], dtype=np.float64).tobytes()).hexdigest()
     if getattr(actor, "_obs_norm_applied", False):
+        if getattr(actor, "_obs_norm_identity", None) != identity:
+            raise ValueError("Invalid obs_rms: cannot fold different statistics twice")
         return actor
-
-    if not isinstance(ckpt, dict) or "obs_rms" not in ckpt or ckpt["obs_rms"] is None:
-        return actor
-
-    obs_rms = ckpt["obs_rms"]
-    if isinstance(obs_rms, dict):
-        mean = obs_rms.get("mean")
-        var = obs_rms.get("var")
-        eps = float(obs_rms.get("epsilon", 1e-4))
-        eff_min_std = float(obs_rms.get("min_std", min_std))
-    else:
-        mean = getattr(obs_rms, "mean", None)
-        var = getattr(obs_rms, "var", None)
-        eps = float(getattr(obs_rms, "epsilon", 1e-4))
-        eff_min_std = float(getattr(obs_rms, "min_std", min_std))
-
-    if mean is None or var is None:
-        return actor
-
-    mean = np.asarray(mean, dtype=np.float32).ravel()
-    var = np.asarray(var, dtype=np.float32).ravel()
-
-    # Find the first nn.Linear layer in actor
-    linear_layer = None
-    if isinstance(actor, (nn.Sequential, nn.ModuleList)) and len(actor) > 0 and isinstance(actor[0], nn.Linear):
-        linear_layer = actor[0]
-    else:
-        for m in actor.modules():
-            if isinstance(m, nn.Linear):
-                linear_layer = m
-                break
-
-    if linear_layer is None:
-        return actor
-
-    in_features = linear_layer.in_features
-    if mean.shape[0] < in_features or var.shape[0] < in_features:
-        return actor
-    mean = mean[:in_features]
-    var = var[:in_features]
-
-    if not (np.all(np.isfinite(mean)) and np.all(np.isfinite(var)) and np.all(var >= 0)):
-        return actor
-
-    std = np.maximum(np.sqrt(var + eps), eff_min_std)
-    inv_std = 1.0 / std
-    w = linear_layer.weight.detach().cpu().numpy().astype(np.float32)
-    b = (
-        linear_layer.bias.detach().cpu().numpy().astype(np.float32)
-        if linear_layer.bias is not None
-        else np.zeros(linear_layer.out_features, dtype=np.float32)
-    )
-
-    w_fused = w * inv_std  # shape (out_features, in_features)
-    b_fused = b - (w_fused @ mean)  # shape (out_features,)
-
-    linear_layer.weight.data = torch.from_numpy(w_fused).to(
-        device=linear_layer.weight.device, dtype=linear_layer.weight.dtype
-    )
-    if linear_layer.bias is not None:
-        linear_layer.bias.data = torch.from_numpy(b_fused).to(
-            device=linear_layer.bias.device, dtype=linear_layer.bias.dtype
-        )
-    else:
-        linear_layer.bias = nn.Parameter(
-            torch.from_numpy(b_fused).to(
-                device=linear_layer.weight.device, dtype=linear_layer.weight.dtype
-            )
-        )
-
+    device, dtype = linear.weight.device, linear.weight.dtype
+    mean_t = torch.as_tensor(mean, device=device, dtype=dtype)
+    std_t = torch.as_tensor(std, device=device, dtype=dtype)
+    weight = linear.weight.detach() / std_t
+    bias = (linear.bias.detach() if linear.bias is not None else weight.new_zeros(linear.out_features)) - weight @ mean_t
+    if not torch.isfinite(weight).all() or not torch.isfinite(bias).all():
+        raise ValueError("Invalid obs_rms: folded weights are not finite")
+    with torch.no_grad():
+        linear.weight.copy_(weight)
+        if linear.bias is None:
+            linear.bias = nn.Parameter(bias)
+        else:
+            linear.bias.copy_(bias)
+    if clip > 0:
+        actor.register_buffer("_obs_clip_lower", torch.as_tensor(lower, device=device, dtype=dtype), persistent=False)
+        actor.register_buffer("_obs_clip_upper", torch.as_tensor(upper, device=device, dtype=dtype), persistent=False)
+    actor._obs_norm_identity = identity
     actor._obs_norm_applied = True
     return actor
 
@@ -143,9 +130,20 @@ def load_actor_from_checkpoint(
 ) -> nn.Module:
     """Load Actor network from checkpoint file or dict, folding obs_rms if present."""
     if isinstance(checkpoint_or_model, nn.Module):
-        if hasattr(checkpoint_or_model, "actor"):
-            return checkpoint_or_model.actor
-        return checkpoint_or_model
+        actor = copy.deepcopy(getattr(checkpoint_or_model, "actor", checkpoint_or_model))
+        if hasattr(checkpoint_or_model, "squash_actions"):
+            actor._squash_actions = checkpoint_or_model.squash_actions
+        if hasattr(checkpoint_or_model, "obs_rms"):
+            apply_obs_norm_to_actor(actor, {"obs_rms": checkpoint_or_model.obs_rms})
+        metadata = dict(getattr(actor, "_model_metadata", {}))
+        for key in ("model_path", "model_name"):
+            value = getattr(checkpoint_or_model, key, None)
+            if value:
+                metadata[key] = str(value)
+        actor._model_metadata = metadata
+        if not all(torch.isfinite(parameter).all() for parameter in actor.parameters()):
+            raise ValueError("Policy actor weights must be finite")
+        return actor
 
     if isinstance(checkpoint_or_model, dict):
         ckpt = checkpoint_or_model
@@ -176,6 +174,14 @@ def load_actor_from_checkpoint(
 
     act_d = ckpt.get("action_dim", action_dim) if isinstance(ckpt, dict) else action_dim
     hid_d = ckpt.get("hidden_dim", hidden_dim) if isinstance(ckpt, dict) else hidden_dim
+    state = ckpt.get("actor_state_dict", ckpt.get("model_state_dict", ckpt))
+    prefix = "actor." if "actor.0.weight" in state else ""
+    if prefix + "0.weight" in state:
+        hid_d = int(state[prefix + "0.weight"].shape[0])
+        act_d = int(state[prefix + "4.weight"].shape[0])
+        for key, actual in (("obs_dim", obs_d), ("hidden_dim", hid_d), ("action_dim", act_d)):
+            if key in ckpt and int(ckpt[key]) != actual:
+                raise ValueError(f"Checkpoint {key} disagrees with actor weights")
 
     model = ActorCritic(obs_dim=obs_d, action_dim=act_d, hidden_dim=hid_d, critic_obs_dim=critic_obs_d)
 
@@ -184,12 +190,18 @@ def load_actor_from_checkpoint(
             model.load_state_dict(ckpt["model_state_dict"])
         elif "actor_state_dict" in ckpt:
             model.actor.load_state_dict(ckpt["actor_state_dict"])
+        elif "0.weight" in ckpt:
+            model.actor.load_state_dict(ckpt)
         else:
             model.load_state_dict(ckpt)
     else:
         model.load_state_dict(ckpt)
 
     actor = model.actor
+    if not all(torch.isfinite(parameter).all() for parameter in actor.parameters()):
+        raise ValueError("Policy actor weights must be finite")
+    actor._squash_actions = bool(ckpt.get("squash_actions", False))
+    actor._model_metadata = {k: str(ckpt[k]) for k in ("model_path", "model_name") if ckpt.get(k)}
     apply_obs_norm_to_actor(actor, ckpt)
     return actor
 
@@ -204,6 +216,8 @@ def export_onnx(
     Input tensor name: 'obs' of shape [1, 42] (dynamic batch supported)
     Output tensor name: 'actions' of shape [1, 8]
     """
+    import onnx
+
     actor = load_actor_from_checkpoint(model)
     actor.eval()
 
@@ -243,7 +257,10 @@ def export_onnx(
 
     # Validate exported ONNX model
     onnx_model = onnx.load(str(output_path))
+    metadata = getattr(actor, "_model_metadata", {})
+    onnx.helper.set_model_props(onnx_model, metadata)
     onnx.checker.check_model(onnx_model)
+    onnx.save(onnx_model, str(output_path))
 
     return output_path
 
@@ -266,6 +283,8 @@ def export_esp32_headers(
     scale_act: float = 127.0,
 ) -> Tuple[Path, Path]:
     """Export INT8 quantized weights & INT32 biases header and config header for ESP32-S3."""
+    if not all(np.isfinite(scale) and scale > 0 for scale in (scale_obs, scale_act)):
+        raise ValueError("Quantization scales must be finite and positive")
     actor = load_actor_from_checkpoint(model)
     actor.eval()
 
@@ -288,6 +307,8 @@ def export_esp32_headers(
 
     w3 = actor[4].weight.detach().cpu().numpy().astype(np.float32)  # [8, 256]
     b3 = actor[4].bias.detach().cpu().numpy().astype(np.float32)    # [8]
+    if obs_dim not in (37, 42) or w3.shape[0] != 8:
+        raise ValueError("Unsupported ESP32 policy dimensions; expected 37/42 observations and 8 actions")
 
     # 2. Generate esp32_quant_config.h with dynamically adapted obs_dim
     generate_esp32_quant_header(
@@ -301,7 +322,9 @@ def export_esp32_headers(
     obs_channel_scales = (float(scale_obs) / DEFAULT_OBS_BOUNDS[:obs_dim]).astype(np.float32)
     w1_effective = w1 / obs_channel_scales  # broadcast shape (256, obs_dim) / (obs_dim,)
     max_w1 = float(np.max(np.abs(w1_effective)))
-    scale_w1 = 127.0 / max(max_w1, 1e-7)
+    # Leave INT32 headroom for bias rounding even for constant-output networks.
+    scale_w1 = min(127.0 / max(max_w1, 1e-7),
+                   (2**30) / max(float(np.max(np.abs(b1))), 1e-7))
     w1_int8 = np.clip(np.round(w1_effective * scale_w1), -128, 127).astype(np.int8)
     scale_b1 = scale_w1
     b1_int32 = np.round(b1 * scale_b1).astype(np.int32)
@@ -310,22 +333,33 @@ def export_esp32_headers(
     max_w2 = float(np.max(np.abs(w2)))
     scale_w2 = 127.0 / max(max_w2, 1e-7)
     w2_int8 = np.clip(np.round(w2 * scale_w2), -128, 127).astype(np.int8)
-    scale_b2 = scale_w2 * 127.0
+    scale_b2 = min(scale_w2 * 127.0, (2**30) / max(float(np.max(np.abs(b2))), 1e-7))
     b2_int32 = np.round(b2 * scale_b2).astype(np.int32)
 
     # Quantize Layer 3
     max_w3 = float(np.max(np.abs(w3)))
     scale_w3 = 127.0 / max(max_w3, 1e-7)
     w3_int8 = np.clip(np.round(w3 * scale_w3), -128, 127).astype(np.int8)
-    scale_b3 = scale_w3 * 127.0
+    scale_b3 = min(scale_w3 * 127.0, (2**30) / max(float(np.max(np.abs(b3))), 1e-7))
     b3_int32 = np.round(b3 * scale_b3).astype(np.int32)
+
+    # Clip quantized raw observations in code units before the folded first layer.
+    # Fractional code bounds preserve RMS clipping at the quantized input's resolution.
+    if hasattr(actor, "_obs_clip_lower"):
+        lower = actor._obs_clip_lower.detach().cpu().numpy() * obs_channel_scales
+        upper = actor._obs_clip_upper.detach().cpu().numpy() * obs_channel_scales
+    else:
+        lower, upper = np.full(obs_dim, -128.0), np.full(obs_dim, 127.0)
+    lower_code = ", ".join(f"{float(v):.9e}f" for v in lower)
+    upper_code = ", ".join(f"{float(v):.9e}f" for v in upper)
+    squash = int(bool(getattr(actor, "_squash_actions", False)))
 
     weights_header_code = f"""#ifndef ESP32_POLICY_WEIGHTS_H
 #define ESP32_POLICY_WEIGHTS_H
 
 /**
  * MicroDuck 8-DOF (Dual ESP32-S3 Stack) - Quantized Policy Weights & Biases
- * Model: Actor MLP [{obs_dim} -> 256 (ELU) -> 256 (ELU) -> 8]
+ * Model: Actor MLP [{obs_dim} -> {w1.shape[0]} (ELU) -> {w2.shape[0]} (ELU) -> {w3.shape[0]}]
  * Quantization: Symmetric INT8 weights, INT32 biases
  * Platform: Xtensa LX7 Dual-Core with PIE Vector Accelerator
  */
@@ -335,11 +369,14 @@ def export_esp32_headers(
 #include <math.h>
 
 #define POLICY_LAYER1_IN  {obs_dim}
-#define POLICY_LAYER1_OUT 256
-#define POLICY_LAYER2_IN  256
-#define POLICY_LAYER2_OUT 256
-#define POLICY_LAYER3_IN  256
-#define POLICY_LAYER3_OUT 8
+#define POLICY_LAYER1_OUT {w1.shape[0]}
+#define POLICY_LAYER2_IN  {w2.shape[1]}
+#define POLICY_LAYER2_OUT {w2.shape[0]}
+#define POLICY_LAYER3_IN  {w3.shape[1]}
+#define POLICY_LAYER3_OUT {w3.shape[0]}
+#define POLICY_SQUASH_ACTIONS {squash}
+static const float POLICY_OBS_LOWER[POLICY_LAYER1_IN] = {{{lower_code}}};
+static const float POLICY_OBS_UPPER[POLICY_LAYER1_IN] = {{{upper_code}}};
 
 // Quantization Scales
 static const float POLICY_W1_SCALE = {scale_w1:.6f}f;
@@ -401,10 +438,11 @@ static inline void evaluate_policy_int8(const int8_t* obs_int8, int8_t* actions_
     // Layer 1: [{obs_dim}] -> [256] ELU
     float l1_out[POLICY_LAYER1_OUT];
     for (int i = 0; i < POLICY_LAYER1_OUT; ++i) {{
-        int32_t acc = POLICY_B1[i];
+        float acc = (float)POLICY_B1[i];
         const int8_t* w_row = &POLICY_W1[i * POLICY_LAYER1_IN];
         for (int j = 0; j < POLICY_LAYER1_IN; ++j) {{
-            acc += ((int32_t)w_row[j]) * ((int32_t)obs_int8[j]);
+            float input = fmaxf(POLICY_OBS_LOWER[j], fminf(POLICY_OBS_UPPER[j], (float)obs_int8[j]));
+            acc += ((float)w_row[j]) * input;
         }}
         float val = (float)acc * POLICY_B1_INV_SCALE;
         l1_out[i] = (val >= 0.0f) ? val : (expf(val) - 1.0f);
@@ -428,7 +466,8 @@ static inline void evaluate_policy_int8(const int8_t* obs_int8, int8_t* actions_
         for (int j = 0; j < POLICY_LAYER3_IN; ++j) {{
             acc += ((float)w_row[j] * POLICY_W3_INV_SCALE) * l2_out[j];
         }}
-        float scaled = roundf(acc * 127.0f);
+        if (POLICY_SQUASH_ACTIONS) acc = tanhf(acc);
+        float scaled = roundf(acc * {float(scale_act):.9e}f);
         if (scaled > 127.0f) scaled = 127.0f;
         if (scaled < -128.0f) scaled = -128.0f;
         actions_out[i] = (int8_t)scaled;
