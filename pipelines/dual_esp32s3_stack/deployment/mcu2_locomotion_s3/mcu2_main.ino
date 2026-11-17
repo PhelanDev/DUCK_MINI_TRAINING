@@ -67,6 +67,9 @@ HardwareSerial UartLink(MCU2_UART_NUM);
 #ifndef OBS_DIM
 #define OBS_DIM 42
 #endif
+static_assert(OBS_DIM == 42, "MCU2 observation assembly requires OBS_DIM=42");
+static_assert(POLICY_LAYER1_IN == OBS_DIM, "Policy input and observation buffer disagree");
+static_assert(POLICY_LAYER3_OUT == 8, "MCU2 requires eight policy actions");
 static float g_obs[OBS_DIM];
 
 // Locomotion & Joint State (initialized to nominal stand posture)

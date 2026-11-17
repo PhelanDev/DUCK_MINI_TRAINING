@@ -8,6 +8,7 @@ Exports trained Actor policy checkpoints to deployment targets:
 
 from pathlib import Path
 import argparse
+import json
 import copy
 import hashlib
 import sys
@@ -27,7 +28,7 @@ from pipelines.dual_esp32s3_stack.training.env_config import (
 )
 from scripts.train_ppo import ActorCritic
 
-DEFAULT_CHECKPOINT_PATH = REPO_ROOT / "models" / "checkpoints" / "microduck_ppo.pt"
+DEFAULT_CHECKPOINT_PATH = REPO_ROOT / "models" / "checkpoints" / "microduck_rpi5_ppo.pt"
 DEFAULT_ONNX_PATH = REPO_ROOT / "models" / "microduck_rpi5_policy.onnx"
 DEFAULT_PIZERO2W_ONNX_PATH = REPO_ROOT / "models" / "microduck_pizero2w_policy.onnx"
 DEFAULT_ESP32_WEIGHTS_PATH = (
@@ -36,6 +37,31 @@ DEFAULT_ESP32_WEIGHTS_PATH = (
 DEFAULT_ESP32_CONFIG_PATH = (
     REPO_ROOT / "pipelines" / "dual_esp32s3_stack" / "deployment" / "esp32_quant_config.h"
 )
+
+
+def prepare_target_exports(checkpoints, legacy_model_name=None, schema_override=None):
+    """Validate every CLI target before writing any deployment artifact."""
+    from training.policy_contract import TARGET_MODELS, validate_model_identity, validate_observation_schema
+    prepared = {}
+    for target, path in checkpoints.items():
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+        if not isinstance(checkpoint, dict):
+            raise ValueError("Export checkpoint requires model identity metadata")
+        checkpoint = dict(checkpoint)
+        if legacy_model_name is not None:
+            if checkpoint.get("model_name") or checkpoint.get("model_path"):
+                raise ValueError("Legacy model identity override only applies to missing metadata")
+            checkpoint["model_name"] = legacy_model_name
+        validate_model_identity(checkpoint, TARGET_MODELS[target])
+        if schema_override is not None:
+            if "observation_schema" in checkpoint:
+                raise ValueError("observation_schema override only applies to legacy checkpoints")
+            checkpoint["observation_schema"] = validate_observation_schema(schema_override)
+        actor = load_actor_from_checkpoint(checkpoint)
+        if actor[0].in_features != 42 or actor[4].out_features != 8:
+            raise ValueError(f"{target} export requires 42 observations and 8 actions")
+        prepared[target] = actor
+    return prepared
 
 
 class PolicyOnnxWrapper(nn.Module):
@@ -140,6 +166,13 @@ def load_actor_from_checkpoint(
             value = getattr(checkpoint_or_model, key, None)
             if value:
                 metadata[key] = str(value)
+        schema = getattr(checkpoint_or_model, "observation_schema", None)
+        if hasattr(checkpoint_or_model, "observation_schema"):
+            from training.policy_contract import validate_observation_schema
+            schema = validate_observation_schema(schema)
+            if schema["obs_dim"] != next(m.in_features for m in actor.modules() if isinstance(m, nn.Linear)):
+                raise ValueError("observation_schema dimension disagrees with actor weights")
+            metadata["observation_schema"] = json.dumps(schema, sort_keys=True)
         actor._model_metadata = metadata
         if not all(torch.isfinite(parameter).all() for parameter in actor.parameters()):
             raise ValueError("Policy actor weights must be finite")
@@ -202,6 +235,12 @@ def load_actor_from_checkpoint(
         raise ValueError("Policy actor weights must be finite")
     actor._squash_actions = bool(ckpt.get("squash_actions", False))
     actor._model_metadata = {k: str(ckpt[k]) for k in ("model_path", "model_name") if ckpt.get(k)}
+    if "observation_schema" in ckpt:
+        from training.policy_contract import validate_observation_schema
+        schema = validate_observation_schema(ckpt["observation_schema"])
+        if schema["obs_dim"] != obs_d:
+            raise ValueError("observation_schema dimension disagrees with actor weights")
+        actor._model_metadata["observation_schema"] = json.dumps(schema, sort_keys=True)
     apply_obs_norm_to_actor(actor, ckpt)
     return actor
 
@@ -288,12 +327,6 @@ def export_esp32_headers(
     actor = load_actor_from_checkpoint(model)
     actor.eval()
 
-    weights_output_path = Path(weights_output_path).resolve()
-    weights_output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    config_output_path = Path(config_output_path).resolve()
-    config_output_path.parent.mkdir(parents=True, exist_ok=True)
-
     # 1. Extract weights and biases
     # actor[0]: Linear(obs_dim, 256)
     # actor[2]: Linear(256, 256)
@@ -307,8 +340,14 @@ def export_esp32_headers(
 
     w3 = actor[4].weight.detach().cpu().numpy().astype(np.float32)  # [8, 256]
     b3 = actor[4].bias.detach().cpu().numpy().astype(np.float32)    # [8]
-    if obs_dim not in (37, 42) or w3.shape[0] != 8:
-        raise ValueError("Unsupported ESP32 policy dimensions; expected 37/42 observations and 8 actions")
+    if obs_dim != 42 or w3.shape[0] != 8:
+        raise ValueError("Unsupported ESP32 policy dimensions; expected 42 observations and 8 actions")
+
+    weights_output_path = Path(weights_output_path).resolve()
+    weights_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    config_output_path = Path(config_output_path).resolve()
+    config_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 2. Generate esp32_quant_config.h with dynamically adapted obs_dim
     generate_esp32_quant_header(
@@ -486,7 +525,10 @@ static inline void evaluate_policy_int8(const int8_t* obs_int8, int8_t* actions_
 
 def main():
     parser = argparse.ArgumentParser(description="Export MicroDuck Policy Checkpoint to ONNX and ESP32 Headers")
-    parser.add_argument("--checkpoint", type=str, default=str(DEFAULT_CHECKPOINT_PATH), help="Path to .pt checkpoint")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to .pt checkpoint")
+    parser.add_argument("--target", choices=["all", "rpi5", "pizero2w", "esp32"], default="all")
+    parser.add_argument("--legacy-model-name", default=None, help="Verified MJCF basename for legacy checkpoint without identity")
+    parser.add_argument("--observation-schema", type=Path, default=None, help="Verified JSON observation schema for legacy checkpoint")
     parser.add_argument("--onnx-output", type=str, default=str(DEFAULT_ONNX_PATH), help="Path for ONNX export (RPi 5)")
     parser.add_argument("--pizero-onnx-output", type=str, default=str(DEFAULT_PIZERO2W_ONNX_PATH), help="Path for ONNX export (Pi Zero 2 W)")
     parser.add_argument("--esp32-weights-output", type=str, default=str(DEFAULT_ESP32_WEIGHTS_PATH), help="Path for esp32_policy_weights.h")
@@ -497,43 +539,25 @@ def main():
 
     args = parser.parse_args()
 
-    ckpt_path = Path(args.checkpoint).resolve()
-    # If using default checkpoint, automatically prefer microduck_best.pt if it exists and has better iterations
-    if ckpt_path == DEFAULT_CHECKPOINT_PATH.resolve():
-        best_ckpt = REPO_ROOT / "models" / "checkpoints" / "microduck_best.pt"
-        if best_ckpt.exists():
-            try:
-                d_best = torch.load(str(best_ckpt), map_location="cpu", weights_only=False)
-                d_def = torch.load(str(ckpt_path), map_location="cpu", weights_only=False) if ckpt_path.exists() else {}
-                best_iter = d_best.get("iterations", 0) if isinstance(d_best, dict) else 0
-                def_iter = d_def.get("iterations", 0) if isinstance(d_def, dict) else 0
-                if best_iter >= def_iter:
-                    ckpt_path = best_ckpt
-            except Exception:
-                if not ckpt_path.exists():
-                    ckpt_path = best_ckpt
-
-    if not ckpt_path.exists():
-        print(f"[Error] Checkpoint not found: {ckpt_path}. Train a model first via scripts/train_ppo.py.")
-        sys.exit(1)
-
-    print(f"[Export] Loading checkpoint from {ckpt_path}...")
-    onnx_file = export_onnx(ckpt_path, output_path=args.onnx_output, opset=args.opset)
-    print(f"[Export] Exported Float32 ONNX model (RPi 5) (opset {args.opset}): {onnx_file}")
-
-    pizero_onnx = export_onnx(ckpt_path, output_path=args.pizero_onnx_output, opset=args.opset)
-    print(f"[Export] Exported Float32 ONNX model (Pi Zero 2 W) (opset {args.opset}): {pizero_onnx}")
-
-    weights_file, config_file = export_esp32_headers(
-        ckpt_path,
-        weights_output_path=args.esp32_weights_output,
-        config_output_path=args.esp32_config_output,
-        scale_obs=args.scale_obs,
-        scale_act=args.scale_act,
-    )
-    print(f"[Export] Exported ESP32-S3 INT8 weights header: {weights_file}")
-    print(f"[Export] Exported ESP32-S3 quant config header: {config_file}")
-    print("[Export] All deployment artifacts successfully exported.")
+    from training.policy_contract import resolve_target_checkpoints
+    targets = ("rpi5", "pizero2w", "esp32") if args.target == "all" else (args.target,)
+    try:
+        checkpoints = resolve_target_checkpoints(REPO_ROOT, targets, args.checkpoint)
+    except FileNotFoundError as exc:
+        parser.error(str(exc))
+    schema_override = json.loads(args.observation_schema.read_text(encoding="utf-8")) if args.observation_schema else None
+    prepared = prepare_target_exports(checkpoints, args.legacy_model_name, schema_override)
+    for target, checkpoint in checkpoints.items():
+        print(f"[Export] {target}: {checkpoint}")
+        if target == "esp32":
+            weights, config = export_esp32_headers(prepared[target],
+                weights_output_path=args.esp32_weights_output, config_output_path=args.esp32_config_output,
+                scale_obs=args.scale_obs, scale_act=args.scale_act)
+            print(f"[Export] {weights}, {config}")
+        else:
+            output = args.onnx_output if target == "rpi5" else args.pizero_onnx_output
+            print(f"[Export] {export_onnx(prepared[target], output_path=output, opset=args.opset)}")
+    print("[Export] All requested deployment artifacts successfully exported.")
 
 
 if __name__ == "__main__":

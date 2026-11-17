@@ -1294,6 +1294,9 @@ class ParallelSimRunner:
         time_outs = timeouts & ~fallen
 
         self.last_actions[:] = actions
+        # Rewards above use the previous action. The next (including terminal)
+        # observation belongs to the action just executed; avoid another sensor pass.
+        next_obs[:, 25:33] = actions
 
         delta_root_x_mean = float(np.mean(accepted_dx))
         standstill_time_mean = float(np.mean(self.standstill_time))

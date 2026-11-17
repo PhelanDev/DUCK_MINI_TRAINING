@@ -141,6 +141,39 @@ python duck.py export --target pizero2w
 python duck.py export --target esp32
 ```
 
+Checkpoint mới dùng namespace riêng: `microduck_rpi5_{ppo,latest,best}.pt`,
+`microduck_pizero2w_{ppo,latest,best}.pt`, `microduck_esp32_{ppo,latest,best}.pt`
+và `cyberduck_v2_{ppo,latest,best}.pt` trong `models/checkpoints/`.
+`export --target all` chọn checkpoint từng target và báo lỗi nếu còn thiếu.
+Resume yêu cầu cùng model, terrain, observation schema và kích thước tensor;
+checkpoint legacy thiếu identity/schema cần transfer explicit sang output mới,
+ví dụ `duck.py train --target v2 --transfer-checkpoint old.pt --save-path new_v2_ppo.pt --best-save-path new_v2_best.pt`.
+Không tự di chuyển hoặc đổi tên checkpoint cũ.
+
+Checkpoint và ONNX mới mang `observation_schema` gồm clock, period, control timestep
+và quy tắc reset. Clock tăng sau mỗi action, cả khi command bằng zero.
+Runtime Pi từ chối policy thiếu schema; với legacy đã xác minh nguồn gốc, truyền
+`--legacy-observation-schema verified-schema.json` cho inference. Khi export legacy,
+truyền `--legacy-model-name <tên-MJCF-đã-xác-minh>` và `--observation-schema verified-schema.json`;
+không suy luận clock từ số chiều. JSON mẫu cho policy clock 50 Hz:
+
+```json
+{"version":1,"obs_dim":42,"embed_phase_clock":true,"period":0.8,"control_dt":0.02,"reset":"episode_steps_zero","advance":"after_action","zero_command":"advance"}
+```
+
+Tests công khai nằm trong `tests/`. Trên clean checkout, cài các dependency Python
+và đặt `g++` trên PATH để chạy kiểm tra header/firmware C++:
+
+```bash
+python -m pip install pytest numpy mujoco torch onnx onnxruntime opencv-python
+python -m pytest tests/ -q -p no:cacheprovider
+python duck.py verify
+```
+
+`verify` chạy kiểm tra vật lý cùng test suite, không yêu cầu train dài hoặc robot thật.
+Tests tạo checkpoint/ONNX/header trong thư mục tạm. Browser dashboard được giữ nguyên
+và đưa vào Git vì test CLI hiện kiểm contract của file này.
+
 ---
 
 ## 6. Repository Layout
@@ -184,9 +217,10 @@ duckV1/
 
 ## 7. Trạng Thái Hiện Tại & Điểm Neo Khôi Phục (`v1-flat-walk-stable`)
 
-- **Đang dừng ở đâu:** Nhánh `main` (`33bfb08a`) cùng điểm neo khôi phục `v1-flat-walk-stable` (`dc948dbd` + `models/checkpoints/v1-flat-walk-stable.pt`) và nhánh `wip/nav-sac` (`650269db`) vẫn được bảo toàn nguyên vẹn. Toàn bộ gói sửa lỗi của `plans/261116-2350-ppo-locomotion-overhaul/plan.md` đã hoàn tất, kiểm chứng đầy đủ và commit trên nhánh `wip/fix-ppo-det-locomotion`; hai chỉnh sửa đường dẫn model ngoài phạm vi ở `pipelines/pizero2w_stack/deployment/infer_pizero2w.py` và `pipelines/rpi5_stack/deployment/infer_rpi5.py` được giữ riêng trong working tree.
-- **Đã thử những gì:** Triển khai và vá biên hoàn chỉnh 3 nhóm thay đổi: (1) ở `training/env_config.py` và `training/run_parallel_sim.py`, cổng hóa `upright`/`alive_bonus` theo `standstill_time` và `double_support_time` có hysteresis, thêm `forward_progress` theo `delta_root_x`, siết `swing_valid` cho `foot_contact`/`gait_sync`, đồng bộ ngưỡng `float32` (`vel_x = 0.05`) giữa scalar và batch, và giữ nguyên `reward_components` tại step kết thúc; (2) ở `scripts/train_ppo.py`, dùng squashed Gaussian khớp `log_prob` với action thực thi, ghi chẩn đoán stochastic vs deterministic (`action_mean_abs`, `action_noise_delta`, `action_saturation_frac`), và chặn ghi nhầm `_best.pt` nếu `evaluate_deterministic_rollout` chưa đạt `det_distance_x >= 0.05`; (3) ở `scripts/export_policy.py`, `scripts/interactive_viewer.py`, `scripts/evaluate_models_sim.py` và `scripts/pretrain_bc.py`, siết validate `obs_rms` kèm clip bounds `mean ± clip*std`, áp `tanh` đúng 1 lần trước quantize INT8, bỏ hardcode hidden width `256` trong C header ESP32, bổ sung `resolve_viewer_model_path` và gỡ fallback nuốt lỗi khi tải policy. Kiểm chứng `pytest tests/ -q` đạt `479 passed` (`0` failed, gồm `10/10` ở `tests/test_locomotion_state_contract.py` và `14/14` ở `tests/test_policy_consumer_contract.py`, `0` lệch scalar/batch quanh các ngưỡng biên), cùng smoke CPU V2 (`2` envs × `64` steps × `1` epoch × `1` iter trong thư mục tạm) cho `total_timesteps=128` finite, tự resolve `cyberduck_v2.xml`, `onnx_max_diff=2.98e-08`, và biên dịch chạy `g++` header xuất ra thành công.
-- **Giả thuyết tiếp theo:** Chạy train thật trên WSL GPU với `duck_v2/cyberduck_v2.xml` từ nhánh `wip/fix-ppo-det-locomotion`, theo dõi `DetDistX`, `action_mean_abs` và `action_noise_delta` để xác nhận policy deterministic bước đi thật qua các stage trước khi tạo điểm neo `.pt` + git tag mới hoặc hợp nhất về `main`.
+- **Đang dừng ở đâu:** Đã triển khai [plan project audit](plans/261117-1710-project-audit-fixes/plan.md) trên `wip/fix-project-audit`; neo `v1-flat-walk-stable` (`dc948dbd` + `models/checkpoints/v1-flat-walk-stable.pt`) được bảo toàn, hai edit đường dẫn Pi có sẵn vẫn để riêng ngoài commit.
+- **Đã sửa:** F1–F6 gồm history/terminal observations, namespace và identity checkpoint, RMS/finite guards, schema clock train → ONNX → Pi, cùng guard 42 chiều ESP32. F7 đưa toàn bộ tests và dashboard phụ thuộc vào Git; không cập nhật artifact đang ship.
+- **Kiểm chứng:** Baseline `479 passed`; focused `146 passed`; full suite `521 passed, 26 warnings` (`240.25s`), verify vật lý thành công; `duck.py verify` trên bản xuất sạch Git index đạt `521 passed, 26 warnings` (`230.95s`). Chi tiết tại [execution report](plans/261117-1710-project-audit-fixes/execution.md).
+- **Bước tiếp theo:** Xác minh provenance checkpoint legacy trước transfer/export; train lại và đánh giá locomotion deterministic, sau đó smoke Pi/ESP32 trên phần cứng trước khi tạo neo code + weights mới.
 
 ---
 

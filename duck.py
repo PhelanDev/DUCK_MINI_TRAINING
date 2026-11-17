@@ -20,6 +20,7 @@ from typing import Optional
 REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+from training.policy_contract import CHECKPOINT_PREFIXES, resolve_target_checkpoints
 
 # Safe UTF-8 console output for Windows CLI
 if sys.platform == "win32":
@@ -47,8 +48,10 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     # 2. Checkpoints Status
     ckpt_dir = REPO_ROOT / "models" / "checkpoints"
-    best_ckpt = ckpt_dir / "microduck_best.pt"
-    latest_ckpt = ckpt_dir / "microduck_latest.pt"
+    best_ckpt = ckpt_dir / "microduck_rpi5_best.pt"
+    latest_ckpt = ckpt_dir / "microduck_rpi5_latest.pt"
+    for target, prefix in CHECKPOINT_PREFIXES.items():
+        print(f"  • {target}: {prefix}_ppo.pt / {prefix}_latest.pt / {prefix}_best.pt")
 
     print("\n[2] TIẾN TRÌNH HUẤN LUYỆN (CHECKPOINTS & CURRICULUM)")
     if best_ckpt.exists():
@@ -68,7 +71,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         except Exception as e:
             print(f"  • Không thể đọc {best_ckpt.name}: {e}")
     else:
-        print("  • Chưa có checkpoint microduck_best.pt")
+        print(f"  • Chưa có checkpoint {best_ckpt.name} (Stage chưa xác định)")
 
     # 3. Git Status
     print("\n[3] TRẠNG THÁI MÃ NGUỒN & HỆ THỐNG")
@@ -205,31 +208,25 @@ def cmd_train(args: argparse.Namespace) -> int:
     if getattr(args, "target", None) and args.target in target_models:
         cmd.extend(["--model-path", str(target_models[args.target])])
 
-    if getattr(args, "target", None) == "v2":
-        cmd.extend([
-            "--save-path", str(REPO_ROOT / "models" / "checkpoints" / "cyberduck_v2_ppo.pt"),
-            "--best-save-path", str(REPO_ROOT / "models" / "checkpoints" / "cyberduck_v2_best.pt")
-        ])
+    prefix = CHECKPOINT_PREFIXES[getattr(args, "target", "rpi5")]
+    save_path = Path(getattr(args, "save_path", None) or REPO_ROOT / "models/checkpoints" / f"{prefix}_ppo.pt")
+    save_prefix = save_path.stem[:-4] if save_path.stem.endswith("_ppo") else save_path.stem
+    best_path = Path(getattr(args, "best_save_path", None) or save_path.with_name(f"{save_prefix}_best.pt"))
+    cmd.extend(["--save-path", str(save_path), "--best-save-path", str(best_path)])
 
     if args.resume:
         resume_val = str(args.resume).strip()
         is_bool = (args.resume is True) or (resume_val.lower() in ("true", "1"))
-        if is_bool and getattr(args, "target", None) == "v2":
-            v2_ppo = REPO_ROOT / "models" / "checkpoints" / "cyberduck_v2_ppo.pt"
-            v2_best = REPO_ROOT / "models" / "checkpoints" / "cyberduck_v2_best.pt"
-            v1_best = REPO_ROOT / "models" / "checkpoints" / "microduck_best.pt"
-            if v2_ppo.exists():
-                cmd.append("--resume")
-            elif v2_best.exists():
-                cmd.extend(["--load-checkpoint", str(v2_best)])
-            elif v1_best.exists():
-                cmd.extend(["--load-checkpoint", str(v1_best)])
-            else:
-                cmd.append("--resume")
-        elif not is_bool and (Path(resume_val).exists() or resume_val.endswith(".pt")):
-            cmd.extend(["--load-checkpoint", str(args.resume)])
+        if not is_bool:
+            cmd.extend(["--resume", "--load-checkpoint", str(args.resume)])
         else:
             cmd.append("--resume")
+            if not save_path.exists() and best_path.exists():
+                cmd.extend(["--load-checkpoint", str(best_path)])
+    if getattr(args, "transfer_checkpoint", None):
+        if args.resume:
+            raise ValueError("Choose resume or explicit transfer, not both")
+        cmd.extend(["--load-checkpoint", str(args.transfer_checkpoint)])
     if getattr(args, "stand_first", False):
         cmd.append("--stand-first")
     if getattr(args, "device", None):
@@ -254,15 +251,13 @@ def cmd_train(args: argparse.Namespace) -> int:
 def cmd_export(args: argparse.Namespace) -> int:
     """Export trained policy to ONNX and INT8 C header."""
     target = getattr(args, "target", "all")
-    ckpt_path = getattr(args, "checkpoint", None)
-    if not ckpt_path:
-        best_ckpt = REPO_ROOT / "models" / "checkpoints" / "microduck_best.pt"
-        if best_ckpt.exists():
-            ckpt_path = str(best_ckpt)
-        else:
-            default_ckpt = REPO_ROOT / "models" / "checkpoints" / "microduck_ppo.pt"
-            if default_ckpt.exists():
-                ckpt_path = str(default_ckpt)
+    explicit_checkpoint = getattr(args, "checkpoint", None)
+    targets = ("rpi5", "pizero2w", "esp32") if target == "all" else (target,)
+    try:
+        checkpoints = resolve_target_checkpoints(REPO_ROOT, targets, explicit_checkpoint)
+    except FileNotFoundError as exc:
+        print(f"[Export] {exc}")
+        return 1
 
     from scripts.export_policy import (
         export_onnx,
@@ -271,32 +266,34 @@ def cmd_export(args: argparse.Namespace) -> int:
         DEFAULT_PIZERO2W_ONNX_PATH,
         DEFAULT_ESP32_WEIGHTS_PATH,
         DEFAULT_ESP32_CONFIG_PATH,
+        prepare_target_exports,
     )
 
-    if not ckpt_path or not Path(ckpt_path).exists():
-        print(f"[LỖI] Không tìm thấy file checkpoint: {ckpt_path}")
-        return 1
+    import json
+    schema_path = getattr(args, "observation_schema", None)
+    schema_override = json.loads(Path(schema_path).read_text(encoding="utf-8")) if schema_path else None
+    prepared = prepare_target_exports(checkpoints, getattr(args, "legacy_model_name", None), schema_override)
 
     opset = getattr(args, "opset", 13)
     custom_out = getattr(args, "output", None)
 
-    print(f">>> Đang xuất mô hình (target: {target}) từ {ckpt_path}...")
+    print(f">>> Đang xuất mô hình (target: {target}) từ {checkpoints}...")
 
     if target in ("rpi5", "all"):
         out_rpi5 = custom_out or getattr(args, "onnx_output", None) or DEFAULT_ONNX_PATH
-        onnx_file = export_onnx(ckpt_path, output_path=out_rpi5, opset=opset)
+        onnx_file = export_onnx(prepared["rpi5"], output_path=out_rpi5, opset=opset)
         print(f"[Export] Exported Float32 ONNX model (RPi 5): {onnx_file}")
 
     if target in ("pizero2w", "all"):
         out_pi0 = (custom_out if target == "pizero2w" else None) or getattr(args, "pizero_onnx_output", None) or DEFAULT_PIZERO2W_ONNX_PATH
-        pizero_onnx = export_onnx(ckpt_path, output_path=out_pi0, opset=opset)
+        pizero_onnx = export_onnx(prepared["pizero2w"], output_path=out_pi0, opset=opset)
         print(f"[Export] Exported Float32 ONNX model (Pi Zero 2 W): {pizero_onnx}")
 
     if target in ("esp32", "all"):
         out_w = (custom_out if target == "esp32" else None) or getattr(args, "esp32_weights_output", None) or DEFAULT_ESP32_WEIGHTS_PATH
         out_c = getattr(args, "esp32_config_output", None) or DEFAULT_ESP32_CONFIG_PATH
         weights_file, config_file = export_esp32_headers(
-            ckpt_path,
+            prepared["esp32"],
             weights_output_path=out_w,
             config_output_path=out_c,
         )
@@ -339,6 +336,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_train.add_argument("--target", choices=["rpi5", "pizero2w", "esp32", "v2"], default="rpi5", help="Nhánh phần cứng/mô hình mục tiêu (rpi5, pizero2w, esp32, v2 - mặc định: rpi5)")
     p_train.add_argument("--envs", type=int, default=256, help="Số lượng môi trường song song (mặc định: 256)")
     p_train.add_argument("--iterations", "--iters", type=int, default=None, help="Số vòng lặp huấn luyện (mặc định: 500 khi train, 1 khi dry-run)")
+    p_train.add_argument("--transfer-checkpoint", type=str, default=None, help="Transfer explicit sang target/output mới, reset optimizer và selection")
+    p_train.add_argument("--save-path", type=str, default=None, help="Đường dẫn checkpoint output explicit")
+    p_train.add_argument("--best-save-path", type=str, default=None, help="Đường dẫn best checkpoint explicit")
     p_train.add_argument("--resume", type=str, default=None, nargs="?", const="true", help="Tiếp tục học từ checkpoint")
     p_train.add_argument("--stand-first", action="store_true", help="Ưu tiên học đứng thăng bằng trước")
     p_train.add_argument("--dry-run", action="store_true", help="Chạy kiểm thử nhanh 1 vòng lặp (Dry-run)")
@@ -352,6 +352,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_export = subparsers.add_parser("export", help="Xuất policy sang ONNX (RPi 5 & Pi Zero 2 W) và INT8 C Header (ESP32-S3)")
     p_export.add_argument("--target", choices=["rpi5", "pizero2w", "esp32", "all"], default="all", help="Phần cứng mục tiêu cần xuất (rpi5, pizero2w, esp32, all - mặc định: all)")
     p_export.add_argument("--checkpoint", type=str, default=None, help="Đường dẫn checkpoint cần xuất")
+    p_export.add_argument("--legacy-model-name", default=None, help="Tên MJCF đã xác minh cho checkpoint legacy thiếu identity")
+    p_export.add_argument("--observation-schema", type=Path, default=None, help="JSON observation schema đã xác minh cho checkpoint legacy")
     p_export.add_argument("--output", type=str, default=None, help="Đường dẫn file đầu ra tùy chỉnh")
     p_export.add_argument("--onnx-output", type=str, default=None, help="Đường dẫn file xuất ONNX (RPi 5)")
     p_export.add_argument("--pizero-onnx-output", type=str, default=None, help="Đường dẫn file xuất ONNX (Pi Zero 2 W)")

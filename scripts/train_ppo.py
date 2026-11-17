@@ -40,7 +40,7 @@ from training.terrain_curriculum import (
 DEFAULT_MODEL_PATH = (
     REPO_ROOT / "pipelines" / "rpi5_stack" / "models" / "mjcf" / "microduck_rpi5_8dof.xml"
 )
-DEFAULT_SAVE_PATH = REPO_ROOT / "models" / "checkpoints" / "microduck_ppo.pt"
+DEFAULT_SAVE_PATH = REPO_ROOT / "models" / "checkpoints" / "microduck_rpi5_ppo.pt"
 
 
 class RunningMeanStd:
@@ -117,15 +117,22 @@ class RunningMeanStd:
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        self.mean = np.asarray(state_dict["mean"], dtype=np.float64).copy()
-        self.var = np.asarray(state_dict["var"], dtype=np.float64).copy()
-        self.count = float(state_dict["count"])
-        if "clip" in state_dict:
-            self.clip = float(state_dict["clip"])
-        if "epsilon" in state_dict:
-            self.epsilon = float(state_dict["epsilon"])
-        if "min_std" in state_dict:
-            self.min_std = float(state_dict["min_std"])
+        try:
+            if not isinstance(state_dict, dict):
+                raise ValueError("expected mapping")
+            mean, var = (np.asarray(state_dict[key]) for key in ("mean", "var"))
+            if any(a.dtype.kind not in "iuf" or a.shape != self.shape or not np.isfinite(a).all() for a in (mean, var)):
+                raise ValueError("mean/var must be finite numeric arrays of the expected shape")
+            if np.any(var < 0) or ("shape" in state_dict and tuple(state_dict["shape"]) != self.shape):
+                raise ValueError("invalid variance or advertised shape")
+            scalars = {key: state_dict.get(key, getattr(self, key)) for key in ("count", "clip", "epsilon", "min_std")}
+            if "count" not in state_dict or any(isinstance(v, (bool, str)) or not np.isscalar(v) or not np.isfinite(v) or v <= 0 for v in scalars.values()):
+                raise ValueError("count/clip/epsilon/min_std must be positive finite numeric scalars")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid RMS state: {exc}") from exc
+        self.mean, self.var = mean.astype(np.float64, copy=True), var.astype(np.float64, copy=True)
+        for key, value in scalars.items():
+            setattr(self, key, float(value))
 
 
 class ActorCritic(nn.Module):
@@ -472,6 +479,7 @@ def _atomic_torch_save(payload: Dict[str, Any], target_path: Union[str, Path]) -
     Avoids partial/corrupt checkpoint reads when external processes (such as
     interactive_viewer.py) monitor and hot-reload checkpoint files.
     """
+    _require_finite_tensors(payload)
     target = Path(target_path).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
@@ -485,6 +493,21 @@ def _atomic_torch_save(payload: Dict[str, Any], target_path: Union[str, Path]) -
             except OSError:
                 pass
         raise
+
+
+def _require_finite_tensors(value):
+    if isinstance(value, torch.Tensor):
+        if not torch.isfinite(value).all():
+            raise ValueError("Checkpoint tensors must be finite")
+    elif isinstance(value, np.ndarray):
+        if not np.isfinite(value).all():
+            raise ValueError("Checkpoint arrays must be finite")
+    elif isinstance(value, dict):
+        for child in value.values():
+            _require_finite_tensors(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _require_finite_tensors(child)
 
 
 def train_ppo(
@@ -501,7 +524,7 @@ def train_ppo(
     max_grad_norm: float = 0.5,
     num_epochs: int = 4,
     mini_batch_size: Optional[int] = None,
-    save_path: Union[str, Path] = DEFAULT_SAVE_PATH,
+    save_path: Optional[Union[str, Path]] = None,
     best_save_path: Optional[Union[str, Path]] = None,
     dry_run: bool = False,
     device: Optional[str] = None,
@@ -552,6 +575,12 @@ def train_ppo(
         if verbose:
             print(f"[PPO] Dry-run mode enabled: {max_iterations} iteration(s), {num_envs} envs, {rollout_steps} rollout steps.")
 
+    if save_path is None:
+        from training.policy_contract import TARGET_MODELS, CHECKPOINT_PREFIXES
+        target = next((target for target, name in TARGET_MODELS.items() if name == Path(model_path).name), None)
+        if target is None:
+            raise ValueError("Custom model requires an explicit save_path")
+        save_path = REPO_ROOT / "models/checkpoints" / f"{CHECKPOINT_PREFIXES[target]}_ppo.pt"
     save_path = Path(save_path).resolve()
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -569,6 +598,23 @@ def train_ppo(
         source_path = Path(load_checkpoint).resolve()
         if source_path in (save_path, latest_save_path, best_save_path):
             raise ValueError("Transfer requires new output paths; do not overwrite the source checkpoint")
+
+    from training.policy_contract import validate_model_identity
+    # Validate every existing output before any write, including fresh runs.
+    for output in (save_path, latest_save_path, best_save_path):
+        if output.exists():
+            try:
+                existing = torch.load(str(output), map_location="cpu", weights_only=False)
+            except (OSError, RuntimeError, ValueError, TypeError, EOFError, pickle.UnpicklingError):
+                if output == best_save_path:
+                    continue
+                raise
+            # Corrupt selection files are retained until a qualified replacement.
+            if not isinstance(existing, dict):
+                raise ValueError("Checkpoint model identity requires checkpoint metadata")
+            if (existing.get("model_name") or existing.get("model_path") or output != best_save_path
+                    or "model_state_dict" in existing or "actor_state_dict" in existing):
+                validate_model_identity(existing, model_path)
 
     # The actual best file is the only authority for historical selection.
     best_record = None
@@ -614,6 +660,8 @@ def train_ppo(
 
     obs_dim = runner.obs_dim
     critic_obs_dim = getattr(runner, "privileged_obs_dim", obs_dim)
+    from training.policy_contract import observation_schema, validate_observation_schema
+    schema = observation_schema(obs_dim, runner.embed_phase_clock, runner.control_dt)
     action_dim = runner.action_dim
     hidden_dim = 256
 
@@ -660,18 +708,54 @@ def train_ppo(
     if ckpt_to_load is not None:
         if ckpt_to_load.exists():
             ckpt = torch.load(str(ckpt_to_load), map_location=dev, weights_only=False)
+            if "observation_schema" in ckpt:
+                try:
+                    validate_observation_schema(ckpt["observation_schema"])
+                except ValueError:
+                    runner.close()
+                    raise
             if resume:
+                try:
+                    validate_model_identity(ckpt, sim_model_path)
+                    for field, expected in (("obs_dim", obs_dim), ("critic_obs_dim", critic_obs_dim), ("action_dim", action_dim), ("hidden_dim", hidden_dim)):
+                        if field in ckpt and ckpt[field] != expected:
+                            raise ValueError(f"Checkpoint {field} mismatch")
+                    if "observation_schema" not in ckpt:
+                        raise ValueError("Legacy checkpoint has no observation_schema; use explicit transfer with verified clock provenance")
+                    if validate_observation_schema(ckpt["observation_schema"]) != schema:
+                        raise ValueError("Checkpoint observation_schema mismatch")
+                    if ckpt.get("terrain_mode", terrain_mode) != terrain_mode:
+                        raise ValueError("Checkpoint terrain mismatch; use explicit transfer")
+                    if "squash_actions" in ckpt and type(ckpt["squash_actions"]) is not bool:
+                        raise ValueError("Checkpoint action transform must be boolean")
+                    state = ckpt.get("model_state_dict")
+                    expected_state = model.state_dict()
+                    if (not isinstance(state, dict) or state.keys() != expected_state.keys()
+                            or any(not isinstance(state[key], torch.Tensor) or state[key].shape != tensor.shape
+                                   for key, tensor in expected_state.items())):
+                        raise ValueError("Checkpoint model tensor shapes are incompatible with resume; use explicit transfer")
+                except Exception:
+                    runner.close()
+                    raise
                 model.squash_actions = bool(ckpt.get("squash_actions", False))
-            if "obs_rms" in ckpt:
-                try:
-                    obs_rms.load_state_dict(ckpt["obs_rms"])
-                except Exception:
-                    pass
-            if "critic_obs_rms" in ckpt and ckpt.get("critic_obs_dim") == critic_obs_dim:
-                try:
-                    critic_obs_rms.load_state_dict(ckpt["critic_obs_rms"])
-                except Exception:
-                    pass
+            # Validate actor and critic statistics completely before assigning either.
+            pending_rms = []
+            try:
+                _require_finite_tensors(ckpt)
+                for key, destination in (("obs_rms", obs_rms), ("critic_obs_rms", critic_obs_rms)):
+                    if key in ckpt:
+                        source_shape = ckpt.get("critic_obs_dim", critic_obs_dim) if key == "critic_obs_rms" else obs_dim
+                        candidate = RunningMeanStd(shape=source_shape)
+                        candidate.load_state_dict(ckpt[key])
+                        if candidate.shape == destination.shape:
+                            pending_rms.append((destination, candidate.state_dict()))
+                        elif resume:
+                            raise ValueError(f"Invalid RMS shape for {key}")
+                for destination, state in pending_rms:
+                    destination.load_state_dict(state)
+            except Exception:
+                runner.close()
+                raise
 
             critic_weight = None
             if "model_state_dict" in ckpt and "critic.0.weight" in ckpt["model_state_dict"]:
@@ -735,8 +819,9 @@ def train_ppo(
                     try:
                         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
                         optimizer_loaded = True
-                    except Exception:
-                        optimizer_loaded = False
+                    except (ValueError, TypeError, KeyError) as exc:
+                        runner.close()
+                        raise ValueError("Checkpoint optimizer state is incompatible with resume") from exc
             loaded_stage = ckpt.get("stage", current_stage)
             if loaded_stage > current_stage:
                 current_stage = loaded_stage
@@ -820,7 +905,7 @@ def train_ppo(
             "model_state_dict": model.state_dict(), "actor_state_dict": model.actor.state_dict(),
             "critic_state_dict": model.critic.state_dict(), "optimizer_state_dict": optimizer.state_dict(),
             "obs_dim": obs_dim, "critic_obs_dim": critic_obs_dim, "action_dim": action_dim,
-            "hidden_dim": hidden_dim, "obs_rms": obs_rms.state_dict(),
+            "hidden_dim": hidden_dim, "observation_schema": dict(schema), "obs_rms": obs_rms.state_dict(),
             "critic_obs_rms": critic_obs_rms.state_dict(), "squash_actions": model.squash_actions,
             "model_path": eval_protocol["model_path"], "model_name": sim_model_path.name,
             "iterations": iteration, "learning_rate": current_lr, "stage": stage,
@@ -972,7 +1057,7 @@ def train_ppo(
             b_returns = returns.reshape(-1)
 
             # Normalize advantages
-            b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
+            b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std(unbiased=False) + 1e-8)
 
             # ------------------------------------------------------------------
             # Phase 3: PPO Optimization Epochs
@@ -1039,10 +1124,16 @@ def train_ppo(
                         - current_entropy_coef * entropy_mean
                     )
 
+                    if not torch.isfinite(torch.stack((policy_loss, value_loss, entropy_mean, total_loss, approx_kl))).all():
+                        raise ValueError("PPO loss must be finite before optimizer update")
                     optimizer.zero_grad()
                     total_loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    for parameter in model.parameters():
+                        if parameter.grad is not None and not torch.isfinite(parameter.grad).all():
+                            raise ValueError("PPO gradients must be finite before optimizer update")
+                    nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm, error_if_nonfinite=True)
                     optimizer.step()
+                    _require_finite_tensors(model.state_dict())
                     with torch.no_grad():
                         model.log_std.data.clamp_(model.min_log_std, model.max_log_std)
 
@@ -1259,7 +1350,7 @@ def train_ppo(
 def main():
     parser = argparse.ArgumentParser(description="MicroDuck 8-DOF PPO Training Pipeline")
     parser.add_argument("--model-path", type=str, default=str(DEFAULT_MODEL_PATH), help="Path to MuJoCo MJCF model")
-    parser.add_argument("--save-path", type=str, default=str(DEFAULT_SAVE_PATH), help="Path to save PyTorch checkpoint")
+    parser.add_argument("--save-path", type=str, default=None, help="Path to save PyTorch checkpoint")
     parser.add_argument(
         "--best-save-path",
         type=str,

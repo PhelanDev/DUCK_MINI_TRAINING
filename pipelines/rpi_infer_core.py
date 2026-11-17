@@ -9,6 +9,7 @@ Deduplicated common logic between Raspberry Pi 5 and Raspberry Pi Zero 2 W:
 """
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -71,6 +72,7 @@ def pack_rpi_observation(
     last_actions: Union[List[float], np.ndarray],
     foot_contact: Union[List[float], np.ndarray],
     lidar_ranges: Union[List[float], np.ndarray],
+    phase_clock: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Pack raw sensory signals into standard 42-dimensional observation vector."""
     return compute_observations(
@@ -82,6 +84,7 @@ def pack_rpi_observation(
         last_actions=np.asarray(last_actions, dtype=np.float32),
         foot_contact=np.asarray(foot_contact, dtype=np.float32),
         lidar_ranges=np.asarray(lidar_ranges, dtype=np.float32),
+        phase_clock=phase_clock,
     )
 
 
@@ -345,11 +348,16 @@ class BaseRPiInferenceEngine:
         mock: bool = False,
         freq: float = 50.0,
         engine_name: str = "BaseRPiInferenceEngine",
+        legacy_observation_schema: Optional[dict] = None,
     ):
         self.engine_name = engine_name
         self.cfg = MicroDuck8DoFConfig(OBS_DIM=42)
         self.freq = float(freq)
+        if not np.isfinite(self.freq) or self.freq <= 0:
+            raise ValueError("Control frequency must be finite and positive")
         self.dt = 1.0 / self.freq
+        self.observation_schema = None
+        self.episode_steps = 0
         self.mock = mock or (smbus is None)
 
         # Servo controller setup
@@ -378,6 +386,19 @@ class BaseRPiInferenceEngine:
             opts.intra_op_num_threads = 4  # Utilize all 4 CPU cores
             self.ort_session = ort.InferenceSession(self.model_path, opts)
             self.input_name = self.ort_session.get_inputs()[0].name
+            from training.policy_contract import validate_observation_schema
+            raw_schema = self.ort_session.get_modelmeta().custom_metadata_map.get("observation_schema")
+            if raw_schema is None and legacy_observation_schema is None:
+                raise ValueError("Legacy policy has no observation_schema; provide an explicit verified legacy schema")
+            try:
+                schema = validate_observation_schema(json.loads(raw_schema) if raw_schema is not None else legacy_observation_schema)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ValueError("Invalid policy observation_schema") from exc
+            if schema["obs_dim"] != 42 or self.ort_session.get_inputs()[0].shape[-1] != 42:
+                raise ValueError("RPi observation_schema requires 42 observations")
+            if not np.isclose(schema["control_dt"], self.dt, rtol=1e-7, atol=1e-10):
+                raise ValueError("Policy observation_schema control_dt does not match runtime frequency")
+            self.observation_schema = schema
             print(f"[{self.engine_name}] Loaded ONNX policy model from {self.model_path}")
         else:
             print(f"[{self.engine_name}] No ONNX model provided or file not found. Running in heuristic/zero-action mode.")
@@ -391,6 +412,19 @@ class BaseRPiInferenceEngine:
         self.prev_q: np.ndarray = self.cfg.nominal_qpos.copy()
         self._warned_foot_fallback: bool = False
         self._warned_lidar_fallback: bool = False
+
+    def reset_policy_state(self):
+        """Reset observation history and clock together at an episode boundary."""
+        self.episode_steps = 0
+        self.last_raw_actions = np.zeros(self.cfg.ACTION_DIM, dtype=np.float32)
+
+    def phase_clock(self):
+        if self.observation_schema is None or not self.observation_schema["embed_phase_clock"]:
+            return None
+        from training.env_config import compute_gait_phase
+        _, sine, cosine = compute_gait_phase(self.episode_steps, dt_control=self.dt,
+                                              period=self.observation_schema["period"])
+        return np.array([sine, cosine], dtype=np.float32)
 
     def read_foot_contact(self) -> List[float]:
         """Read 4-channel foot contact states [Left, Right, Padded, Padded]."""
@@ -462,6 +496,7 @@ class BaseRPiInferenceEngine:
             pwms[i] = pwm
             self.servo_controller.set_pwm_us(channel=i, pulse_us=pwm)
 
+        self.episode_steps += 1
         return clipped_targets, pwms
 
     def run_loop(self, steps: Optional[int] = None) -> None:
@@ -502,6 +537,7 @@ class BaseRPiInferenceEngine:
                     last_actions=self.last_raw_actions,
                     foot_contact=foot_contact,
                     lidar_ranges=lidar_ranges,
+                    phase_clock=self.phase_clock(),
                 )
 
                 targets, pwms = self.step(obs)
@@ -545,6 +581,7 @@ def run_rpi_cli(engine_cls, description: str, default_model: Optional[str] = Non
         help="Control loop frequency in Hz (default: 50.0)",
     )
     parser.add_argument("--steps", type=int, default=None, help="Number of steps to execute (default: continuous)")
+    parser.add_argument("--legacy-observation-schema", type=Path, default=None, help="JSON schema for legacy policy, verified from training provenance")
     args = parser.parse_args()
 
     engine = engine_cls(
@@ -552,5 +589,6 @@ def run_rpi_cli(engine_cls, description: str, default_model: Optional[str] = Non
         i2c_bus=args.i2c_bus,
         mock=args.mock,
         freq=args.freq,
+        legacy_observation_schema=json.loads(args.legacy_observation_schema.read_text(encoding="utf-8")) if args.legacy_observation_schema else None,
     )
     engine.run_loop(steps=args.steps)

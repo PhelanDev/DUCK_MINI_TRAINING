@@ -35,12 +35,14 @@ class PiZero2WInferenceEngine(BaseRPiInferenceEngine):
         i2c_bus: int = 1,
         mock: bool = False,
         freq: float = 50.0,
+        legacy_observation_schema: dict = None,
     ):
         super().__init__(
             model_path=model_path,
             i2c_bus=i2c_bus,
             mock=mock,
             freq=freq,
+            legacy_observation_schema=legacy_observation_schema,
             engine_name="PiZero2WInferenceEngine",
         )
         # Explicit contract hooks preserving: prev_q, read_foot_contact, read_lidar_ranges
